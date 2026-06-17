@@ -76,6 +76,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
+    # When True (default) and output_language is the default "English", A-share
+    # runs auto-switch their user-facing reports to Chinese.
+    "auto_switch_language_for_cn": True,
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
@@ -97,22 +100,34 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "oil commodities supply chain energy",
     ],
     # Data vendor configuration
-    # Category-level configuration (default for all tools in category).
-    # The configured value is the exact vendor chain — requests are NOT silently
-    # routed to vendors you didn't choose. For ordered fallback, list several,
-    # e.g. "yfinance,alpha_vantage". "default" uses all available vendors.
+    # Category-level configuration supports market-aware mapping:
+    #   {"us": "yfinance", "cn_a": "akshare"}
+    # Plain string values are accepted for backwards compatibility and
+    # apply to all markets (see get_vendor in dataflows/interface.py).
     "data_vendors": {
-        "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
-        "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
-        "fundamental_data": "yfinance",      # Options: alpha_vantage, yfinance
-        "news_data": "yfinance",             # Options: alpha_vantage, yfinance
-        "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
-        "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+        "core_stock_apis": {"us": "yfinance", "cn_a": "akshare, tushare"},
+        "technical_indicators": {"us": "yfinance", "cn_a": "akshare, tushare"},
+        "fundamental_data": {"us": "yfinance", "cn_a": "tushare"},
+        "news_data": {"us": "yfinance", "cn_a": "akshare"},
+        "social_sentiment": {"cn_a": "akshare"},
+        "company_announcements": {"cn_a": "akshare"},
+        "macro_data": {"us": "fred", "cn_a": "akshare"},
+        "cn_market_specific": {"cn_a": "akshare"},
+        "prediction_markets": {"us": "polymarket"},
     },
-    # Tool-level configuration (takes precedence over category-level)
+    # Tool-level configuration (takes precedence over category-level).
+    # Values may also be market-aware dicts.
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
     },
+    # Default market used when a tool has no ticker argument (e.g. global news)
+    # and the agent state doesn't provide one. Options: "us", "cn_a".
+    "default_market": "us",
+    # CN data providers
+    "tushare_token": None,          # reads TUSHARE_TOKEN env var when None
+    "akshare_rate_limit": 1.0,      # QPS
+    "tushare_rate_limit": 3.0,      # QPS
+    "cn_trading_calendar_cache": os.path.join(_TRADINGAGENTS_HOME, "cache", "cn_trade_cal.csv"),
     # Benchmark for alpha calculation in the reflection layer.
     # ``benchmark_ticker`` (when set) overrides the suffix map for all
     # tickers; leave it None to use ``benchmark_map`` for auto-detection

@@ -136,3 +136,60 @@ def normalize_symbol(raw: str) -> str:
 def is_yahoo_safe(symbol: str) -> bool:
     """True when ``symbol`` only contains characters Yahoo symbols use."""
     return bool(symbol) and _YAHOO_SAFE.fullmatch(symbol) is not None
+
+
+# ---------------------------------------------------------------------------
+# A-share (CN market) helpers
+# ---------------------------------------------------------------------------
+
+_CN_EXCHANGE_MAP = {
+    "6": "SH",   # Shanghai main board / STAR Market (688xxx)
+    "0": "SZ",   # Shenzhen main board
+    "3": "SZ",   # ChiNext (创业板)
+    "8": "BJ",   # Beijing Stock Exchange (北交所)
+    "4": "BJ",   # NEEQ / Beijing legacy
+}
+
+
+def detect_market(ticker: str) -> str:
+    """Return ``"cn_a"`` for A-share tickers, ``"us"`` otherwise.
+
+    Recognised CN forms:
+      - 6-digit codes with or without exchange suffix (``000001``, ``600000.SH``)
+      - Yahoo-style suffixes (``.SS``, ``.SZ``, ``.BJ``)
+    """
+    if not isinstance(ticker, str):
+        return "us"
+    t = ticker.strip().upper()
+    if re.match(r"^\d{6}(\.(SH|SZ|BJ|SS))?$", t):
+        return "cn_a"
+    if t.endswith((".SS", ".SZ", ".BJ")):
+        return "cn_a"
+    return "us"
+
+
+def _extract_cn_code(ticker: str) -> str:
+    """Extract the bare 6-digit code from any CN ticker form."""
+    t = ticker.strip().upper()
+    m = re.match(r"^(\d{6})(\.(SH|SZ|BJ|SS))?$", t)
+    if m:
+        return m.group(1)
+    return t
+
+
+def normalize_cn_display(ticker: str) -> str:
+    """Return a canonical ``<code>.<exchange>`` display string for CN tickers."""
+    code = _extract_cn_code(ticker)
+    if len(code) == 6 and code[0] in _CN_EXCHANGE_MAP:
+        return f"{code}.{_CN_EXCHANGE_MAP[code[0]]}"
+    return ticker.strip().upper()
+
+
+def normalize_for_akshare(ticker: str) -> str:
+    """Return the bare 6-digit code that AKShare APIs expect."""
+    return _extract_cn_code(ticker)
+
+
+def normalize_for_tushare(ticker: str) -> str:
+    """Return ``<code>.<SH|SZ|BJ>`` in the form TuShare's ``ts_code`` accepts."""
+    return normalize_cn_display(ticker)

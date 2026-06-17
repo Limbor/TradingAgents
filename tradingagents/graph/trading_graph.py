@@ -26,6 +26,14 @@ from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_verified_market_snapshot,
     resolve_instrument_identity,
+    # CN market tools
+    get_social_sentiment,
+    get_announcements,
+    get_macro_calendar,
+    get_limit_status,
+    get_northbound_flow,
+    get_margin_balance,
+    get_unlock_schedule,
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
@@ -177,6 +185,8 @@ class TradingAgentsGraph:
                 [
                     # News tools for social media analysis
                     get_news,
+                    # A-share social / retail sentiment
+                    get_social_sentiment,
                 ]
             ),
             "news": ToolNode(
@@ -187,6 +197,8 @@ class TradingAgentsGraph:
                     get_insider_transactions,
                     get_macro_indicators,
                     get_prediction_markets,
+                    # A-share macro calendar
+                    get_macro_calendar,
                 ]
             ),
             "fundamentals": ToolNode(
@@ -196,6 +208,12 @@ class TradingAgentsGraph:
                     get_balance_sheet,
                     get_cashflow,
                     get_income_statement,
+                    # A-share microstructure tools (only used when market == cn_a)
+                    get_announcements,
+                    get_limit_status,
+                    get_margin_balance,
+                    get_northbound_flow,
+                    get_unlock_schedule,
                 ]
             ),
         }

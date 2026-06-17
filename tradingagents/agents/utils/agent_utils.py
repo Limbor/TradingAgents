@@ -24,6 +24,17 @@ from tradingagents.agents.utils.news_data_tools import (
 from tradingagents.agents.utils.prediction_markets_tools import get_prediction_markets
 from tradingagents.agents.utils.technical_indicators_tools import get_indicators
 
+# CN market tools (A-share specific)
+from tradingagents.agents.utils.cn_market_tools import (
+    get_social_sentiment,
+    get_announcements,
+    get_macro_calendar,
+    get_limit_status,
+    get_northbound_flow,
+    get_margin_balance,
+    get_unlock_schedule,
+)
+
 # Public surface: the data tools are imported here so agents and the graph
 # import them from one place, plus the instrument/language helpers defined below.
 __all__ = [
@@ -39,6 +50,14 @@ __all__ = [
     "get_macro_indicators",
     "get_prediction_markets",
     "get_verified_market_snapshot",
+    # CN market tools
+    "get_social_sentiment",
+    "get_announcements",
+    "get_macro_calendar",
+    "get_limit_status",
+    "get_northbound_flow",
+    "get_margin_balance",
+    "get_unlock_schedule",
     "build_instrument_context",
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
@@ -49,18 +68,22 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-def get_language_instruction() -> str:
+def get_language_instruction(market: str | None = None) -> str:
     """Return a prompt instruction for the configured output language.
 
+    When ``market`` is ``"cn_a"`` and the configured language is English
+    (the default) and ``auto_switch_language_for_cn`` is True, the output
+    language is switched to Simplified Chinese automatically.
     Returns empty string when English (default), so no extra tokens are used.
-    Applied to every agent whose output reaches the saved report —
-    analysts, researchers, debaters, research manager, trader, and
-    portfolio manager — so a non-English run produces a fully localized
-    report rather than a mix of languages.
     """
     from tradingagents.dataflows.config import get_config
-    lang = get_config().get("output_language", "English")
-    if lang.strip().lower() == "english":
+    config = get_config()
+    lang = (config.get("output_language") or "English").strip()
+    if market == "cn_a" and lang.lower() == "english" and config.get(
+        "auto_switch_language_for_cn", True
+    ):
+        return " Write your entire response in Simplified Chinese."
+    if lang.lower() == "english":
         return ""
     return f" Write your entire response in {lang}."
 
