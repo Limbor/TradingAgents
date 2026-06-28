@@ -49,6 +49,9 @@ from .akshare_cn_specific import (
     get_northbound_flow as get_akshare_northbound_flow,
     get_margin_balance as get_akshare_margin_balance,
     get_unlock_schedule as get_akshare_unlock_schedule,
+    get_market_structure_snapshot as get_akshare_market_structure_snapshot,
+    get_theme_heat as get_akshare_theme_heat,
+    get_lhb_detail as get_akshare_lhb_detail,
 )
 
 # TuShare vendor (A-share fundamentals)
@@ -121,6 +124,9 @@ TOOLS_CATEGORIES = {
     "cn_market_specific": {
         "description": "A-share microstructure: limit-up/down, northbound, margin, unlock",
         "tools": [
+            "get_market_structure_snapshot",
+            "get_theme_heat",
+            "get_lhb_detail",
             "get_limit_status",
             "get_northbound_flow",
             "get_margin_balance",
@@ -225,6 +231,15 @@ VENDOR_METHODS = {
     "get_unlock_schedule": {
         "akshare": get_akshare_unlock_schedule,
     },
+    "get_market_structure_snapshot": {
+        "akshare": get_akshare_market_structure_snapshot,
+    },
+    "get_theme_heat": {
+        "akshare": get_akshare_theme_heat,
+    },
+    "get_lhb_detail": {
+        "akshare": get_akshare_lhb_detail,
+    },
     # prediction_markets
     "get_prediction_markets": {
         "polymarket": get_polymarket_prediction_markets,
@@ -255,7 +270,7 @@ def _resolve_vendor_value(value, market: str) -> str | None:
     return None
 
 
-def get_vendor(category: str, method: str | None = None, market: str = "us") -> str:
+def get_vendor(category: str, method: str | None = None, market: str = "us") -> str | None:
     """Get the configured vendor for a data category or specific tool method.
 
     Tool-level configuration takes precedence over category-level.
@@ -272,7 +287,10 @@ def get_vendor(category: str, method: str | None = None, market: str = "us") -> 
                 return resolved
 
     # Fall back to category-level configuration
-    cat_value = config.get("data_vendors", {}).get(category)
+    data_vendors = config.get("data_vendors", {})
+    if category not in data_vendors:
+        return None
+    cat_value = data_vendors.get(category)
     resolved = _resolve_vendor_value(cat_value, market)
     return resolved or "default"
 
@@ -283,7 +301,8 @@ _TICKER_FIRST_METHODS = {
     "get_balance_sheet", "get_cashflow", "get_income_statement",
     "get_news", "get_insider_transactions", "get_social_sentiment",
     "get_announcements", "get_limit_status", "get_margin_balance",
-    "get_unlock_schedule",
+    "get_unlock_schedule", "get_market_structure_snapshot",
+    "get_theme_heat", "get_lhb_detail",
 }
 
 # Rate-limit exceptions from CN vendors (caught during fallback chain)
@@ -292,26 +311,39 @@ _FALLBACK_EXCEPTIONS: tuple = (AKShareRateLimitError, TuShareRateLimitError)
 # Vendors that only serve US market data — excluded when market == "cn_a"
 _US_ONLY_VENDORS = {"yfinance"}
 
-def route_to_vendor(method: str, *args, **kwargs):
-    """Route method calls to appropriate vendor implementation with fallback support."""
-    # Infer market from ticker argument
+
+def _infer_market(method: str, args: tuple, explicit_market: str | None = None) -> str:
+    """Infer the target market for a tool call.
+
+    Ticker-first methods infer from their first positional argument. CN-only
+    tools without a ticker can pass ``market="cn_a"`` explicitly; everything
+    else falls back to ``config["default_market"]``.
+    """
     config = get_config()
     default_market = config.get("default_market", "us")
-    market = default_market
+    if explicit_market:
+        return explicit_market
     if method in _TICKER_FIRST_METHODS and args:
         first = args[0]
         if isinstance(first, str) and first:
             try:
-                market = detect_market(first)
+                return detect_market(first)
             except Exception:
-                market = default_market
+                return default_market
+    return default_market
 
-    category = get_category_for_method(method)
-    vendor_config = get_vendor(category, method, market=market)
-    primary_vendors = [v.strip() for v in vendor_config.split(',')]
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to appropriate vendor implementation with fallback support."""
+    explicit_market = kwargs.pop("market", None)
 
     if method not in VENDOR_METHODS:
         raise ValueError(f"Method '{method}' not supported")
+
+    market = _infer_market(method, args, explicit_market)
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method, market=market) or "default"
+    primary_vendors = [v.strip() for v in vendor_config.split(',')]
 
     all_available_vendors = list(VENDOR_METHODS[method].keys())
 
@@ -339,6 +371,7 @@ def route_to_vendor(method: str, *args, **kwargs):
 
     last_no_data: NoMarketDataError | None = None
     first_error: Exception | None = None
+    saw_rate_limit = False
     for vendor in vendor_chain:
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
@@ -346,9 +379,11 @@ def route_to_vendor(method: str, *args, **kwargs):
         try:
             return impl_func(*args, **kwargs)
         except VendorRateLimitError:
+            saw_rate_limit = True
             logger.warning("Vendor %r rate-limited for %s; trying next vendor.", vendor, method)
             continue
         except _FALLBACK_EXCEPTIONS:
+            saw_rate_limit = True
             logger.warning("Vendor %r rate-limited for %s; trying next vendor.", vendor, method)
             continue
         except VendorNotConfiguredError as e:
@@ -398,5 +433,8 @@ def route_to_vendor(method: str, *args, **kwargs):
     # first real error (e.g. the primary vendor's network failure).
     if first_error is not None:
         raise first_error
+
+    if saw_rate_limit:
+        raise RuntimeError(f"All vendors rate-limited for '{method}'")
 
     raise RuntimeError(f"No available vendor for '{method}'")

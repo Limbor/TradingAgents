@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #11100e;
+  color: #f4f1ea;
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+/* Dark-mode prose overrides for report rendering */
+.prose-invert {
+  --tw-prose-body: #d8d2c4;
+  --tw-prose-headings: #fff9ed;
+  --tw-prose-bold: #fff9ed;
+  --tw-prose-links: #2dd4bf;
+  --tw-prose-code: #f0eadf;
+  --tw-prose-quotes: #a8a29a;
+  --tw-prose-quote-borders: #57534e;
+  --tw-prose-th-borders: #57534e;
+  --tw-prose-td-borders: #44403c;
+}
+
+.prose table {
+  font-size: 0.8rem;
+}
+
+.prose th {
+  background-color: rgba(41, 37, 36, 0.85);
+  font-weight: 600;
+}
+
+.prose td,
+.prose th {
+  padding: 0.4rem 0.6rem;
+}
+
+.prose code {
+  background-color: rgba(41, 37, 36, 0.75);
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+
+.prose code::before,
+.prose code::after {
+  content: "";
+}
+
+.prose pre {
+  background-color: rgba(28, 25, 23, 0.9);
+  border: 1px solid rgba(87, 83, 78, 0.55);
+}
+
+.prose hr {
+  border-color: rgba(87, 83, 78, 0.55);
+}
+
+.prose strong {
+  color: #fff9ed;
+}

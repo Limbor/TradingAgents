@@ -62,6 +62,28 @@ class TestVerifiedSnapshot:
         close_rows = [ln for ln in snap.splitlines() if ln.startswith("| 2026-")]
         assert 0 < len(close_rows) <= 30
 
+    def test_cn_snapshot_uses_cn_ohlcv_loader(self, monkeypatch):
+        def fail_yfinance(*args, **kwargs):  # pragma: no cover
+            raise AssertionError("A-share snapshot should not use yfinance")
+
+        monkeypatch.setattr(validator, "load_ohlcv", fail_yfinance)
+        monkeypatch.setattr(validator, "_load_akshare_ohlcv", lambda s, d: _sample_ohlcv())
+        monkeypatch.setattr(validator, "_load_tushare_ohlcv", lambda s, d: pd.DataFrame())
+
+        snap = validator.build_verified_market_snapshot("600667", "2026-05-20")
+        assert "Verified market data snapshot for 600667" in snap
+        assert "Latest trading row used: 2026-05-20" in snap
+
+    def test_cn_snapshot_falls_back_to_tushare(self, monkeypatch):
+        def ak_fail(*args, **kwargs):
+            raise RuntimeError("ak unavailable")
+
+        monkeypatch.setattr(validator, "_load_akshare_ohlcv", ak_fail)
+        monkeypatch.setattr(validator, "_load_tushare_ohlcv", lambda s, d: _sample_ohlcv())
+
+        snap = validator.build_verified_market_snapshot("600667.SH", "2026-05-20")
+        assert "Verified market data snapshot for 600667.SH" in snap
+
 
 @pytest.mark.unit
 class TestTool:

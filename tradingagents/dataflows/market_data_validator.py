@@ -15,6 +15,7 @@ from collections.abc import Iterable
 import pandas as pd
 from stockstats import wrap
 
+from tradingagents.dataflows.symbol_utils import detect_market, normalize_cn_display
 from tradingagents.dataflows.stockstats_utils import load_ohlcv
 
 # A fixed, common indicator set so the snapshot is the same shape every run.
@@ -32,7 +33,10 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     look-ahead rows, but we re-apply the cutoff defensively — this is a
     verification path, so it must not trust its input to be pre-filtered.
     """
-    data = load_ohlcv(symbol, curr_date)
+    if detect_market(symbol) == "cn_a":
+        data = _load_cn_ohlcv(symbol, curr_date)
+    else:
+        data = load_ohlcv(symbol, curr_date)
     if data is None or data.empty:
         raise ValueError(f"No OHLCV data available for {symbol}.")
 
@@ -43,6 +47,35 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No OHLCV rows on or before {curr_date} for {symbol}.")
     return df
+
+
+def _load_cn_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
+    """Load A-share OHLCV using CN-native vendors for snapshot verification."""
+    errors: list[str] = []
+    for label, loader in (
+        ("AKShare", _load_akshare_ohlcv),
+        ("TuShare", _load_tushare_ohlcv),
+    ):
+        try:
+            data = loader(symbol, curr_date)
+            if data is not None and not data.empty:
+                return data
+        except Exception as exc:  # noqa: BLE001 - surface all vendor attempts below
+            errors.append(f"{label}: {exc}")
+    detail = "; ".join(errors) if errors else "no CN vendor returned rows"
+    raise ValueError(f"No A-share OHLCV data available for {normalize_cn_display(symbol)} ({detail}).")
+
+
+def _load_akshare_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
+    from tradingagents.dataflows.akshare_stock import load_ohlcv_cn
+
+    return load_ohlcv_cn(symbol, curr_date)
+
+
+def _load_tushare_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
+    from tradingagents.dataflows.tushare_stock import load_ohlcv_ts
+
+    return load_ohlcv_ts(symbol, curr_date)
 
 
 def _fmt(value) -> str:

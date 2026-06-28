@@ -60,10 +60,39 @@ def get_macro_calendar(
     Returns the most recent readings per series; frequency varies by
     indicator (monthly CPI/PPI/PMI/M2, quarterly-ish LPR, daily SHIBOR).
     """
-    return route_to_vendor("get_macro_calendar", curr_date, look_back_days)
+    return route_to_vendor("get_macro_calendar", curr_date, look_back_days, market="cn_a")
 
 
 # -------------------- A-share microstructure --------------------
+
+@tool
+def get_market_structure_snapshot(
+    ticker: Annotated[str, "A-share ticker"],
+    curr_date: Annotated[str, "Date in yyyy-mm-dd"],
+) -> str:
+    """Return A-share tradability, limit-price, ST, turnover and T+1 risk context."""
+    return route_to_vendor("get_market_structure_snapshot", ticker, curr_date)
+
+
+@tool
+def get_theme_heat(
+    ticker: Annotated[str, "A-share ticker"],
+    curr_date: Annotated[str, "Date in yyyy-mm-dd"],
+    top_n: Annotated[int, "Number of leading concept/industry boards to show"] = 20,
+) -> str:
+    """Return A-share retail heat plus leading concept/industry board heat."""
+    return route_to_vendor("get_theme_heat", ticker, curr_date, top_n)
+
+
+@tool
+def get_lhb_detail(
+    ticker: Annotated[str, "A-share ticker"],
+    curr_date: Annotated[str, "Date in yyyy-mm-dd"],
+    look_back_days: Annotated[int, "Days to look back"] = 30,
+) -> str:
+    """Return structured Dragon-Tiger List (龙虎榜) rows and broker-seat context."""
+    return route_to_vendor("get_lhb_detail", ticker, curr_date, look_back_days)
+
 
 @tool
 def get_limit_status(

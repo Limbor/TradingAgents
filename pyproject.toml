@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tradingagents"
-version = "0.2.5"
+version = "0.3.0"
 description = "TradingAgents: Multi-Agents LLM Financial Trading Framework"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -46,9 +46,16 @@ dev = [
 bedrock = [
     "langchain-aws>=1.5.0",
 ]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiosqlite>=0.20.0",
+    "keyring>=25.0.0",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-server = "tradingagents.api.server:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*"]

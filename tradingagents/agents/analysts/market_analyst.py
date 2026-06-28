@@ -4,7 +4,9 @@ from tradingagents.agents.utils.agent_utils import (
     get_indicators,
     get_instrument_context_from_state,
     get_language_instruction,
+    get_market_structure_snapshot,
     get_stock_data,
+    get_theme_heat,
     get_verified_market_snapshot,
 )
 
@@ -13,12 +15,15 @@ def create_market_analyst(llm):
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
+        market = state.get("market")
         instrument_context = get_instrument_context_from_state(state)
 
         tools = [
             get_stock_data,
             get_indicators,
             get_verified_market_snapshot,
+            get_market_structure_snapshot,
+            get_theme_heat,
         ]
 
         system_message = (
@@ -50,9 +55,11 @@ Volume-Based Indicators:
 
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
 
+For China A-shares, also call get_market_structure_snapshot and get_theme_heat before the final report. Explicitly discuss涨停/跌停状态, ST/退市风险, T+1 constraints, turnover/成交额 crowding, and whether the ticker is a theme leader, follower, or speculative heat trade.
+
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + get_language_instruction()
+            + get_language_instruction(market)
         )
 
         prompt = ChatPromptTemplate.from_messages(

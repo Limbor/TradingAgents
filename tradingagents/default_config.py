@@ -143,7 +143,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
         ".L":   "^FTSE",       # London (FTSE 100)
         ".TO":  "^GSPTSE",     # Toronto (TSX Composite)
         ".AX":  "^AXJO",       # Australia (ASX 200)
-        ".SS":  "000001.SS",   # Shanghai (SSE Composite)
+        ".SS":  "000001.SS",   # Shanghai (SSE Composite, Yahoo suffix)
+        ".SH":  "000001.SS",   # Shanghai (AKShare/TuShare suffix)
         ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
         "":     "SPY",         # default for US-listed tickers (no suffix)
     },

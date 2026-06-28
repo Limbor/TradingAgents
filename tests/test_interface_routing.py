@@ -93,6 +93,9 @@ class TestInferMarket:
     def test_non_string_first_arg_falls_back(self, patched_config):
         assert iface._infer_market("get_stock_data", (12345,)) == "us"
 
+    def test_explicit_market_wins_for_non_ticker_tool(self, patched_config):
+        assert iface._infer_market("get_macro_calendar", ("2026-06-26",), "cn_a") == "cn_a"
+
 
 @pytest.mark.unit
 class TestRouteToVendor:
@@ -188,6 +191,19 @@ class TestRouteToVendor:
     def test_unknown_method_raises(self, patched_config):
         with pytest.raises(ValueError, match="not supported"):
             iface.route_to_vendor("not_a_real_method", "SPY")
+
+    def test_explicit_cn_market_routes_cn_macro_calendar(self, patched_config, monkeypatch):
+        patched_config["data_vendors"]["macro_data"] = {"us": "fred", "cn_a": "akshare"}
+
+        def ak_macro(*a, **kw):
+            return "cn-macro"
+
+        monkeypatch.setitem(
+            iface.VENDOR_METHODS, "get_macro_calendar",
+            {"akshare": ak_macro},
+        )
+
+        assert iface.route_to_vendor("get_macro_calendar", "2026-06-26", market="cn_a") == "cn-macro"
 
     def test_get_category_for_method_unknown_raises(self):
         with pytest.raises(ValueError):

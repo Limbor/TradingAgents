@@ -4,6 +4,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_global_news,
     get_instrument_context_from_state,
     get_language_instruction,
+    get_macro_calendar,
     get_macro_indicators,
     get_news,
     get_prediction_markets,
@@ -13,6 +14,7 @@ from tradingagents.agents.utils.agent_utils import (
 def create_news_analyst(llm):
     def news_analyst_node(state):
         current_date = state["trade_date"]
+        market = state.get("market")
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
@@ -21,13 +23,14 @@ def create_news_analyst(llm):
             get_news,
             get_global_news,
             get_macro_indicators,
+            get_macro_calendar,
             get_prediction_markets,
         ]
 
         system_message = (
-            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for {asset_label}-specific or targeted news searches, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events). Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for {asset_label}-specific or targeted news searches, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground US macro commentary in FRED data, get_macro_calendar(curr_date, look_back_days) to ground China A-share macro commentary in CPI/PPI/PMI/M2/LPR/SHIBOR data, and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + get_language_instruction()
+            + get_language_instruction(market)
         )
 
         prompt = ChatPromptTemplate.from_messages(

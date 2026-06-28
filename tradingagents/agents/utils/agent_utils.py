@@ -29,6 +29,9 @@ from tradingagents.agents.utils.cn_market_tools import (
     get_social_sentiment,
     get_announcements,
     get_macro_calendar,
+    get_market_structure_snapshot,
+    get_theme_heat,
+    get_lhb_detail,
     get_limit_status,
     get_northbound_flow,
     get_margin_balance,
@@ -54,6 +57,9 @@ __all__ = [
     "get_social_sentiment",
     "get_announcements",
     "get_macro_calendar",
+    "get_market_structure_snapshot",
+    "get_theme_heat",
+    "get_lhb_detail",
     "get_limit_status",
     "get_northbound_flow",
     "get_margin_balance",
@@ -62,6 +68,7 @@ __all__ = [
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
     "get_language_instruction",
+    "get_market_risk_instruction",
     "create_msg_delete",
 ]
 
@@ -86,6 +93,20 @@ def get_language_instruction(market: str | None = None) -> str:
     if lang.lower() == "english":
         return ""
     return f" Write your entire response in {lang}."
+
+
+def get_market_risk_instruction(market: str | None = None) -> str:
+    """Return market-specific execution/risk constraints for decision agents."""
+    if market != "cn_a":
+        return ""
+    return (
+        " China A-share execution constraints: account for T+1 selling rules, "
+        "daily price limits, possible limit-up buy unavailability, possible "
+        "limit-down exit failure, ST/退市 warning risk, theme退潮 risk, and "
+        "liquidity/crowding from turnover and成交额. Provide position sizing, "
+        "stop/invalidating conditions, and next-session auction/opening checks "
+        "instead of a bare BUY/HOLD/SELL."
+    )
 
 
 def _clean_identity_value(value: Any) -> str | None:
@@ -235,6 +256,4 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-
-
 

@@ -30,6 +30,9 @@ from tradingagents.agents.utils.agent_utils import (
     get_social_sentiment,
     get_announcements,
     get_macro_calendar,
+    get_market_structure_snapshot,
+    get_theme_heat,
+    get_lhb_detail,
     get_limit_status,
     get_northbound_flow,
     get_margin_balance,
@@ -37,6 +40,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
@@ -179,6 +183,8 @@ class TradingAgentsGraph:
                     # LLM and required by its prompt; must be executable here or
                     # the call fails and the model reports it "unavailable").
                     get_verified_market_snapshot,
+                    get_market_structure_snapshot,
+                    get_theme_heat,
                 ]
             ),
             "social": ToolNode(
@@ -210,6 +216,7 @@ class TradingAgentsGraph:
                     get_income_statement,
                     # A-share microstructure tools (only used when market == cn_a)
                     get_announcements,
+                    get_lhb_detail,
                     get_limit_status,
                     get_margin_balance,
                     get_northbound_flow,
@@ -383,12 +390,14 @@ class TradingAgentsGraph:
         # deterministically resolved instrument identity for all agents.
         past_context = self.memory_log.get_past_context(company_name)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
+        market = detect_market(company_name)
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            market=market,
         )
         args = self.propagator.get_graph_args()
 
@@ -479,3 +488,122 @@ class TradingAgentsGraph:
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
         return self.signal_processor.process_signal(full_signal)
+
+    async def astream_propagate(
+        self,
+        ticker: str,
+        date: str,
+        selected_analysts: list[str] | None = None,
+        asset_type: str = "stock",
+    ):
+        """Async streaming version of propagate() that yields events.
+
+        Uses LangGraph's astream_events API for fine-grained event streaming.
+        Report sections are extracted from on_chain_end events as agents
+        complete their work.
+
+        Yields:
+            dict with 'type' and 'data' keys for real-time event consumption.
+        """
+        if selected_analysts is None:
+            selected_analysts = ["market", "social", "news", "fundamentals"]
+
+        REPORT_KEYS = {
+            "market_report", "sentiment_report", "news_report",
+            "fundamentals_report", "investment_plan",
+            "trader_investment_plan", "final_trade_decision",
+        }
+
+        AGENT_NAMES = {
+            "Market Analyst", "Sentiment Analyst", "News Analyst",
+            "Fundamentals Analyst", "Bull Researcher", "Bear Researcher",
+            "Research Manager", "Trader", "Aggressive Analyst",
+            "Conservative Analyst", "Neutral Analyst", "Portfolio Manager",
+        }
+
+        self._resolve_pending_entries(ticker)
+        self.ticker = ticker
+
+        instrument_context = self.resolve_instrument_context(ticker, asset_type)
+        past_context = self.memory_log.get_past_context(ticker)
+        market = detect_market(ticker)
+
+        init_agent_state = self.propagator.create_initial_state(
+            ticker,
+            date,
+            asset_type=asset_type,
+            past_context=past_context,
+            instrument_context=instrument_context,
+            market=market,
+        )
+
+        workflow = self.graph_setup.setup_graph(selected_analysts)
+        graph = workflow.compile()
+        args = self.propagator.get_graph_args()
+
+        seen_agents = set()
+        final_sections: dict[str, str] = {}
+
+        async for event in graph.astream_events(
+            init_agent_state,
+            version="v2",
+            config=args.get("config", {}),
+        ):
+            kind = event.get("event", "")
+            name = event.get("name", "")
+            data = event.get("data", {})
+
+            if kind == "on_chain_start" and name in AGENT_NAMES and name not in seen_agents:
+                yield {
+                    "type": "agent_status",
+                    "data": {"agent": name, "status": "running"},
+                }
+
+            elif kind == "on_chain_end" and name in AGENT_NAMES and name not in seen_agents:
+                seen_agents.add(name)
+                yield {
+                    "type": "agent_status",
+                    "data": {"agent": name, "status": "completed"},
+                }
+                # Extract report sections from the node's output
+                output = data.get("output")
+                if isinstance(output, dict):
+                    for key in REPORT_KEYS:
+                        if key in output and output[key]:
+                            final_sections[key] = output[key]
+                            yield {
+                                "type": "report_chunk",
+                                "data": {
+                                    "section": key,
+                                    "content": output[key],
+                                    "is_final": key == "final_trade_decision",
+                                },
+                            }
+
+            elif kind == "on_tool_start":
+                yield {
+                    "type": "tool_call",
+                    "data": {
+                        "tool": name or "unknown",
+                        "args": data.get("input", {}),
+                    },
+                }
+
+        # Emit complete report with all sections
+        if final_sections:
+            yield {
+                "type": "report_complete",
+                "data": {
+                    "sections": final_sections,
+                    "ticker": ticker,
+                    "date": date,
+                },
+            }
+
+        # Store decision for deferred reflection
+        if "final_trade_decision" in final_sections:
+            self.memory_log.store_decision(
+                ticker=ticker,
+                trade_date=date,
+                final_trade_decision=final_sections["final_trade_decision"],
+            )

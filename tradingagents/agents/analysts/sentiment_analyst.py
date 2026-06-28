@@ -34,6 +34,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
     get_news,
+    get_social_sentiment,
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
@@ -61,14 +62,21 @@ def create_sentiment_analyst(llm):
         ticker = state["company_of_interest"]
         end_date = state["trade_date"]
         start_date = _seven_days_back(end_date)
+        market = state.get("market")
         instrument_context = get_instrument_context_from_state(state)
 
         # Pre-fetch all three sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
-        stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-        reddit_block = fetch_reddit_posts(ticker)
+        if market == "cn_a":
+            cn_social_block = get_social_sentiment.func(ticker)
+            stocktwits_block = "Skipped for China A-share analysis; use the CN retail sentiment block."
+            reddit_block = "Skipped for China A-share analysis; use the CN retail sentiment block."
+        else:
+            cn_social_block = ""
+            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
+            reddit_block = fetch_reddit_posts(ticker)
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -77,6 +85,8 @@ def create_sentiment_analyst(llm):
             news_block=news_block,
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
+            cn_social_block=cn_social_block,
+            market=market,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -126,6 +136,8 @@ def _build_system_message(
     news_block: str,
     stocktwits_block: str,
     reddit_block: str,
+    cn_social_block: str = "",
+    market: str | None = None,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
@@ -152,6 +164,13 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 <start_of_reddit>
 {reddit_block}
 <end_of_reddit>
+
+### China A-share retail sentiment — 东方财富/雪球/市场异动
+Use this block as the primary retail-attention source when the market is China A-shares.
+
+<start_of_cn_social>
+{cn_social_block}
+<end_of_cn_social>
 
 ## How to analyze this data (best practices)
 
@@ -180,7 +199,7 @@ Fill the following fields:
 - **confidence**: low / medium / high, based on data quality and sample size.
 - **narrative**: Full source-by-source breakdown, divergences, dominant narrative themes, catalysts and risks, and a markdown summary table of key sentiment signals (direction, source, supporting evidence).
 
-{get_language_instruction()}"""
+{get_language_instruction(market)}"""
 
 
 # ---------------------------------------------------------------------------

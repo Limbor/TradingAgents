@@ -1,0 +1,1 @@
+"""TradingAgents core shared infrastructure."""
