@@ -18,6 +18,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
+    "TRADINGAGENTS_MCP_STOCKMANAGER_DIR": "mcp_stockmanager_dir",
+    "TRADINGAGENTS_INVESTMENT_STYLE":     "investment_style",
 }
 
 
@@ -148,4 +150,17 @@ DEFAULT_CONFIG = _apply_env_overrides({
         ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
         "":     "SPY",         # default for US-listed tickers (no suffix)
     },
+    # -------------------------------------------------------------------
+    # MCP (Model Context Protocol) integration
+    # -------------------------------------------------------------------
+    # Path to the StockManager project directory. When set, the MCP client
+    # connects to StockManager's stdio server for backtests, factor research,
+    # and enhanced A-share data. Leave as None to disable MCP integration.
+    "mcp_stockmanager_dir": os.path.expanduser("~/Documents/develop/StockManager"),
+    # -------------------------------------------------------------------
+    # User investment preferences (cross-cutting, injected into agents)
+    # -------------------------------------------------------------------
+    # One of "short_term" (短线), "medium_term" (中线), "long_term" (长线).
+    # Controls analyst focus, factor weights, and decision framework wording.
+    "investment_style": "long_term",
 })

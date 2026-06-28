@@ -52,6 +52,9 @@ api = [
     "aiosqlite>=0.20.0",
     "keyring>=25.0.0",
 ]
+mcp = [
+    "mcp>=1.0.0",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"
