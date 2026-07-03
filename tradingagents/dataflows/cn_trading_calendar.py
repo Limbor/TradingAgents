@@ -57,7 +57,7 @@ def _fetch_from_eastmoney() -> Set[date]:
     import urllib.request
 
     url = (
-        "http://push2his.eastmoney.com/api/qt/stock/kline/get?"
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?"
         "secid=1.000001&fields1=f1&fields2=f51&klt=101&fqt=0"
         "&beg=20000101&end=20991231"
     )

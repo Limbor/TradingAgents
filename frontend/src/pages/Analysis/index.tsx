@@ -68,10 +68,6 @@ export default function Analysis() {
       });
     });
 
-    const unsubComplete = wsManager.on("skill_complete", () => {
-      completeRun();
-    });
-
     const unsubRunComplete = wsManager.on("run_complete", () => {
       completeRun();
     });
@@ -89,7 +85,6 @@ export default function Analysis() {
       unsubReport();
       unsubReportComplete();
       unsubTool();
-      unsubComplete();
       unsubRunComplete();
       unsubCancelled();
       unsubError();

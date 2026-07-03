@@ -6,6 +6,7 @@ endpoints) via per-run asyncio Queues.
 """
 
 import asyncio
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -188,11 +189,24 @@ class RunManager:
 
     def get_run(self, run_id: str) -> Run | None:
         """Get a run by ID."""
-        return self._runs.get(run_id)
+        run = self._runs.get(run_id)
+        if run is not None or self._db is None:
+            return run
+        record = self._db.get_run(run_id)
+        if record is None:
+            return None
+        run = self._run_from_record(record)
+        self._runs[run.id] = run
+        return run
 
     def list_runs(self, limit: int = 50) -> list[Run]:
         """List recent runs."""
-        runs = sorted(self._runs.values(), key=lambda r: r.created_at, reverse=True)
+        runs_by_id = dict(self._runs)
+        if self._db is not None:
+            for record in self._db.list_runs(limit=limit):
+                if record["id"] not in runs_by_id:
+                    runs_by_id[record["id"]] = self._run_from_record(record)
+        runs = sorted(runs_by_id.values(), key=lambda r: r.created_at, reverse=True)
         return runs[:limit]
 
     async def cancel_run(self, run_id: str) -> bool:
@@ -216,3 +230,46 @@ class RunManager:
                 if run._skill is not None:
                     await run._skill.cancel()
                 run._task.cancel()
+
+    def _run_from_record(self, record: dict[str, Any]) -> Run:
+        """Convert a persisted SQLite row into a Run object."""
+        return Run(
+            id=record["id"],
+            skill_id=record["skill_id"],
+            params=_decode_json_object(record.get("params"), {}),
+            status=_decode_status(record.get("status")),
+            created_at=_decode_datetime(record.get("created_at")) or datetime.now(timezone.utc),
+            started_at=_decode_datetime(record.get("started_at")),
+            completed_at=_decode_datetime(record.get("completed_at")),
+            result=_decode_json_object(record.get("result"), None),
+            error=record.get("error"),
+        )
+
+
+def _decode_json_object(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    if isinstance(value, dict):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def _decode_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _decode_status(value: Any) -> RunStatus:
+    try:
+        return RunStatus(str(value))
+    except ValueError:
+        return RunStatus.FAILED

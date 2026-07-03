@@ -18,8 +18,18 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
+    "TRADINGAGENTS_NEWS_BODY_SNIPPET_ITEMS": "news_body_snippet_items",
+    "TRADINGAGENTS_NEWS_BODY_SNIPPET_CHARS": "news_body_snippet_chars",
+    "STOCKMANAGER_MCP_URL":               "stockmanager_mcp_url",
+    "STOCKMANAGER_MCP_ENABLED":           "stockmanager_mcp_enabled",
+    "STOCKMANAGER_MCP_TIMEOUT":           "stockmanager_mcp_timeout",
+    "TRADINGAGENTS_SCHEDULER_ENABLED":    "scheduler_enabled",
+    "TRADINGAGENTS_TICKER_NAME_BACKFILL_ENABLED": "ticker_name_backfill_enabled",
     "TRADINGAGENTS_MCP_STOCKMANAGER_DIR": "mcp_stockmanager_dir",
     "TRADINGAGENTS_INVESTMENT_STYLE":     "investment_style",
+    "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_ENABLED": "daily_pipeline_llm_review_enabled",
+    "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LIMIT": "daily_pipeline_llm_review_limit",
+    "TRADINGAGENTS_DAILY_PIPELINE_BOARD_FILTER": "daily_pipeline_board_filter",
 }
 
 
@@ -90,6 +100,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Increase for longer lookback strategies or to broaden macro coverage;
     # decrease to reduce token usage in agent prompts.
     "news_article_limit": 20,             # max articles per ticker (ticker-news)
+    "news_body_snippet_items": 5,         # include body snippets for top N ticker-news items when vendor provides them
+    "news_body_snippet_chars": 600,       # per-item character cap for fetched article body snippets
     "global_news_article_limit": 10,      # max articles for global/macro news
     "global_news_lookback_days": 7,       # macro news lookback window
     # Search queries used by get_global_news for macro headlines. Extend or
@@ -153,9 +165,16 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # -------------------------------------------------------------------
     # MCP (Model Context Protocol) integration
     # -------------------------------------------------------------------
-    # Path to the StockManager project directory. When set, the MCP client
-    # connects to StockManager's stdio server for backtests, factor research,
-    # and enhanced A-share data. Leave as None to disable MCP integration.
+    # StockManager MCP service. TradingAgents connects to this independently
+    # managed localhost service over HTTP/Streamable MCP.
+    "stockmanager_mcp_url": os.getenv("STOCKMANAGER_MCP_URL", "http://127.0.0.1:8765/mcp"),
+    "stockmanager_mcp_enabled": True,
+    "stockmanager_mcp_timeout": 120.0,
+    "stockmanager_mcp_sse_read_timeout": 300.0,
+    "stockmanager_mcp_health_timeout": 2.0,
+    "scheduler_enabled": True,
+    "ticker_name_backfill_enabled": True,
+    # Legacy stdio path kept only for compatibility with older configs.
     "mcp_stockmanager_dir": os.path.expanduser("~/Documents/develop/StockManager"),
     # -------------------------------------------------------------------
     # User investment preferences (cross-cutting, injected into agents)
@@ -163,4 +182,13 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # One of "short_term" (短线), "medium_term" (中线), "long_term" (长线).
     # Controls analyst focus, factor weights, and decision framework wording.
     "investment_style": "long_term",
+    # Daily A-share screening fusion. Quant ranking always comes first; the
+    # quick LLM only reviews the top N candidates to keep latency and cost
+    # bounded.
+    "daily_pipeline_llm_review_enabled": True,
+    "daily_pipeline_llm_review_limit": 5,
+    # all | main_board | dual_growth_only. main_board excludes STAR/ChiNext
+    # to avoid repeated high-beta 双创 recommendations when the user wants
+    # steadier A-share main-board candidates.
+    "daily_pipeline_board_filter": "all",
 })

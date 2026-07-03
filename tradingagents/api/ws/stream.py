@@ -32,23 +32,28 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
         await websocket.close(code=4004)
         return
 
-    # Send historical events (for reconnection)
-    for event in run.events:
-        await websocket.send_json(_serialize_event(run_id, event))
-
-    if run.status.value in TERMINAL_STATUSES:
-        if not run.events or run.events[-1].event_type not in TERMINAL_EVENT_TYPES:
-            await websocket.send_json(_terminal_event(run_id, run))
-        await websocket.close(code=1000)
-        return
-
-    # Subscribe to new events
     queue = run_manager.subscribe(run_id)
+    sent_event_ids: set[int] = set()
 
     try:
+        for event in run.events:
+            sent_event_ids.add(id(event))
+            await websocket.send_json(_serialize_event(run_id, event))
+            if event.event_type in TERMINAL_EVENT_TYPES:
+                await websocket.close(code=1000)
+                return
+
+        if run.status.value in TERMINAL_STATUSES:
+            await websocket.send_json(_terminal_event(run_id, run))
+            await websocket.close(code=1000)
+            return
+
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                if id(event) in sent_event_ids:
+                    continue
+                sent_event_ids.add(id(event))
                 await websocket.send_json(_serialize_event(run_id, event))
                 if event.event_type in TERMINAL_EVENT_TYPES:
                     await websocket.close(code=1000)
@@ -106,6 +111,7 @@ async def ws_chat(websocket: WebSocket):
 
             run = await run_manager.create_run(route.skill, route.params, config)
             queue = run_manager.subscribe(run.id)
+            sent_event_ids: set[int] = set()
             await websocket.send_json(
                 {
                     "type": "chat_reply",
@@ -124,27 +130,34 @@ async def ws_chat(websocket: WebSocket):
 
             try:
                 for event in run.events:
+                    sent_event_ids.add(id(event))
                     await websocket.send_json(_serialize_event(run.id, event))
                     if event.event_type in TERMINAL_EVENT_TYPES:
                         break
-                if run.status.value in TERMINAL_STATUSES:
-                    if not run.events or run.events[-1].event_type not in TERMINAL_EVENT_TYPES:
+                else:
+                    if run.status.value in TERMINAL_STATUSES:
                         await websocket.send_json(_terminal_event(run.id, run))
-                    continue
-                while True:
-                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    await websocket.send_json(_serialize_event(run.id, event))
-                    if event.event_type in TERMINAL_EVENT_TYPES:
-                        break
-            except asyncio.TimeoutError:
-                await websocket.send_json(
-                    {
-                        "type": "heartbeat",
-                        "run_id": run.id,
-                        "timestamp": _now(),
-                        "payload": {},
-                    }
-                )
+                        continue
+
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            await websocket.send_json(
+                                {
+                                    "type": "heartbeat",
+                                    "run_id": run.id,
+                                    "timestamp": _now(),
+                                    "payload": {},
+                                }
+                            )
+                            continue
+                        if id(event) in sent_event_ids:
+                            continue
+                        sent_event_ids.add(id(event))
+                        await websocket.send_json(_serialize_event(run.id, event))
+                        if event.event_type in TERMINAL_EVENT_TYPES:
+                            break
             finally:
                 run_manager.unsubscribe(run.id, queue)
     except WebSocketDisconnect:

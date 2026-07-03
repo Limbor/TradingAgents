@@ -57,9 +57,9 @@ TradingAgents 最初是一个基于 **LangGraph** 的多智能体金融分析框
 
 | 维度 | 目标 |
 |------|------|
-| **界面** | macOS 原生桌面应用（Tauri v2），实时流式展示 agent 执行 |
-| **架构** | "单一分析管道" → "可插拔技能框架"，支持动态加载多个 Skill |
-| **交互** | 自然语言意图路由（用户说话即可触发对应技能） |
+| **界面** | Web-first 可视化工作台，远期打包为 macOS 原生桌面应用（Tauri v2） |
+| **架构** | "单一分析管道" → "可插拔技能框架"，并通过 StockManager MCP 委托 A 股量化计算 |
+| **交互** | Chat-first 任务流（用户输入或按钮均进入 Chat 执行，Analysis 作为深度详情页） |
 | **扩展** | 新 Skill 只需实现标准接口即可接入，无需改动核心 |
 
 ### 2.1 六层架构
@@ -80,7 +80,7 @@ TradingAgents 最初是一个基于 **LangGraph** 的多智能体金融分析框
 ```
 Phase 1 (API + 基础前端)    ██████████████████████  100%  ← 已完成
 Phase 2 (技能扩展 + 对话)    ██████████████████████  100%  ← 已完成
-Phase 3 (MCP 集成 + 决策增强) ░░░░░░░░░░░░░░░░░░░░░░   ~0%  ← 当前重点
+Phase 3 (MCP 集成 + 决策增强) ███████████████░░░░░░░   ~70%  ← 可运行初版
 Phase 4 (自动化 + 学习闭环)   ░░░░░░░░░░░░░░░░░░░░░░   ~0%  ← 后续
 Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░░░░░░░░   ~0%  ← 远期
 ```
@@ -105,19 +105,22 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | Orchestrator 意图路由 | ✅ 完成 | [tradingagents/core/orchestrator.py](../tradingagents/core/orchestrator.py) |
 | WS /chat 对话端点 | ✅ 完成 | [tradingagents/api/ws/stream.py](../tradingagents/api/ws/stream.py) |
 | Chat 前端页面 | ✅ 完成 | [frontend/src/pages/Chat/](../frontend/src/pages/Chat/) |
+| Chat 任务流交互 | ✅ 初版完成 | Skill 按钮进入 Chat 自动执行；按 run 聚合进度步骤、结构化结果和详情链接 |
+| Dashboard 账户驾驶舱 | ✅ 初版完成 | 持仓市值/成本/浮动盈亏/集中度/MCP 状态 |
 | 额外 Skill (Portfolio/Scanner 等) | ✅ 完成 | portfolio_management / market_scanner |
 | 集成/E2E 测试 | ✅ 完成 | [tests/integration/test_phase1_flow.py](../tests/integration/test_phase1_flow.py) |
 | **Phase 3+ 新增模块** | | |
-| MCP Client 基础设施 | ❌ 待建 | 对接 StockManager MCP Server |
-| UserProfile 投资风格配置 | ❌ 待建 | 短线/长线参数 + API + 前端 |
-| Scheduler 定时调度 | ❌ 待建 | asyncio 后台协程 + FastAPI lifespan |
-| DailyPipeline 每日选股编排 | ❌ 待建 | MCP 筛选 + Agent 分析 + 早报 |
-| RiskMonitor 风险监控 | ❌ 待建 | MCP 公告扫描 + 持仓巡检 |
+| MCP Client 基础设施 | ✅ 完成 | HTTP/Streamable MCP + health/capabilities + `/api/v1/health` |
+| UserProfile 投资风格配置 | ✅ 初版完成 | 短线/中线/长线参数 + SQLite + `GET/PUT /api/v1/profile` + Settings 投资风格卡 |
+| Scheduler 定时调度 | ✅ 初版完成 | `Scheduler` 已接入 FastAPI lifespan，默认注册每日 08:30 `daily_pipeline` |
+| DailyPipeline 每日选股编排 | ✅ 初版完成 | MCP 候选池 + 风格权重打分 + 早报事件 + SQLite 报告入库；Top5 深度 Agent 分析待补 |
+| RiskMonitor 风险监控 | ✅ 初版完成 | 持仓巡检 + MCP 公告扫描 + 报告事件；风险仪表盘分级待增强 |
 | PositionAdvisor 持仓建议 | ❌ 待建 | 卖出/加仓建议（复用 Agent 管道） |
 | StrategyBacktest 回测 Skill | ❌ 待建 | 委托 MCP `run_backtest()` |
 | DecisionAudit 决策复盘 | ❌ 待建 | 历史决策 vs 实际收益追踪 |
-| 前端 Portfolio 持仓页 | ❌ 待建 | 持仓列表 + P&L + 风险仪表盘 |
-| 前端 Watchlist 关注页 | ❌ 待建 | 每日选股结果 + 评分展示 |
+| 前端 Portfolio 持仓页 | ✅ 初版完成 | 持仓 CRUD + P&L 展示；风险仪表盘待增强 |
+| 前端 Watchlist 关注页 | ✅ 初版完成 | 手动触发 `daily_pipeline` 进入 Chat + 近期运行列表；候选明细历史化待增强 |
+| 前端 Settings MCP 配置 | ✅ 完成 | MCP URL / enabled / timeout |
 | Tauri 桌面打包 | ❌ 远期 | desktop/ 目录不存在 |
 
 ---
@@ -205,10 +208,10 @@ WebSocket 端点：
 ### Week 7: Market Scanner ✅
 
 已实现 `market_scanner` Skill：
-- A 股 / 美股候选池筛选
+- A 股优先使用 StockManager MCP 动态成分股；美股暂用本地样本池
 - 动量、流动性、质量、风险综合评分
 - 输出候选列表和 scanner report
-- 离线确定性实现，后续可替换为 AKShare/yfinance 实时筛选源
+- MCP 不可用时默认不伪装真实筛选结果，仅在测试/演示显式开启 `market_scanner_demo_fallback` 时使用样本池
 
 ### Week 8: 设置 + 历史 ✅
 
@@ -285,50 +288,87 @@ WebSocket 端点：
 | 自然语言意图路由 | Orchestrator 规则路由 + Chat 交互 |
 | 报告生成与展示 | 结构化决策输出 + 前端可视化 |
 
-### Week 9: MCP Client 基础设施
+### Phase 3A / Week 9: MCP Contract + Client 基础设施
 
 | 项 | 说明 |
 |----|------|
-| MCP Client | `tradingagents/core/mcp_client.py` — 封装 `mcp` SDK，连接 StockManager MCP Server |
-| 配置项 | `default_config.py` 新增 `mcp_stockmanager_url`（默认 `http://localhost:8000/mcp`） |
-| 连接管理 | lifespan 中自动连接，失败时降级到本地 AKShare/TuShare |
+| 通信策略 | TradingAgents 仅作为 MCP Client，通过 `http://127.0.0.1:8765/mcp` 连接 StockManager；不在 Agent 进程内 `uv run python stockmanager-mcp/server.py` |
+| MCP Client | `tradingagents/core/mcp_client.py` — 从 stdio 草案改为 HTTP/Streamable MCP Client |
+| 配置项 | `default_config.py` 新增 `stockmanager_mcp_url`（默认 `http://127.0.0.1:8765/mcp`）、`stockmanager_mcp_timeout`、`stockmanager_mcp_enabled`、`scheduler_enabled` |
+| 合约冻结 | 固化 tool schema、错误信封、版本号、health/capabilities、超时策略和返回字段 provenance |
+| 连接管理 | FastAPI lifespan 中自动 health check + capability discovery，失败时进入能力降级模式 |
 | 数据适配层 | `tradingagents/dataflows/mcp_adapter.py` — 将 MCP 返回数据转换为现有 `interface.py` 兼容格式 |
+| 测试 | 单元/集成覆盖 env 覆盖、MCP adapter、API 路由、orchestrator、WebSocket、DailyPipeline/RiskMonitor |
+| 当前验证 | StockManager MCP `list_tools` 21 个工具通过；TradingAgents `/health` 返回 connected + capability flags；live smoke 下 `daily_pipeline` / `risk_monitor` 完成 |
 
-### Week 10: UserProfile + Scheduler
+### Phase 3B / Week 10: UserProfile + Scheduler
 
 | 项 | 说明 |
 |----|------|
 | UserProfile | `tradingagents/core/user_profile.py` — Pydantic Schema（investment_style / risk_tolerance / sector_prefs） |
 | SQLite 表 | `user_profile` 表（通过 `persistence.py` Schema 扩展） |
 | API 端点 | `GET/PUT /api/v1/profile` |
-| Scheduler | `tradingagents/core/scheduler.py` — asyncio 后台协程，注册定时任务，输出 Markdown 报告 |
-| 前端 | Settings 页面新增「投资风格」配置卡片 |
+| Scheduler | `tradingagents/core/scheduler.py` — asyncio 后台协程，FastAPI lifespan 默认注册每日 08:30 `daily_pipeline` |
+| 前端 | Settings 页面已新增 MCP 连接配置和投资风格配置卡片 |
 
-### Week 11: DailyPipeline 每日选股
+### Phase 3C / Week 11: DailyPipeline 每日选股
 
 | 项 | 说明 |
 |----|------|
-| 全市场初筛 | MCP `get_index_constituents` → 规则过滤（排除 ST/低流动性） |
+| 全市场初筛 | MCP `get_index_constituents` → A股规则过滤（ST/停牌/低流动性/一字涨跌停/近期风险公告） |
 | 多因子打分 | 短线因子（动量/换手/北向/板块热度）vs 长线因子（ROE/PE分位/毛利率/营收增速），权重由 `UserProfile.investment_style` 决定 |
-| Top 5 深度分析 | 对得分最高的 5 只，跑完整 StockAnalysisSkill |
-| 早报生成 | Markdown 格式，存入 `reports/` + SQLite |
-| 前端 | Dashboard 新增「每日选股」卡片 + Watchlist 页面展示历史选股结果 |
+| Evidence Card | 每只候选股返回可审计证据：数据截止日、复权口径、行业、流动性、风险扣分、因子分位、资金流摘要 |
+| LLM 快筛融合 | ✅ 初版接入：Top N 量化候选使用统一 LLM Backbone 快速复核催化剂/风险，并通过 `signal_fusion` 输出 `quant_llm_fused`；无 API key 时显式降级为 `quant_only` |
+| Top 5 深度分析 | 后续增强：对得分最高的 5 只，跑完整 StockAnalysisSkill/13-Agent 管道 |
+| 早报生成 | 当前以 `report_chunk` 事件输出 Markdown，并以 `DAILY_PIPELINE` 报告入库 |
+| 前端 | Watchlist 页面已支持手动触发每日选股和查看近期运行；Dashboard 卡片待增强 |
 
-### Week 12: RiskMonitor + 前端补全
+### Phase 3D / Week 12: RiskMonitor + 前端补全
 
 | 项 | 说明 |
 |----|------|
-| RiskMonitor | 每日扫描持仓：ST 检测 / 质押预警 / 解禁提醒 / MCP `get_risk_announcements` |
-| 前端 Portfolio 页 | 持仓列表 + P&L + 风险仪表盘（绿/黄/橙/红分级） |
-| 前端增强 | Chat 页面新增「卖出建议」「加仓建议」快捷触发按钮 |
+| RiskMonitor | 每日扫描持仓：ST 检测 / 停牌 / 涨跌停 / 质押预警 / 解禁提醒 / MCP `get_risk_announcements` |
+| 前端 Portfolio 页 | 已支持持仓 CRUD 和 P&L；待补风险仪表盘（绿/黄/橙/红分级） |
+| 前端增强 | 待补：Chat 页面新增「卖出建议」「加仓建议」快捷触发按钮 |
+
+### MCP / Agent 通信原则
+
+| 原则 | 说明 |
+|------|------|
+| 服务边界 | StockManager 是独立本地服务，负责数据、因子、回测、交易计划；TradingAgents 负责意图、分析、辩论、解释和报告 |
+| 调用协议 | 优先使用 HTTP/Streamable MCP，默认 `http://127.0.0.1:8765/mcp`；stdio 仅保留给 Claude Desktop 等外部 MCP 客户端，不作为 TradingAgents 内部默认方式 |
+| 能力发现 | TradingAgents 启动时调用 health/capabilities，生成 `market_data_available`、`factor_available`、`backtest_available`、`trading_plan_available`、`risk_announcement_available` |
+| 异步任务 | `run_backtest`、`run_factor_experiment`、`run_ablation_study` 返回 `job_id`，TradingAgents 轮询 `get_job_status` / `get_job_result` 并通过 WebSocket 推送进度 |
+| 可审计输出 | 所有 A 股数据类 tool 返回 `as_of_date`、`source`、`adj_type`、`calendar`、`warnings`；Agent 报告只引用这些结构化证据 |
+| 降级策略 | MCP 不可用时仍可使用本地 AKShare/TuShare 做基础分析；回测、因子实验、交易计划和风险公告能力在 UI 中置灰并给出原因 |
+| 缓存与幂等 | 对高频查询使用 request hash + TTL 缓存；长任务使用 `job_id` 幂等恢复，避免 LLM 重复触发重计算 |
+
+### 新闻 / 公告 / 情绪内容摄取策略
+
+| 层级 | 说明 |
+|------|------|
+| 快速层 | 默认拉取标题、摘要/摘录、来源、链接、发布时间、风险标签，控制 token 和延迟 |
+| 深度层 | 对 Top N 相关新闻、公告、问询函、业绩预告、处罚、减持等拉取正文或 PDF 文本，并生成 Evidence Card |
+| 原文层 | 原文 URL / PDF / HTML 进入缓存和审计链路，不直接整篇塞进 Agent prompt |
+| 当前落地 | A 股 `stock_news_em` 已在有“新闻内容/正文”列时输出前 N 条受限正文摘录；公告和研报全文后续通过 MCP/document fetcher 接入 |
+
+### 统一 LLM Backbone
+
+| 项 | 说明 |
+|----|------|
+| 全局配置 | 系统只保留一套 `llm_provider` + `quick_think_llm` + `deep_think_llm` + `backend_url` |
+| Chat | 当前 Chat 是规则路由，不单独调用 LLM；未来 LLM fallback router 默认复用 quick model |
+| 判股管道 | Analysts / Debate / Trader 使用 quick model，Research Manager / Portfolio Manager 使用 deep model |
+| 可切换 Provider | DeepSeek、Qwen/Qwen-CN、OpenAI、OpenAI Compatible 等统一走同一套 Backbone 配置 |
 
 ### 验收标准
 
 1. 系统启动后自动连接 StockManager MCP，连接失败时降级到本地数据源
-2. Settings 页面可配置投资风格（短线/长线），切换后影响选股因子权重和 Agent Prompt
-3. 每日 8:30 自动运行选股 Pipeline，Dashboard 可见最新结果
-4. Portfolio 页面展示持仓 P&L 和风险预警
-5. Chat 输入"宁德时代要不要卖"可路由到 PositionAdvisor，输出含成本价上下文的建议
+2. `GET /api/v1/health` 可返回 StockManager MCP 连接状态和能力 flags
+3. Settings 页面可配置投资风格（短线/长线），切换后影响 DailyPipeline 因子权重
+4. 每日 8:30 自动运行选股 Pipeline；Watchlist 可手动触发和查看运行记录
+5. Portfolio 页面展示持仓 P&L；风险预警由 `risk_monitor` Skill 生成报告，仪表盘分级待增强
+6. Chat 输入"持仓风险/风险监控"可路由到 RiskMonitor；"宁德时代要不要卖"的 PositionAdvisor 待 Phase 4 实现
 
 ---
 
@@ -382,13 +422,17 @@ WebSocket 端点：
 ### 9.1 架构偏差（功能性缺口）
 
 - **LLM 意图路由尚未接入**: 当前 Orchestrator 使用离线规则路由，覆盖验收用例和常见技能触发。后续可加入 LLM fallback，但不作为当前正确性的依赖。
-- **Market Scanner 硬编码**: 当前 `market_scanner` Skill 的候选池为硬编码 6 只 A 股，Phase 3 DailyPipeline 将替换为 MCP 驱动的动态筛选。
+- **LLM 快筛依赖统一 Backbone 配置**: DailyPipeline 已有 LLM Reviewer 链路，但真实运行需要 `llm_provider/quick_think_llm/backend_url/API_KEY` 配好；未配置时结果会显式标记 `review_meta.available=false` 并降级为 `quant_only`。
+- **Market Scanner 数据深度仍有限**: A 股候选池已切到 StockManager MCP 成分股；`get_factor_snapshot` 只提供快照，不是选股策略。收益稳定性取决于 MCP `rank_factor_candidates` 的因子覆盖、行业分散、资金流/估值有效性和回测验证。
 - **Phase 1/2 已收尾**: `RunManager` 已集成 SQLite 持久化，报告入库已使用真实 `run_id`，WebSocket 已统一终态事件，Chat 可自然语言触发技能。
 
 ### 9.2 StockManager MCP 依赖
 
+- **通信方式已切换**: `mcp_client.py` 已改为 HTTP/Streamable MCP，默认连接 `http://127.0.0.1:8765/mcp`。
 - **可用性风险**: StockManager MCP Server 不可用时，TradingAgents 降级到本地 AKShare/TuShare 数据源，但回测/因子/交易计划功能不可用。
-- **版本兼容**: MCP Tool 接口变更时需同步更新 `mcp_adapter.py`。
+- **版本兼容**: MCP Tool 接口变更时需同步更新 `mcp_adapter.py` 和 contract tests。
+- **长任务阻塞**: 回测/因子实验必须使用 `job_id` 异步轮询，避免阻塞 Agent 管道和 WebSocket。
+- **实盘 smoke 暴露的问题**: 2026-07-01 的 `rank_factor_candidates` 曾返回指数成分为空，MCP 侧需要支持成分日期回退；CSI800 同步排名在较大 `candidate_limit` 下耗时偏长，应缓存或转异步 job。
 
 ---
 
@@ -396,11 +440,12 @@ WebSocket 端点：
 
 ### 10.1 Phase 3 优先推进
 
-1. 建立 MCP Client 基础设施（`mcp_client.py` + `mcp_adapter.py`）
-2. 实现 UserProfile 配置系统（SQLite + API + 前端）
-3. 实现 Scheduler 框架（asyncio 后台协程）
-4. 实现 DailyPipeline 初版（MCP 筛选 + 规则打分，先不做 Top 5 深度分析）
-5. 补全前端 Portfolio 页 + Settings 投资风格卡片
+1. 修 MCP `rank_factor_candidates`：成分日期 fallback、flow/valuation 覆盖率、行业分散、CSI800 缓存/异步 job
+2. 为 DailyPipeline 增加 Top 5 深度 StockAnalysisSkill 串联，并把候选明细结构化入库供 Watchlist 展示
+3. 将 RiskMonitor 结果沉淀为结构化风险事件，补 Portfolio 风险仪表盘（绿/黄/橙/红）
+4. 建立更严格的 MCP contract tests：schema 固化、错误信封、timeout、非法返回、job_id 幂等
+5. 实现 PositionAdvisor：结合持仓成本、风险事件、交易计划输出卖出/加仓建议
+6. 实现 StrategyBacktest：封装 MCP `run_backtest` + `get_job_status` / `get_job_result`
 
 ### 10.2 代码质量
 

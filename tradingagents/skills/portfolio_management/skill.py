@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from tradingagents.core.persistence import Database
-from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata
+from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
 
 class PortfolioInput(BaseModel):
@@ -81,6 +81,28 @@ class PortfolioManagementSkill(BaseSkill):
             event_type="skill_start",
             data={"skill_id": self.metadata.id, "action": input_params.action},
         )
+        yield skill_progress(
+            stage_id="prepare",
+            stage_label="准备持仓任务",
+            status="completed",
+            detail=f"操作: {input_params.action}",
+            progress_pct=10,
+        )
+        yield SkillEvent(
+            event_type="agent_status",
+            data={
+                "agent": "Portfolio Manager",
+                "status": f"正在执行持仓任务：{input_params.action}",
+            },
+        )
+        yield skill_progress(
+            stage_id="portfolio_mutation",
+            stage_label="持仓变更",
+            status="running",
+            detail=f"正在执行 {input_params.action}",
+            agent="Portfolio Manager",
+            progress_pct=35,
+        )
 
         if input_params.action == "upsert":
             holding = db.upsert_holding(
@@ -104,8 +126,31 @@ class PortfolioManagementSkill(BaseSkill):
                 event_type="portfolio_update",
                 data={"operation": "delete", "symbol": input_params.symbol, "deleted": deleted},
             )
+        yield skill_progress(
+            stage_id="portfolio_mutation",
+            stage_label="持仓变更",
+            status="completed",
+            detail="持仓数据已同步",
+            agent="Portfolio Manager",
+            progress_pct=55,
+        )
 
         holdings = db.list_holdings()
+        yield SkillEvent(
+            event_type="agent_status",
+            data={
+                "agent": "Portfolio Manager",
+                "status": f"正在计算 {len(holdings)} 个持仓的市值、盈亏和集中度",
+            },
+        )
+        yield skill_progress(
+            stage_id="portfolio_metrics",
+            stage_label="组合统计",
+            status="running",
+            detail=f"正在计算 {len(holdings)} 个持仓",
+            agent="Portfolio Manager",
+            progress_pct=75,
+        )
         summary = _build_summary(holdings)
         report = _render_report(holdings, summary)
 
@@ -116,6 +161,14 @@ class PortfolioManagementSkill(BaseSkill):
                 "content": report,
                 "is_final": True,
             },
+        )
+        yield skill_progress(
+            stage_id="portfolio_metrics",
+            stage_label="组合统计",
+            status="completed",
+            detail=f"未实现盈亏 {summary['unrealized_pnl']}，风险等级 {summary['risk_level']}",
+            agent="Portfolio Manager",
+            progress_pct=100,
         )
         yield SkillEvent(
             event_type="skill_complete",

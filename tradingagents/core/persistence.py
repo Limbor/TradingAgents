@@ -47,10 +47,41 @@ CREATE TABLE IF NOT EXISTS holdings (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_profile (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    investment_style TEXT NOT NULL DEFAULT 'long_term',
+    risk_tolerance TEXT NOT NULL DEFAULT 'moderate',
+    sector_prefs TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS signals (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT,
+    signal TEXT NOT NULL,
+    final_score REAL,
+    quant_score REAL,
+    llm_confidence REAL,
+    fusion_mode TEXT,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_skill ON runs(skill_id);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_reports_ticker ON reports(ticker);
 CREATE INDEX IF NOT EXISTS idx_reports_run ON reports(run_id);
+CREATE INDEX IF NOT EXISTS idx_signals_trade_date ON signals(trade_date);
+CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
 """
 
 
@@ -152,6 +183,68 @@ class Database:
             row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
             return dict(row) if row else None
 
+    def save_signal(
+        self,
+        signal_id: str,
+        run_id: str,
+        trade_date: str,
+        symbol: str,
+        name: str | None,
+        signal: str,
+        final_score: float | None,
+        quant_score: float | None,
+        llm_confidence: float | None,
+        fusion_mode: str | None,
+        payload: dict,
+    ) -> None:
+        """Save a structured trading signal for later review/backtest."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO signals (
+                    id, run_id, trade_date, symbol, name, signal,
+                    final_score, quant_score, llm_confidence, fusion_mode,
+                    payload, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    signal_id,
+                    run_id,
+                    trade_date,
+                    symbol.strip().upper(),
+                    name,
+                    signal,
+                    final_score,
+                    quant_score,
+                    llm_confidence,
+                    fusion_mode,
+                    json.dumps(payload, ensure_ascii=False),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def list_signals(self, limit: int = 50, trade_date: str | None = None) -> list[dict]:
+        """List structured trading signals."""
+        query = "SELECT * FROM signals"
+        params: list[Any] = []
+        if trade_date:
+            query += " WHERE trade_date = ?"
+            params.append(trade_date)
+        query += " ORDER BY trade_date DESC, final_score DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["payload"] = json.loads(item.get("payload") or "{}")
+            except json.JSONDecodeError:
+                item["payload"] = {}
+            result.append(item)
+        return result
+
     def upsert_holding(
         self,
         symbol: str,
@@ -209,6 +302,89 @@ class Database:
                 "SELECT * FROM holdings ORDER BY updated_at DESC"
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def get_user_profile(self) -> dict:
+        """Return the persisted user profile or create the default row."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
+            if row is None:
+                now = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    """
+                    INSERT INTO user_profile
+                        (id, investment_style, risk_tolerance, sector_prefs, updated_at)
+                    VALUES (1, 'long_term', 'moderate', '[]', ?)
+                    """,
+                    (now,),
+                )
+                row = conn.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
+            data = dict(row)
+        data["sector_prefs"] = json.loads(data.get("sector_prefs") or "[]")
+        return data
+
+    def update_user_profile(
+        self,
+        investment_style: str | None = None,
+        risk_tolerance: str | None = None,
+        sector_prefs: list[str] | None = None,
+    ) -> dict:
+        """Update the singleton user profile."""
+        current = self.get_user_profile()
+        values = {
+            "investment_style": investment_style or current["investment_style"],
+            "risk_tolerance": risk_tolerance or current["risk_tolerance"],
+            "sector_prefs": sector_prefs if sector_prefs is not None else current["sector_prefs"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_profile
+                    (id, investment_style, risk_tolerance, sector_prefs, updated_at)
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    investment_style = excluded.investment_style,
+                    risk_tolerance = excluded.risk_tolerance,
+                    sector_prefs = excluded.sector_prefs,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    values["investment_style"],
+                    values["risk_tolerance"],
+                    json.dumps(values["sector_prefs"], ensure_ascii=False),
+                    values["updated_at"],
+                ),
+            )
+        return self.get_user_profile()
+
+    def get_app_config(self) -> dict[str, Any]:
+        """Return persisted runtime config overrides."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT key, value FROM app_config").fetchall()
+        result: dict[str, Any] = {}
+        for row in rows:
+            try:
+                result[row["key"]] = json.loads(row["value"])
+            except json.JSONDecodeError:
+                result[row["key"]] = row["value"]
+        return result
+
+    def update_app_config(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Persist runtime config overrides and return the merged override set."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            for key, value in values.items():
+                conn.execute(
+                    """
+                    INSERT INTO app_config (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (key, json.dumps(value, ensure_ascii=False), now),
+                )
+        return self.get_app_config()
 
     def report_path_exists(self, path: str) -> bool:
         """Check if a report with the given path already exists."""

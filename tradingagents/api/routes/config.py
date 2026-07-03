@@ -1,9 +1,12 @@
 """Configuration endpoints — get and update runtime config."""
 
 import os
+import time
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
+
+from tradingagents.core.mcp_client import get_mcp_status, shutdown_mcp_client
 
 router = APIRouter()
 
@@ -17,6 +20,10 @@ class ConfigResponse(BaseModel):
     max_risk_discuss_rounds: int
     checkpoint_enabled: bool
     backend_url: str | None = None
+    stockmanager_mcp_url: str | None = None
+    stockmanager_mcp_enabled: bool = True
+    stockmanager_mcp_timeout: float = 30.0
+    daily_pipeline_filters: dict = {}
     api_keys: dict[str, bool] = {}
 
 
@@ -29,6 +36,10 @@ class ConfigUpdate(BaseModel):
     max_risk_discuss_rounds: int | None = None
     checkpoint_enabled: bool | None = None
     backend_url: str | None = None
+    stockmanager_mcp_url: str | None = None
+    stockmanager_mcp_enabled: bool | None = None
+    stockmanager_mcp_timeout: float | None = None
+    daily_pipeline_filters: dict | None = None
 
 
 class ModelOption(BaseModel):
@@ -104,6 +115,10 @@ def _build_config_response(config: dict) -> ConfigResponse:
         max_risk_discuss_rounds=config.get("max_risk_discuss_rounds", 1),
         checkpoint_enabled=config.get("checkpoint_enabled", False),
         backend_url=config.get("backend_url"),
+        stockmanager_mcp_url=config.get("stockmanager_mcp_url"),
+        stockmanager_mcp_enabled=config.get("stockmanager_mcp_enabled", True),
+        stockmanager_mcp_timeout=config.get("stockmanager_mcp_timeout", 30.0),
+        daily_pipeline_filters=config.get("daily_pipeline_filters") or {},
         api_keys=_get_api_key_status(),
     )
 
@@ -118,15 +133,20 @@ async def get_config(request: Request):
 async def update_config(request: Request, body: ConfigUpdate):
     """Update runtime configuration."""
     config = request.app.state.config
+    mcp_changed = False
 
-    for field in (
-        "llm_provider", "deep_think_llm", "quick_think_llm",
-        "output_language", "max_debate_rounds", "max_risk_discuss_rounds",
-        "checkpoint_enabled", "backend_url",
-    ):
-        val = getattr(body, field, None)
-        if val is not None:
-            config[field] = val
+    for field, val in body.model_dump(exclude_unset=True).items():
+        config[field] = val
+        if field.startswith("stockmanager_mcp_"):
+            mcp_changed = True
+    if hasattr(request.app.state, "db"):
+        request.app.state.db.update_app_config(body.model_dump(exclude_unset=True))
+
+    if mcp_changed:
+        await shutdown_mcp_client()
+        request.app.state.mcp_client = None
+        request.app.state.mcp_status = await get_mcp_status(config)
+        request.app.state.mcp_status_checked_at = time.monotonic()
 
     return _build_config_response(config)
 

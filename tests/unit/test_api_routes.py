@@ -4,11 +4,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tradingagents.api.app import create_app
+from tradingagents.core.persistence import Database
+from tradingagents.core.run_manager import RunManager, RunStatus
+from tradingagents.default_config import DEFAULT_CONFIG
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "api-routes.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
     app = create_app()
     with TestClient(app) as c:
         yield c
@@ -17,7 +23,11 @@ def client(tmp_path, monkeypatch):
 def test_health(client):
     res = client.get("/api/v1/health")
     assert res.status_code == 200
-    assert res.json() == {"status": "ok", "service": "tradingagents-api"}
+    payload = res.json()
+    assert payload["status"] == "ok"
+    assert payload["service"] == "tradingagents-api"
+    assert payload["stockmanager_mcp"]["enabled"] is False
+    assert payload["stockmanager_mcp"]["connected"] is False
 
 
 def test_list_skills(client):
@@ -53,6 +63,7 @@ def test_get_config(client):
     config = res.json()
     assert "llm_provider" in config
     assert "deep_think_llm" in config
+    assert "stockmanager_mcp_url" in config
 
 
 def test_update_config(client):
@@ -62,6 +73,171 @@ def test_update_config(client):
     )
     assert res.status_code == 200
     assert res.json()["max_debate_rounds"] == 3
+
+
+def test_update_config_allows_backend_url_reset(client):
+    res = client.put(
+        "/api/v1/config",
+        json={"backend_url": "https://example.invalid/v1"},
+    )
+    assert res.status_code == 200
+    assert res.json()["backend_url"] == "https://example.invalid/v1"
+
+    res = client.put(
+        "/api/v1/config",
+        json={"backend_url": None},
+    )
+    assert res.status_code == 200
+    assert res.json()["backend_url"] is None
+
+
+def test_update_config_persists_across_app_restart(tmp_path, monkeypatch):
+    db_path = tmp_path / "persisted-config.db"
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(db_path))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+
+    app = create_app()
+    with TestClient(app) as c:
+        res = c.put(
+            "/api/v1/config",
+            json={
+                "llm_provider": "deepseek",
+                "quick_think_llm": "deepseek-v4-flash",
+                "deep_think_llm": "deepseek-v4-pro",
+                "backend_url": None,
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["llm_provider"] == "deepseek"
+
+    restarted = create_app()
+    with TestClient(restarted) as c:
+        res = c.get("/api/v1/config")
+        assert res.status_code == 200
+        payload = res.json()
+        assert payload["llm_provider"] == "deepseek"
+        assert payload["quick_think_llm"] == "deepseek-v4-flash"
+        assert payload["deep_think_llm"] == "deepseek-v4-pro"
+
+
+def test_run_manager_reads_persisted_runs(tmp_path):
+    db = Database(tmp_path / "runs.db")
+    db.save_run("run-1", "market_scanner", {"limit": 3}, "pending")
+    db.update_run_status(
+        "run-1",
+        "completed",
+        result={"status": "success"},
+        started_at="2026-06-30T08:30:00+00:00",
+        completed_at="2026-06-30T08:31:00+00:00",
+    )
+
+    manager = RunManager(db=db)
+    runs = manager.list_runs()
+    assert [run.id for run in runs] == ["run-1"]
+    assert runs[0].status is RunStatus.COMPLETED
+    assert runs[0].params == {"limit": 3}
+    assert runs[0].result == {"status": "success"}
+
+    run = manager.get_run("run-1")
+    assert run is not None
+    assert run.skill_id == "market_scanner"
+
+
+def test_profile_get_and_update(client):
+    res = client.get("/api/v1/profile")
+    assert res.status_code == 200
+    assert res.json()["investment_style"] == "long_term"
+
+    res = client.put(
+        "/api/v1/profile",
+        json={
+            "investment_style": "short_term",
+            "risk_tolerance": "high",
+            "sector_prefs": ["新能源"],
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["investment_style"] == "short_term"
+    assert payload["risk_tolerance"] == "high"
+    assert payload["sector_prefs"] == ["新能源"]
+
+
+def test_holdings_crud(client):
+    res = client.put(
+        "/api/v1/holdings/600519.SH",
+        json={
+            "symbol": "600519.SH",
+            "quantity": 10,
+            "avg_cost": 1500,
+            "current_price": 1600,
+            "notes": "core",
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["symbol"] == "600519.SH"
+
+    res = client.get("/api/v1/holdings")
+    assert res.status_code == 200
+    assert len(res.json()) == 1
+
+    res = client.delete("/api/v1/holdings/600519.SH")
+    assert res.status_code == 200
+
+    res = client.get("/api/v1/holdings")
+    assert res.status_code == 200
+    assert res.json() == []
+
+
+def test_holdings_accept_name_and_auto_latest_close(client, monkeypatch):
+    async def fake_latest_close(symbol, config):
+        return {"symbol": symbol, "close": 1688.5, "trade_date": "2026-07-02", "source": "test"}
+
+    monkeypatch.setattr("tradingagents.api.routes.portfolio.latest_close", fake_latest_close)
+
+    res = client.put(
+        "/api/v1/holdings/贵州茅台",
+        json={
+            "symbol": "贵州茅台",
+            "quantity": 10,
+            "avg_cost": 1500,
+            "current_price": None,
+            "notes": "core",
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["symbol"] == "600519.SH"
+    assert payload["current_price"] == 1688.5
+
+
+def test_holdings_refresh_prices_updates_current_price(client, monkeypatch):
+    async def fake_latest_close(symbol, config):
+        return {"symbol": symbol, "close": 20.5, "trade_date": "2026-07-02", "source": "test"}
+
+    monkeypatch.setattr("tradingagents.api.routes.portfolio.latest_close", fake_latest_close)
+
+    res = client.put(
+        "/api/v1/holdings/601899",
+        json={
+            "symbol": "601899",
+            "quantity": 100,
+            "avg_cost": 18,
+            "current_price": 19,
+            "notes": None,
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["symbol"] == "601899.SH"
+
+    res = client.post("/api/v1/portfolio/refresh-prices")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["updated"] == 1
+    assert payload["failed"] == []
+    assert payload["holdings"][0]["current_price"] == 20.5
 
 
 def test_list_reports(client):
@@ -86,3 +262,14 @@ def test_create_run_invalid_skill(client):
         json={"skill_id": "nonexistent", "params": {}},
     )
     assert res.status_code == 404
+
+
+def test_timeline_endpoint(client):
+    """Timeline endpoint returns list and respects since=today."""
+    res = client.get("/api/v1/timeline")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+    res = client.get("/api/v1/timeline?since=today&limit=5")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)

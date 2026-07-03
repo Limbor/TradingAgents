@@ -23,6 +23,7 @@ from tradingagents.agents.utils.news_data_tools import (
 )
 from tradingagents.agents.utils.prediction_markets_tools import get_prediction_markets
 from tradingagents.agents.utils.technical_indicators_tools import get_indicators
+from tradingagents.core.signal_fusion import quant_evidence_markdown
 
 # CN market tools (A-share specific)
 from tradingagents.agents.utils.cn_market_tools import (
@@ -69,10 +70,18 @@ __all__ = [
     "get_instrument_context_from_state",
     "get_language_instruction",
     "get_market_risk_instruction",
+    "build_quant_context",
     "create_msg_delete",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def build_quant_context(candidate: Mapping[str, Any] | None) -> str:
+    """Return a compact StockManager quant evidence block for Agent prompts."""
+    if not candidate:
+        return "## Quant Evidence from StockManager\n- unavailable"
+    return quant_evidence_markdown(dict(candidate))
 
 
 def get_language_instruction(market: str | None = None) -> str:
@@ -256,4 +265,3 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-

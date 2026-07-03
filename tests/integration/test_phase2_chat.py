@@ -6,10 +6,13 @@ from tradingagents.api.app import create_app
 from tradingagents.core.orchestrator import Orchestrator
 from tradingagents.core.persistence import Database
 from tradingagents.core.run_manager import RunManager
+from tradingagents.default_config import DEFAULT_CONFIG
 
 
 def test_ws_chat_routes_to_market_scanner_and_streams_result(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
     app = create_app()
     with TestClient(app) as client:
         db = Database(tmp_path / "chat.db")
@@ -39,6 +42,8 @@ def test_ws_chat_routes_to_market_scanner_and_streams_result(tmp_path, monkeypat
 
 def test_ws_chat_routes_portfolio_update_to_persistence(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat-portfolio.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
     app = create_app()
     with TestClient(app) as client:
         db = Database(tmp_path / "chat-portfolio.db")

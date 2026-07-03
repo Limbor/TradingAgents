@@ -26,6 +26,7 @@ def test_no_env_uses_built_in_defaults(monkeypatch):
     assert dc.DEFAULT_CONFIG["backend_url"] is None
     assert dc.DEFAULT_CONFIG["max_debate_rounds"] == 1
     assert dc.DEFAULT_CONFIG["checkpoint_enabled"] is False
+    assert dc.DEFAULT_CONFIG["scheduler_enabled"] is True
 
 
 def test_string_overrides(monkeypatch):
@@ -36,12 +37,14 @@ def test_string_overrides(monkeypatch):
         TRADINGAGENTS_QUICK_THINK_LLM="gemini-3-flash-preview",
         TRADINGAGENTS_LLM_BACKEND_URL="https://example.invalid/v1",
         TRADINGAGENTS_OUTPUT_LANGUAGE="Chinese",
+        STOCKMANAGER_MCP_URL="http://127.0.0.1:9999/mcp",
     )
     assert dc.DEFAULT_CONFIG["llm_provider"] == "google"
     assert dc.DEFAULT_CONFIG["deep_think_llm"] == "gemini-3-pro-preview"
     assert dc.DEFAULT_CONFIG["quick_think_llm"] == "gemini-3-flash-preview"
     assert dc.DEFAULT_CONFIG["backend_url"] == "https://example.invalid/v1"
     assert dc.DEFAULT_CONFIG["output_language"] == "Chinese"
+    assert dc.DEFAULT_CONFIG["stockmanager_mcp_url"] == "http://127.0.0.1:9999/mcp"
 
 
 def test_int_coercion(monkeypatch):
@@ -64,8 +67,21 @@ def test_int_coercion(monkeypatch):
     ],
 )
 def test_bool_coercion(monkeypatch, raw, expected):
-    dc = _reload_with_env(monkeypatch, TRADINGAGENTS_CHECKPOINT_ENABLED=raw)
+    dc = _reload_with_env(
+        monkeypatch,
+        TRADINGAGENTS_CHECKPOINT_ENABLED=raw,
+        STOCKMANAGER_MCP_ENABLED=raw,
+        TRADINGAGENTS_SCHEDULER_ENABLED=raw,
+    )
     assert dc.DEFAULT_CONFIG["checkpoint_enabled"] is expected
+    assert dc.DEFAULT_CONFIG["stockmanager_mcp_enabled"] is expected
+    assert dc.DEFAULT_CONFIG["scheduler_enabled"] is expected
+
+
+def test_float_coercion(monkeypatch):
+    dc = _reload_with_env(monkeypatch, STOCKMANAGER_MCP_TIMEOUT="4.5")
+    assert dc.DEFAULT_CONFIG["stockmanager_mcp_timeout"] == 4.5
+    assert isinstance(dc.DEFAULT_CONFIG["stockmanager_mcp_timeout"], float)
 
 
 def test_empty_env_value_is_passthrough(monkeypatch):

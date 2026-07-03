@@ -7,7 +7,7 @@ StateGraph, input/output schemas, and shared core infrastructure
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from pydantic import BaseModel
 
@@ -31,6 +31,48 @@ class SkillEvent:
 
     event_type: str
     data: dict[str, Any]
+
+
+SkillProgressStatus = Literal["queued", "running", "completed", "failed"]
+
+
+def skill_progress(
+    *,
+    stage_id: str,
+    stage_label: str,
+    status: SkillProgressStatus = "running",
+    step_id: str | None = None,
+    step_label: str | None = None,
+    detail: str | None = None,
+    agent: str | None = None,
+    progress_pct: float | None = None,
+    data: dict[str, Any] | None = None,
+) -> SkillEvent:
+    """Build a normalized progress event for frontend timeline rendering.
+
+    This is the skill-to-frontend interaction contract. Skills may still emit
+    domain events such as ``agent_status`` and ``report_chunk``; this event is
+    the generic hierarchy used by Chat/Dashboard to render stages consistently.
+    """
+
+    payload: dict[str, Any] = {
+        "stage_id": stage_id,
+        "stage_label": stage_label,
+        "status": status,
+    }
+    if step_id:
+        payload["step_id"] = step_id
+    if step_label:
+        payload["step_label"] = step_label
+    if detail:
+        payload["detail"] = detail
+    if agent:
+        payload["agent"] = agent
+    if progress_pct is not None:
+        payload["progress_pct"] = progress_pct
+    if data:
+        payload["data"] = data
+    return SkillEvent(event_type="skill_progress", data=payload)
 
 
 class BaseSkill(ABC):

@@ -26,6 +26,12 @@ FRONTEND_LOG="$LOG_DIR/frontend.log"
 BACKEND_PORT="${TRADINGAGENTS_API_PORT:-8422}"
 FRONTEND_PORT="${VITE_PORT:-5173}"
 
+# ── 本地服务直连 ──────────────────────────────────────────
+# 避免系统/终端代理（例如 127.0.0.1:7897）劫持本地 API、WS、MCP。
+LOCAL_NO_PROXY_DEFAULT="localhost,127.0.0.1,::1,0.0.0.0,*.local,ollama"
+export NO_PROXY="${NO_PROXY:+${NO_PROXY},}${LOCAL_NO_PROXY_DEFAULT}"
+export no_proxy="${no_proxy:+${no_proxy},}${LOCAL_NO_PROXY_DEFAULT}"
+
 # ── Python 配置 ──────────────────────────────────────────
 PYTHON=""
 for candidate in "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/.venv/bin/python3"; do
@@ -69,6 +75,129 @@ port_in_use() {
   lsof -ti:"$port" >/dev/null 2>&1
 }
 
+port_listener_pids() {
+  local port="$1"
+  lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+}
+
+pid_command() {
+  local pid="$1"
+  ps -p "$pid" -o command= 2>/dev/null || true
+}
+
+pid_parent() {
+  local pid="$1"
+  ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ' || true
+}
+
+is_tradingagents_backend() {
+  local pid="$1"
+  local command
+  command="$(pid_command "$pid")"
+  [[ "$command" == *"$ROOT_DIR/.venv/bin/python -m tradingagents.api.server"* ]] \
+    || [[ "$command" == *"python -m tradingagents.api.server"* ]] \
+    || [[ "$command" == *"python3 -m tradingagents.api.server"* ]]
+}
+
+is_tradingagents_frontend() {
+  local pid="$1"
+  local command
+  command="$(pid_command "$pid")"
+  [[ "$command" == *"$ROOT_DIR/frontend/node_modules/.bin/vite"* ]] \
+    || [[ "$command" == *"npm exec vite --port"* ]] \
+    || [[ "$command" == *"npx vite --port"* ]]
+}
+
+pid_or_child_owns_port() {
+  local pid="$1"
+  local port="$2"
+  local listener
+  for listener in $(port_listener_pids "$port"); do
+    if [ "$listener" = "$pid" ] || [ "$(pid_parent "$listener")" = "$pid" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+stop_raw_pid() {
+  local pid="$1"
+  local name="$2"
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  info "停止 $name (PID: $pid) ..."
+  kill -TERM "$pid" 2>/dev/null || true
+  local i=0
+  while [ $i -lt 30 ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    warn "$name 未响应 SIGTERM，强制终止"
+    kill -9 "$pid" 2>/dev/null || true
+    sleep 0.5
+    pkill -P "$pid" 2>/dev/null || true
+  fi
+  info "$name 已停止 ✓"
+}
+
+ensure_backend_port_free() {
+  local listeners
+  listeners="$(port_listener_pids "$BACKEND_PORT")"
+
+  if [ -z "$listeners" ]; then
+    return 0
+  fi
+
+  warn "端口 $BACKEND_PORT 已被占用，检查是否为残留后端进程 ..."
+  local pid
+  for pid in $listeners; do
+    if ! is_tradingagents_backend "$pid"; then
+      error "端口 $BACKEND_PORT 被非本项目进程占用 (PID: $pid)"
+      echo "  $(pid_command "$pid")"
+      echo "  请先释放端口，或设置 TRADINGAGENTS_API_PORT 使用其他端口。"
+      return 1
+    fi
+  done
+
+  for pid in $listeners; do
+    stop_raw_pid "$pid" "残留后端"
+  done
+  rm -f "$BACKEND_PID_FILE"
+}
+
+ensure_frontend_port_free() {
+  local listeners
+  listeners="$(port_listener_pids "$FRONTEND_PORT")"
+
+  if [ -z "$listeners" ]; then
+    return 0
+  fi
+
+  warn "端口 $FRONTEND_PORT 已被占用，检查是否为残留前端进程 ..."
+  local pid
+  for pid in $listeners; do
+    if ! is_tradingagents_frontend "$pid"; then
+      error "端口 $FRONTEND_PORT 被非本项目进程占用 (PID: $pid)"
+      echo "  $(pid_command "$pid")"
+      echo "  请先释放端口，或设置 VITE_PORT 使用其他端口。"
+      return 1
+    fi
+  done
+
+  for pid in $listeners; do
+    stop_raw_pid "$pid" "残留前端"
+  done
+  rm -f "$FRONTEND_PID_FILE"
+}
+
 # ── 检查进程是否存活 ─────────────────────────────────────
 is_running() {
   local pid_file="$1"
@@ -82,10 +211,7 @@ start_backend() {
     return 0
   fi
 
-  # 如果端口被其他进程占用，提示
-  if port_in_use "$BACKEND_PORT"; then
-    warn "端口 $BACKEND_PORT 已被占用，尝试使用（可能是之前的残留进程）"
-  fi
+  ensure_backend_port_free
 
   info "启动后端 → http://127.0.0.1:${BACKEND_PORT}"
   cd "$ROOT_DIR"
@@ -99,8 +225,17 @@ start_backend() {
   local i=0
   while [ $i -lt 30 ]; do
     if curl -sf "http://127.0.0.1:${BACKEND_PORT}/api/v1/health" >/dev/null 2>&1; then
-      info "后端就绪 ✓ (PID: $pid)"
-      return 0
+      local listeners
+      listeners="$(port_listener_pids "$BACKEND_PORT")"
+      if [[ " $listeners " == *" $pid "* ]]; then
+        info "后端就绪 ✓ (PID: $pid)"
+        return 0
+      fi
+      error "后端健康检查命中了其他进程，当前 PID $pid 未监听端口 $BACKEND_PORT"
+      echo "  端口监听 PID: ${listeners:-无}"
+      kill -TERM "$pid" 2>/dev/null || true
+      rm -f "$BACKEND_PID_FILE"
+      return 1
     fi
     # 检查进程是否意外退出
     if ! kill -0 "$pid" 2>/dev/null; then
@@ -118,11 +253,25 @@ start_backend() {
 }
 
 # ── 启动前端 ──────────────────────────────────────────────
-start_frontend() {
+prepare_frontend_start() {
   if is_running "$FRONTEND_PID_FILE"; then
-    warn "前端已在运行 (PID: $(cat "$FRONTEND_PID_FILE"))"
-    return 0
+    local current_pid
+    current_pid="$(cat "$FRONTEND_PID_FILE")"
+    if pid_or_child_owns_port "$current_pid" "$FRONTEND_PORT"; then
+      warn "前端已在运行 (PID: $current_pid)"
+      return 1
+    fi
+    warn "前端 PID 文件存在但未监听端口 $FRONTEND_PORT，清理旧进程 (PID: $current_pid)"
+    stop_raw_pid "$current_pid" "前端"
+    rm -f "$FRONTEND_PID_FILE"
   fi
+
+  ensure_frontend_port_free
+  return 0
+}
+
+start_frontend() {
+  prepare_frontend_start || return 0
 
   info "启动前端 → http://localhost:${FRONTEND_PORT}"
   cd "$ROOT_DIR/frontend"
@@ -167,25 +316,7 @@ stop_pid() {
 
   if kill -0 "$pid" 2>/dev/null; then
     info "停止 $name (PID: $pid) ..."
-    # 优雅关闭：先 SIGTERM，等 3 秒，再 SIGKILL
-    kill -TERM "$pid" 2>/dev/null || true
-    local i=0
-    while [ $i -lt 30 ]; do
-      if ! kill -0 "$pid" 2>/dev/null; then
-        break
-      fi
-      sleep 0.1
-      i=$((i + 1))
-    done
-    # 如果还活着，强制杀
-    if kill -0 "$pid" 2>/dev/null; then
-      warn "$name 未响应 SIGTERM，强制终止"
-      kill -9 "$pid" 2>/dev/null || true
-      sleep 0.5
-      # 杀掉子进程
-      pkill -P "$pid" 2>/dev/null || true
-    fi
-    info "$name 已停止 ✓"
+    stop_raw_pid "$pid" "$name"
   else
     info "$name 未在运行"
   fi
@@ -292,6 +423,8 @@ cmd_foreground() {
 
   # 后台启动后端
   start_backend
+
+  prepare_frontend_start || true
 
   # 前台启动前端（日志直接输出到终端）
   info "启动前端（前台模式）→ http://localhost:${FRONTEND_PORT}"

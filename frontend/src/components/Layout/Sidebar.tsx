@@ -1,11 +1,18 @@
 import { NavLink } from "react-router-dom";
-import { BarChart3, FileText, LayoutDashboard, MessageSquareText, Settings, TrendingUp } from "lucide-react";
+import {
+  BriefcaseBusiness,
+  FileText,
+  LayoutDashboard,
+  MessageSquareText,
+  Settings,
+  TrendingUp,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/chat", label: "Chat", icon: MessageSquareText },
-  { to: "/analysis", label: "Analysis", icon: BarChart3 },
+  { to: "/portfolio", label: "Portfolio", icon: BriefcaseBusiness },
   { to: "/reports", label: "Reports", icon: FileText },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
@@ -43,8 +50,8 @@ export function Sidebar() {
       </nav>
       <div className="border-t border-stone-800 p-4">
         <div className="rounded-lg border border-stone-800 bg-stone-950 p-3">
-          <p className="text-xs font-medium text-stone-300">Phase 2</p>
-          <p className="mt-1 text-xs text-stone-500">Skills + chat routing</p>
+          <p className="text-xs font-medium text-stone-300">TradingAgents v2</p>
+          <p className="mt-1 text-xs text-stone-500">Chat-first Agent Desk</p>
         </div>
       </div>
     </aside>

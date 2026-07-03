@@ -51,6 +51,12 @@ class Orchestrator:
         text = user_message.strip()
         lowered = text.lower()
 
+        if _contains_any(lowered, ["每日选股", "早报", "今日机会", "daily pipeline", "每日扫描"]):
+            return self._route_daily_pipeline(text)
+
+        if _contains_any(lowered, ["风险监控", "持仓风险", "风险扫描", "预警", "risk monitor"]):
+            return self._route_risk_monitor(text)
+
         if _contains_any(lowered, ["持仓", "仓位", "组合", "portfolio", "holding", "position", "rebalance"]):
             return self._route_portfolio(text)
 
@@ -127,6 +133,29 @@ class Orchestrator:
                 params["theme"] = theme
                 break
         return RouteResult(skill, params, 0.84, "Matched market scanner intent")
+
+    def _route_daily_pipeline(self, text: str) -> RouteResult:
+        skill = self.registry.get("daily_pipeline")
+        params: dict[str, Any] = {}
+        date_value = _extract_date(text)
+        if date_value:
+            params["trade_date"] = date_value
+        limit_match = re.search(r"(?:top|前)\s*(\d+)", text.lower())
+        if limit_match:
+            params["limit"] = min(max(int(limit_match.group(1)), 1), 20)
+        if _contains_any(text, ["非双创", "排除双创", "不要双创", "主板", "非科创", "非创业", "排除科创", "排除创业"]):
+            params["board_filter"] = "main_board"
+        elif _contains_any(text, ["只看双创", "双创板", "科创创业", "科创板和创业板"]):
+            params["board_filter"] = "dual_growth_only"
+        return RouteResult(skill, params, 0.86, "Matched daily pipeline intent")
+
+    def _route_risk_monitor(self, text: str) -> RouteResult:
+        skill = self.registry.get("risk_monitor")
+        params: dict[str, Any] = {}
+        days_match = re.search(r"(\d+)\s*(?:天|days?)", text.lower())
+        if days_match:
+            params["lookback_days"] = min(max(int(days_match.group(1)), 1), 365)
+        return RouteResult(skill, params, 0.86, "Matched risk monitor intent")
 
 
 def _contains_any(text: str, needles: list[str]) -> bool:

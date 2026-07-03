@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Annotated
 
@@ -15,6 +16,8 @@ import pandas as pd
 
 from .akshare_common import akshare_call, ak_lazy_import, df_to_csv_report
 from .symbol_utils import normalize_for_akshare, normalize_cn_display
+
+logger = logging.getLogger(__name__)
 
 
 def _find_col(df: pd.DataFrame, *needles: str) -> str | None:
@@ -282,8 +285,9 @@ def get_limit_status(
                     sections.append(df_to_csv_report(flag, title=f"{display} has ST status"))
                 else:
                     sections.append(f"# {display}: no ST flag today")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to check ST status for %s: %s", display, exc)
+        sections.append(f"# {display}: ST status unavailable ({exc})")
 
     return "\n\n".join(sections) if sections else f"No limit/ST data for {display} on {curr_date}"
 

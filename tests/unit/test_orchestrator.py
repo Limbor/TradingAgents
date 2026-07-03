@@ -7,6 +7,8 @@ from tradingagents.skills.registry import SkillRegistry
 from tradingagents.skills.stock_analysis.skill import StockAnalysisSkill
 from tradingagents.skills.portfolio_management.skill import PortfolioManagementSkill
 from tradingagents.skills.market_scanner.skill import MarketScannerSkill
+from tradingagents.skills.daily_pipeline.skill import DailyPipelineSkill
+from tradingagents.skills.risk_monitor.skill import RiskMonitorSkill
 
 
 def _registry():
@@ -14,6 +16,8 @@ def _registry():
     registry.register(StockAnalysisSkill())
     registry.register(PortfolioManagementSkill())
     registry.register(MarketScannerSkill())
+    registry.register(DailyPipelineSkill())
+    registry.register(RiskMonitorSkill())
     return registry
 
 
@@ -50,5 +54,36 @@ def test_route_market_scanner_extracts_market_and_limit():
         assert route.params["limit"] == 3
         assert route.params["min_score"] == 60
         assert route.params["theme"] == "AI"
+
+    asyncio.run(run())
+
+
+def test_route_daily_pipeline():
+    async def run():
+        route = await Orchestrator(_registry()).route("今日机会 每日选股 top 4")
+        assert route.skill is not None
+        assert route.skill.metadata.id == "daily_pipeline"
+        assert route.params["limit"] == 4
+
+    asyncio.run(run())
+
+
+def test_route_daily_pipeline_main_board_filter():
+    async def run():
+        route = await Orchestrator(_registry()).route("每日选股 top 5 非双创 主板")
+        assert route.skill is not None
+        assert route.skill.metadata.id == "daily_pipeline"
+        assert route.params["limit"] == 5
+        assert route.params["board_filter"] == "main_board"
+
+    asyncio.run(run())
+
+
+def test_route_risk_monitor():
+    async def run():
+        route = await Orchestrator(_registry()).route("扫描最近45天持仓风险")
+        assert route.skill is not None
+        assert route.skill.metadata.id == "risk_monitor"
+        assert route.params["lookback_days"] == 45
 
     asyncio.run(run())

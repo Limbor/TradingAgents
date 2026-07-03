@@ -24,6 +24,21 @@ export interface ToolCallPayload {
 
 type WSEventHandler = (message: WSMessage) => void;
 
+function wsBaseUrl(): string {
+  const env = (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env;
+  const explicit = env?.VITE_WS_BASE_URL as string | undefined;
+  if (explicit) return explicit.replace(/\/$/, "");
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const isLocalDev =
+    Boolean(env?.DEV) &&
+    ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+  const backendHost = isLocalDev
+    ? `${window.location.hostname === "::1" ? "[::1]" : window.location.hostname}:8422`
+    : window.location.host;
+  return `${protocol}//${backendHost}`;
+}
+
 class WebSocketManager {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<WSEventHandler>> = new Map();
@@ -36,9 +51,7 @@ class WebSocketManager {
   }
 
   private _connect(runId: string): void {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    const url = `${protocol}//${host}/ws/run/${runId}`;
+    const url = `${wsBaseUrl()}/ws/run/${runId}`;
 
     this.ws = new WebSocket(url);
 
@@ -100,14 +113,22 @@ class ChatWebSocketManager {
   private handlers: Set<ChatMessageHandler> = new Set();
   private openHandlers: Set<() => void> = new Set();
   private closeHandlers: Set<() => void> = new Set();
+  private reconnectAttempts = 0;
+  private reconnectTimer: number | null = null;
+  private manuallyClosed = false;
 
   connect(): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    this.ws = new WebSocket(`${protocol}//${host}/ws/chat`);
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+    this.manuallyClosed = false;
+    this.ws = new WebSocket(`${wsBaseUrl()}/ws/chat`);
 
     this.ws.onopen = () => {
+      this.reconnectAttempts = 0;
       this.openHandlers.forEach((handler) => handler());
     };
 
@@ -120,9 +141,27 @@ class ChatWebSocketManager {
       }
     };
 
+    this.ws.onerror = () => {
+      this.ws?.close();
+    };
+
     this.ws.onclose = () => {
       this.closeHandlers.forEach((handler) => handler());
+      this.ws = null;
+      if (!this.manuallyClosed) {
+        this.scheduleReconnect();
+      }
     };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) return;
+    this.reconnectAttempts += 1;
+    const delay = Math.min(1000 * 2 ** Math.min(this.reconnectAttempts, 5), 30000);
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
   }
 
   onMessage(handler: ChatMessageHandler): () => void {
@@ -152,6 +191,11 @@ class ChatWebSocketManager {
   }
 
   disconnect(): void {
+    this.manuallyClosed = true;
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws?.close(1000, "Client disconnect");
     this.ws = null;
   }

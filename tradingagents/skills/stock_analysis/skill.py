@@ -5,12 +5,31 @@ pipeline: 13 agents across 5 phases (Analyst → Research → Trader →
 Risk → Portfolio Manager).
 """
 
-from datetime import date
+from datetime import date, datetime as _dt
 from typing import Any, AsyncIterator
 
+import logging
 from pydantic import BaseModel, Field
 
-from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata
+logger = logging.getLogger(__name__)
+
+from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
+
+
+AGENT_PROGRESS_STAGES: dict[str, tuple[str, str]] = {
+    "Market Analyst": ("analyst_market", "市场分析"),
+    "Sentiment Analyst": ("analyst_sentiment", "情绪分析"),
+    "News Analyst": ("analyst_news", "新闻与公告分析"),
+    "Fundamentals Analyst": ("analyst_fundamentals", "基本面分析"),
+    "Bull Researcher": ("research_bull", "多方观点"),
+    "Bear Researcher": ("research_bear", "空方观点"),
+    "Research Manager": ("research_manager", "研究经理裁决"),
+    "Trader": ("trader_plan", "交易计划"),
+    "Aggressive Analyst": ("risk_aggressive", "激进风控观点"),
+    "Conservative Analyst": ("risk_conservative", "保守风控观点"),
+    "Neutral Analyst": ("risk_neutral", "中性风控观点"),
+    "Portfolio Manager": ("portfolio_decision", "组合经理决策"),
+}
 
 
 class StockAnalysisInput(BaseModel):
@@ -106,6 +125,13 @@ class StockAnalysisSkill(BaseSkill):
                 "date": input_params.analysis_date,
             },
         )
+        yield skill_progress(
+            stage_id="prepare",
+            stage_label="准备分析",
+            status="completed",
+            detail=f"{input_params.ticker} · {input_params.analysis_date}",
+            progress_pct=5,
+        )
 
         ta = TradingAgentsGraph(
             selected_analysts=input_params.analysts,
@@ -123,10 +149,32 @@ class StockAnalysisSkill(BaseSkill):
         ):
             event_type = event["type"]
             event_data = event["data"]
+            if event_type == "agent_status":
+                agent = str(event_data.get("agent") or "")
+                status = str(event_data.get("status") or "running")
+                stage_id, stage_label = AGENT_PROGRESS_STAGES.get(
+                    agent,
+                    ("agent_work", agent or "Agent 执行"),
+                )
+                yield skill_progress(
+                    stage_id=stage_id,
+                    stage_label=stage_label,
+                    status="completed" if status == "completed" else "running",
+                    step_id=agent.lower().replace(" ", "_") if agent else None,
+                    step_label=_agent_step_label(agent, status),
+                    agent=agent or None,
+                )
 
             # Save report to disk when complete
             if event_type == "report_complete":
                 report_sections = event_data.get("sections", {})
+                yield skill_progress(
+                    stage_id="report",
+                    stage_label="生成完整报告",
+                    status="running",
+                    detail=f"汇总 {len(report_sections)} 个报告章节",
+                    progress_pct=92,
+                )
                 report_path = self._save_report_to_disk(
                     ticker=input_params.ticker,
                     date=input_params.analysis_date,
@@ -146,12 +194,23 @@ class StockAnalysisSkill(BaseSkill):
                 db=run_config.get("db"),
             )
 
+        # Build structured conclusion for frontend rendering
+        structured_conclusion = self._extract_conclusion(report_sections, input_params.ticker)
+
+        yield skill_progress(
+            stage_id="report",
+            stage_label="生成完整报告",
+            status="completed",
+            detail="报告已保存并生成结构化结论",
+            progress_pct=100,
+        )
         yield SkillEvent(
             event_type="skill_complete",
             data={
                 "status": "success",
                 "report_path": report_path,
                 "ticker": input_params.ticker,
+                "structured_conclusion": structured_conclusion,
             },
         )
 
@@ -165,14 +224,13 @@ class StockAnalysisSkill(BaseSkill):
         """Save report sections to disk as markdown files."""
         from pathlib import Path
         from tradingagents.dataflows.utils import safe_ticker_component
-        from tradingagents.agents.utils.rating import parse_rating
 
         if not results_dir or not sections:
             return None
 
         try:
             safe_ticker = safe_ticker_component(ticker)
-            timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
             report_dir = Path(results_dir) / f"{safe_ticker}_{timestamp}" / "reports"
             report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -202,7 +260,8 @@ class StockAnalysisSkill(BaseSkill):
             )
 
             return str(report_dir)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to save report to disk for %s: %s", ticker, exc)
             return None
 
     def _save_report_to_db(
@@ -237,12 +296,59 @@ class StockAnalysisSkill(BaseSkill):
                 content=content,
                 path=report_path,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to save stock analysis report to DB for %s: %s", ticker, exc)
 
     async def cancel(self) -> None:
         """Cancel is handled via asyncio.Task cancellation in RunManager."""
         pass
+
+    def _extract_conclusion(
+        self, sections: dict[str, str], ticker: str
+    ) -> dict[str, Any]:
+        """Extract structured conclusion JSON from report sections.
+
+        Returns dict with keys: rating, target_price, confidence, reasons, symbol.
+        """
+        import re
+        from tradingagents.agents.utils.rating import parse_rating
+
+        decision_text = sections.get("final_trade_decision", "")
+        rating = parse_rating(decision_text) if decision_text else "Hold"
+
+        # Try extracting target price
+        target_match = re.search(
+            r"(?:target|目标价)[：:\s]*([¥$]?[\d,.]+)", decision_text, re.IGNORECASE
+        )
+        target_price = target_match.group(1) if target_match else None
+
+        # Try extracting confidence
+        conf_match = re.search(
+            r"(?:confidence|信心|把握)[：:\s]*(\d+)", decision_text, re.IGNORECASE
+        )
+        confidence = int(conf_match.group(1)) if conf_match else None
+
+        # Extract numbered reason lines
+        reason_matches = re.findall(r"^\d+[.、]\s*(.+)$", decision_text, re.MULTILINE)
+        reasons = reason_matches[:5] if reason_matches else []
+
+        return {
+            "rating": rating,
+            "target_price": target_price,
+            "confidence": confidence,
+            "reasons": reasons,
+            "symbol": ticker,
+        }
+
+
+def _agent_step_label(agent: str, status: str) -> str:
+    stage = AGENT_PROGRESS_STAGES.get(agent)
+    label = stage[1] if stage else agent or "Agent"
+    if status == "completed":
+        return f"{label}完成"
+    if status == "failed":
+        return f"{label}失败"
+    return f"{label}进行中"
 
 
 # Module-level export for auto_discover

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from tradingagents.api.app import create_app
 from tradingagents.core.persistence import Database
 from tradingagents.core.run_manager import RunManager
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata
 
 
@@ -79,6 +80,8 @@ class MockReportSkill(BaseSkill):
 
 def test_phase1_create_run_stream_and_report_persistence(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "phase1.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
     app = create_app()
     with TestClient(app) as client:
         db = Database(tmp_path / "phase1.db")

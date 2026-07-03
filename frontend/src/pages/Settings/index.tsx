@@ -3,8 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import {
   type ConfigResponse,
   getConfig,
+  getProfile,
   listProviders,
   updateConfig,
+  updateProfile,
+  type UserProfile,
 } from "../../api/client";
 
 const LANGUAGES = [
@@ -23,8 +26,10 @@ export default function Settings() {
     queryKey: ["providers"],
     queryFn: listProviders,
   });
+  const profileQuery = useQuery({ queryKey: ["profile"], queryFn: getProfile });
 
   const [config, setConfig] = useState<ConfigResponse | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [saving, setSaving] = useState(false);
   const [customQuick, setCustomQuick] = useState("");
   const [customDeep, setCustomDeep] = useState("");
@@ -55,6 +60,12 @@ export default function Settings() {
     }
   }, [configQuery.data, providersQuery.data, config]);
 
+  useEffect(() => {
+    if (profileQuery.data && !profile) {
+      setProfile(profileQuery.data);
+    }
+  }, [profileQuery.data, profile]);
+
   const currentProvider = useMemo(
     () => providersQuery.data?.find((p) => p.id === config?.llm_provider),
     [providersQuery.data, config?.llm_provider]
@@ -68,6 +79,21 @@ export default function Settings() {
         setConfig(updated);
       } catch (e) {
         console.error("Failed to save:", e);
+      } finally {
+        setSaving(false);
+      }
+    },
+    []
+  );
+
+  const saveProfile = useCallback(
+    async (updates: Partial<UserProfile>) => {
+      setSaving(true);
+      try {
+        const updated = await updateProfile(updates);
+        setProfile(updated);
+      } catch (e) {
+        console.error("Failed to save profile:", e);
       } finally {
         setSaving(false);
       }
@@ -136,9 +162,9 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* LLM Provider */}
+      {/* LLM Backbone */}
       <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">LLM Provider</h3>
+        <h3 className="mb-4 text-lg font-semibold">LLM Backbone</h3>
         <div className="space-y-4">
           <div>
             <label className="mb-1 block text-sm text-stone-300">Provider</label>
@@ -169,118 +195,221 @@ export default function Settings() {
               className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
             />
           </div>
-        </div>
-      </section>
 
-      {/* Model Selection */}
-      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">Model Selection</h3>
-        <div className="space-y-4">
-          {/* Quick Think Model */}
-          <div>
-            <label className="mb-1 block text-sm text-stone-300">
-              Quick Think Model{" "}
-              <span className="text-stone-500">(analysts, debates, trader)</span>
-            </label>
-            <select
-              value={
-                currentProvider?.quick_models.some(
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm text-stone-300">
+                Quick Model{" "}
+                <span className="text-stone-500">(路由、分析员、候选复核)</span>
+              </label>
+              <select
+                value={
+                  currentProvider?.quick_models.some(
+                    (m) => m.value === config.quick_think_llm
+                  )
+                    ? config.quick_think_llm
+                    : "custom"
+                }
+                onChange={(e) => {
+                  if (e.target.value !== "custom") {
+                    setCustomQuick("");
+                    save({ quick_think_llm: e.target.value });
+                  }
+                }}
+                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              >
+                {currentProvider?.quick_models.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+                {!currentProvider?.quick_models.some(
                   (m) => m.value === config.quick_think_llm
-                )
-                  ? config.quick_think_llm
-                  : "custom"
-              }
-              onChange={(e) => {
-                if (e.target.value === "custom") {
-                  // Keep current custom value
-                } else {
-                  setCustomQuick("");
-                  save({ quick_think_llm: e.target.value });
-                }
-              }}
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
-            >
-              {currentProvider?.quick_models.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-              {!currentProvider?.quick_models.some(
-                (m) => m.value === config.quick_think_llm
-              ) && (
-                <option value="custom">{config.quick_think_llm}</option>
+                ) && (
+                  <option value="custom">{config.quick_think_llm}</option>
+                )}
+              </select>
+              {(config.quick_think_llm === "custom" ||
+                !currentProvider?.quick_models.some(
+                  (m) => m.value === config.quick_think_llm
+                )) && (
+                <input
+                  type="text"
+                  placeholder="Custom quick model ID"
+                  value={customQuick || config.quick_think_llm}
+                  onChange={(e) => setCustomQuick(e.target.value)}
+                  onBlur={() => {
+                    if (customQuick) save({ quick_think_llm: customQuick });
+                  }}
+                  className="mt-2 w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                />
               )}
-            </select>
-            {(config.quick_think_llm === "custom" ||
-              !currentProvider?.quick_models.some(
-                (m) => m.value === config.quick_think_llm
-              )) && (
-              <input
-                type="text"
-                placeholder="Custom model ID"
-                value={customQuick || config.quick_think_llm}
-                onChange={(e) => setCustomQuick(e.target.value)}
-                onBlur={() => {
-                  if (customQuick) save({ quick_think_llm: customQuick });
-                }}
-                className="mt-2 w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
-              />
-            )}
-          </div>
+            </div>
 
-          {/* Deep Think Model */}
-          <div>
-            <label className="mb-1 block text-sm text-stone-300">
-              Deep Think Model{" "}
-              <span className="text-stone-500">(research manager, portfolio manager)</span>
-            </label>
-            <select
-              value={
-                currentProvider?.deep_models.some(
-                  (m) => m.value === config.deep_think_llm
-                )
-                  ? config.deep_think_llm
-                  : "custom"
-              }
-              onChange={(e) => {
-                if (e.target.value === "custom") {
-                  // Keep current custom value
-                } else {
-                  setCustomDeep("");
-                  save({ deep_think_llm: e.target.value });
+            <div>
+              <label className="mb-1 block text-sm text-stone-300">
+                Thinking Model{" "}
+                <span className="text-stone-500">(研究经理、组合决策)</span>
+              </label>
+              <select
+                value={
+                  currentProvider?.deep_models.some(
+                    (m) => m.value === config.deep_think_llm
+                  )
+                    ? config.deep_think_llm
+                    : "custom"
                 }
-              }}
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
-            >
-              {currentProvider?.deep_models.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-              {!currentProvider?.deep_models.some(
-                (m) => m.value === config.deep_think_llm
-              ) && (
-                <option value="custom">{config.deep_think_llm}</option>
-              )}
-            </select>
-            {(config.deep_think_llm === "custom" ||
-              !currentProvider?.deep_models.some(
-                (m) => m.value === config.deep_think_llm
-              )) && (
-              <input
-                type="text"
-                placeholder="Custom model ID"
-                value={customDeep || config.deep_think_llm}
-                onChange={(e) => setCustomDeep(e.target.value)}
-                onBlur={() => {
-                  if (customDeep) save({ deep_think_llm: customDeep });
+                onChange={(e) => {
+                  if (e.target.value !== "custom") {
+                    setCustomDeep("");
+                    save({ deep_think_llm: e.target.value });
+                  }
                 }}
-                className="mt-2 w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
-              />
-            )}
+                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              >
+                {currentProvider?.deep_models.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+                {!currentProvider?.deep_models.some(
+                  (m) => m.value === config.deep_think_llm
+                ) && (
+                  <option value="custom">{config.deep_think_llm}</option>
+                )}
+              </select>
+              {(config.deep_think_llm === "custom" ||
+                !currentProvider?.deep_models.some(
+                  (m) => m.value === config.deep_think_llm
+                )) && (
+                <input
+                  type="text"
+                  placeholder="Custom thinking model ID"
+                  value={customDeep || config.deep_think_llm}
+                  onChange={(e) => setCustomDeep(e.target.value)}
+                  onBlur={() => {
+                    if (customDeep) save({ deep_think_llm: customDeep });
+                  }}
+                  className="mt-2 w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                />
+              )}
+            </div>
           </div>
         </div>
       </section>
+
+      {/* StockManager MCP */}
+      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+        <h3 className="mb-4 text-lg font-semibold">StockManager MCP</h3>
+        <div className="space-y-4">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={config.stockmanager_mcp_enabled}
+              onChange={(e) =>
+                save({ stockmanager_mcp_enabled: e.target.checked })
+              }
+              className="h-4 w-4 rounded border-stone-600 bg-stone-900"
+            />
+            <span className="text-sm text-stone-300">
+              Enable local StockManager MCP service
+            </span>
+          </label>
+          <div>
+            <label className="mb-1 block text-sm text-stone-300">MCP URL</label>
+            <input
+              type="text"
+              value={config.stockmanager_mcp_url ?? ""}
+              onChange={(e) =>
+                setConfig({ ...config, stockmanager_mcp_url: e.target.value })
+              }
+              onBlur={() =>
+                save({ stockmanager_mcp_url: config.stockmanager_mcp_url })
+              }
+              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-stone-300">
+              Tool Timeout
+              <span className="ml-1 text-stone-500">(seconds)</span>
+            </label>
+            <input
+              type="number"
+              min={1}
+              value={config.stockmanager_mcp_timeout}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  stockmanager_mcp_timeout: Number(e.target.value),
+                })
+              }
+              onBlur={() =>
+                save({ stockmanager_mcp_timeout: config.stockmanager_mcp_timeout })
+              }
+              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+            />
+          </div>
+        </div>
+      </section>
+
+      {profile && (
+        <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+          <h3 className="mb-4 text-lg font-semibold">Investment Profile</h3>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm text-stone-300">Style</label>
+              <select
+                value={profile.investment_style}
+                onChange={(e) =>
+                  saveProfile({
+                    investment_style: e.target.value as UserProfile["investment_style"],
+                  })
+                }
+                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              >
+                <option value="short_term">Short term</option>
+                <option value="medium_term">Medium term</option>
+                <option value="long_term">Long term</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-stone-300">Risk Tolerance</label>
+              <select
+                value={profile.risk_tolerance}
+                onChange={(e) =>
+                  saveProfile({
+                    risk_tolerance: e.target.value as UserProfile["risk_tolerance"],
+                  })
+                }
+                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              >
+                <option value="low">Low</option>
+                <option value="moderate">Moderate</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+          </div>
+          <div className="mt-4">
+            <label className="mb-1 block text-sm text-stone-300">Sector Preferences</label>
+            <input
+              type="text"
+              value={profile.sector_prefs.join(", ")}
+              onChange={(e) =>
+                setProfile({
+                  ...profile,
+                  sector_prefs: e.target.value
+                    .split(",")
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                })
+              }
+              onBlur={() => saveProfile({ sector_prefs: profile.sector_prefs })}
+              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+            />
+          </div>
+        </section>
+      )}
 
       {/* Output */}
       <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
@@ -366,3 +495,4 @@ export default function Settings() {
     </div>
   );
 }
+

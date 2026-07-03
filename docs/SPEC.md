@@ -40,8 +40,8 @@ TradingAgents v0.2.5 是一个基于 LangGraph 的多智能体金融分析框架
 
 | 维度 | 目标 |
 |------|------|
-| **界面** | macOS 原生桌面应用（Tauri），支持实时流式展示 agent 执行过程 |
-| **架构** | 从"单一分析管道"进化为"可插拔技能框架"，支持动态加载多个 Skill |
+| **界面** | Web-first 可视化工作台，远期打包为 macOS 原生桌面应用（Tauri） |
+| **架构** | 从"单一分析管道"进化为"可插拔技能框架"，并通过 StockManager MCP 委托 A 股量化计算 |
 | **交互** | 自然语言意图路由，用户说话即可触发对应技能 |
 | **扩展** | 新 Skill 只需实现标准接口即可接入，无需改动核心框架 |
 
@@ -50,8 +50,9 @@ TradingAgents v0.2.5 是一个基于 LangGraph 的多智能体金融分析框架
 1. **渐进式改造** — 不破坏现有功能，在现有 `tradingagents/` 包之上分层构建
 2. **前后端分离** — Python 后端（FastAPI + WebSocket）驱动所有逻辑，前端纯展示
 3. **Skill 即图** — 每个技能是一个独立的 LangGraph，共享基础设施（LLM client、数据层、记忆）
-4. **离线优先** — 桌面应用无需外部服务（除 LLM API），数据本地缓存
-5. **类型安全** — 前后端均采用严格类型（Pydantic + TypeScript）
+4. **量化能力外置** — A 股行情、因子、回测、交易计划委托给本地 StockManager MCP 服务，TradingAgents 专注 LLM 决策链路
+5. **离线优先** — 桌面应用无需远端自建服务（除 LLM/API 数据源），数据本地缓存
+6. **类型安全** — 前后端均采用严格类型（Pydantic + TypeScript）
 
 ---
 
@@ -106,7 +107,73 @@ TradingAgents v0.2.5 是一个基于 LangGraph 的多智能体金融分析框架
 | **Orchestration** | 意图识别、技能路由、执行调度 | LLM Router, Skill Registry |
 | **Skill** | 独立的 agent 工作流 | LangGraph StateGraph |
 | **Core** | 共享基础能力 | LLM factory, DataFlows, Memory, Config |
+| **MCP Service** | A 股数据、因子、回测、交易计划 | StockManager MCP Server |
 | **Infrastructure** | 打包分发、进程管理 | Tauri v2, PyInstaller (sidecar) |
+
+### 2.2 StockManager MCP 集成边界
+
+TradingAgents v2 的 A 股增强链路采用“双进程本地服务”模式：
+
+```
+React UI / Chat
+      │
+      ▼
+TradingAgents FastAPI + Agent Skills
+      │  HTTP/Streamable MCP
+      ▼
+http://127.0.0.1:8765/mcp
+      │
+      ▼
+StockManager MCP Server
+```
+
+| 边界 | TradingAgents | StockManager MCP |
+|------|---------------|------------------|
+| 决策职责 | 意图路由、Agent 辩论、报告生成、持仓语境、前端展示 | 不负责自然语言决策 |
+| 量化职责 | 读取结构化证据并解释 | 行情、复权、交易日历、因子、回测、交易计划 |
+| 通信方式 | 作为 MCP Client 连接 localhost 服务 | 独立启动 HTTP MCP 服务 |
+| 默认地址 | `STOCKMANAGER_MCP_URL=http://127.0.0.1:8765/mcp` | `STOCKMANAGER_MCP_HOST=127.0.0.1`, `STOCKMANAGER_MCP_PORT=8765` |
+| 长任务 | 创建 run/job、轮询状态、WebSocket 推送进度 | `run_backtest` / `run_factor_experiment` 返回 `job_id` |
+| 降级 | capability flags 控制 UI 和技能可用性 | health/capabilities 暴露当前可用工具 |
+
+内部默认不再由 TradingAgents 通过 `uv run python stockmanager-mcp/server.py` 拉起 StockManager。开发环境手动启动 StockManager MCP；远期桌面版由统一 sidecar supervisor 启动两个本地服务。TradingAgents 启动时先访问 `/health` 和 `/capabilities`，健康检查失败则快速降级，不继续打开 MCP 长连接；真实 tool 调用统一走 HTTP/Streamable MCP，并受 `STOCKMANAGER_MCP_TIMEOUT` 约束。
+
+### 2.3 内容摄取与 LLM Backbone
+
+新闻、公告、研报和社区情绪不默认全量塞入 Agent prompt，而是按三层处理：
+
+| 层级 | 内容 | 用途 |
+|------|------|------|
+| 快速层 | 标题、摘要/摘录、来源、链接、发布时间、情绪/风险标签 | 常规分析，控制 token 和延迟 |
+| 深度层 | Top N 重要新闻/公告/研报正文或 PDF 抽取文本 | 重大事件分析、风控、持仓建议 |
+| 原文层 | 原文 URL、PDF/HTML、缓存路径、hash | 审计追溯，不直接整篇进入 prompt |
+
+A 股个股新闻在 AKShare 返回“新闻内容/正文”列时，可输出受限正文摘录；公告 PDF、研报全文和社区长贴全文后续通过 MCP/document fetcher 接入，并统一转为 Evidence Card。
+
+LLM 配置采用统一 Backbone：
+
+| 配置 | 说明 |
+|------|------|
+| `llm_provider` | 全局 provider，如 DeepSeek、Qwen、OpenAI、OpenAI Compatible |
+| `quick_think_llm` | Chat 路由 fallback、分析员、辩论、交易员等快速任务 |
+| `deep_think_llm` | Research Manager、Portfolio Manager 等高权重决策任务 |
+| `backend_url` | OpenAI-compatible 或私有网关地址 |
+
+系统不维护独立的 Chat API 配置；Chat 当前为规则路由，未来如加入 LLM fallback router，默认复用 quick model。
+
+### 2.4 Chat-first 交互模型
+
+TradingAgents 的主交互面从“所有 Skill 跳转 Analysis”调整为“Chat 任务流 + Dashboard 驾驶舱 + Analysis 详情页”：
+
+| 页面 | 定位 | 默认行为 |
+|------|------|----------|
+| Chat | 交易 Agent 主入口 | 用户输入或按钮触发的 Skill 均以任务卡片形式执行，展示执行进度、结构化结果和最终摘要 |
+| Dashboard | 账户/机会驾驶舱 | 展示持仓市值、成本、盈亏、集中度、风险状态、MCP 健康和近期运行 |
+| Portfolio | 持仓工作台 | 管理持仓明细，承接风险仪表盘和持仓建议 |
+| Watchlist | 候选池工作台 | 展示每日选股和候选追踪，手动触发时进入 Chat 执行 |
+| Analysis | 深度详情页 | 仅用于完整股票分析、Agent 图谱、报告章节、调试和审计，不作为轻量 Skill 的默认终点 |
+
+Chat 中展示的是“执行链路状态”和“可审计摘要”，不是原始模型 CoT。后端 Skill 应优先发送用户可理解的 `agent_status` / `tool_call` / structured result 事件，例如“正在查询股票公告”“正在计算持仓盈亏”“正在生成风险摘要”。前端按 `run_id` 聚合这些事件，形成一张任务卡片；任务卡片可以跳转 Analysis 查看完整报告。
 
 ---
 
@@ -233,6 +300,13 @@ GET    /api/v1/reports/{report_id}       # 获取报告详情
 GET    /api/v1/config                    # 获取当前配置
 PUT    /api/v1/config                    # 更新配置
 GET    /api/v1/config/providers          # 列出可用 LLM 提供商及模型
+
+GET    /api/v1/profile                   # 获取投资风格画像
+PUT    /api/v1/profile                   # 更新投资风格画像
+
+GET    /api/v1/holdings                  # 获取持仓列表
+PUT    /api/v1/holdings/{symbol}         # 新增/更新持仓
+DELETE /api/v1/holdings/{symbol}         # 删除持仓
 
 GET    /api/v1/memory                    # 获取记忆日志
 ```
@@ -555,12 +629,16 @@ skill = StockAnalysisSkill()
 |----------|------|------|------|
 | `stock_analysis` | 股票分析 | 现有的 13-agent 分析管道 | Phase 1 |
 | `portfolio_management` | 组合管理 | 持仓跟踪、再平衡建议、绩效归因 | Phase 2 |
-| `strategy_backtest` | 策略回测 | 基于历史数据回测自定义策略 | Phase 2 |
-| `market_scanner` | 市场扫描 | 按条件筛选股票（量化筛选 + AI 分析） | Phase 3 |
-| `news_monitor` | 新闻监控 | 实时监控指定标的新闻和情绪变化 | Phase 3 |
-| `industry_compare` | 行业对比 | 同行业多标的横向对比分析 | Phase 3 |
+| `market_scanner` | 市场扫描 | 基于 StockManager MCP 动态候选池和 Evidence Card 的 A 股筛选 | Phase 3 |
+| `daily_pipeline` | 每日选股 | 定时执行 MCP 初筛、量化因子打分、Top N LLM 快筛融合和早报入库；Top 5 完整 13-Agent 深度分析为后续增强 | Phase 3 |
+| `risk_monitor` | 风险监控 | 扫描持仓 ST、停牌、涨跌停、公告、财务恶化和解禁风险 | Phase 3 |
+| `position_advisor` | 持仓建议 | 注入成本价、持仓天数、止损价和风险证据，输出卖出/加仓/减仓建议 | Phase 4 |
+| `strategy_backtest` | 策略回测 | 委托 StockManager MCP 异步 `run_backtest`，展示 job 进度和结果 | Phase 4 |
+| `decision_audit` | 决策复盘 | 推荐记录 vs 实际操作 vs 实际收益的月度归因 | Phase 4 |
+| `news_monitor` | 新闻监控 | 实时监控指定标的新闻和情绪变化 | Phase 4 |
+| `industry_compare` | 行业对比 | 同行业多标的横向对比分析 | Phase 4 |
 | `financial_education` | 金融教育 | 财报解读、概念解释、投资入门 | Phase 4 |
-| `alert_system` | 预警通知 | 价格/指标触发推送 macOS 通知 | Phase 4 |
+| `alert_system` | 预警通知 | 价格/指标触发推送 macOS 通知 | Phase 5 |
 
 ### 5.6 意图路由（Orchestrator）
 
@@ -2227,20 +2305,46 @@ jobs:
 
 **验收标准**: 用自然语言说"帮我看看茅台"，自动路由到分析技能并流式展示。
 
-### Phase 3: 桌面应用 + 高级功能（4 周）
+### Phase 3: MCP 集成 + A 股决策增强（4 周）
 
-**目标**: 打包为 macOS 原生应用 + 高级 Skill
+**目标**: 将 TradingAgents 定位为决策层 Agent，将 A 股数据、因子、回测前置能力委托给 StockManager MCP，本阶段先完成动态选股和风险监控闭环。
 
 | 周 | 里程碑 | 交付物 |
 |----|--------|--------|
-| W9 | Tauri 集成 | Sidecar 管理、窗口管理、系统托盘 |
-| W10 | 回测技能 | Backtest Skill（基于 backtrader，已有依赖） |
-| W11 | 通知系统 | macOS 通知推送、价格预警 Skill |
-| W12 | 打包分发 | PyInstaller sidecar、.dmg 构建、自动更新机制 |
+| W9 | MCP Contract + Client | localhost HTTP MCP client、health/capabilities、MCP adapter、降级策略 |
+| W10 | UserProfile + Scheduler | 投资风格配置、SQLite/API/前端设置卡、每日 08:30 定时任务框架 |
+| W11 | DailyPipeline | MCP 候选池、风格权重量化打分、Top N LLM 快筛融合、Evidence Card、早报入库、Watchlist 手动触发 |
+| W12 | RiskMonitor + 前端补全 | 持仓风险扫描、Portfolio 持仓 CRUD/P&L、风险报告事件 |
 
-**验收标准**: 双击 .dmg 安装，打开 app 后可完成完整分析流程。
+**验收标准**:
 
-### Phase 4: 打磨与扩展（持续）
+1. TradingAgents 通过 `http://127.0.0.1:8765/mcp` 连接 StockManager MCP，并在健康检查中返回 capability flags。
+2. MCP 不可用时，基础分析可降级到本地 AKShare/TuShare，回测/因子/交易计划能力在 UI 中禁用并说明原因。
+3. Settings 可配置短线/长线投资风格，并影响 DailyPipeline 因子权重和 Quant × LLM 融合 alpha。
+4. 每日选股结果包含可审计 Evidence Card、`quant_score`、`llm_confidence`、`fusion_mode`，并写入报告历史；Top 5 完整深度 Agent 分析作为 Phase 3 后半段增强。
+5. RiskMonitor 可扫描当前持仓并通过 MCP 风险公告生成报告；Portfolio 风险仪表盘分级作为后续前端增强。
+
+### Phase 4: 自动化 + 学习闭环（3 周）
+
+**目标**: 在稳定 MCP 合约之上增加持仓建议、异步回测和决策复盘。
+
+| 周 | 里程碑 | 交付物 |
+|----|--------|--------|
+| W13 | PositionAdvisor | 成本价/持仓天数/止损价上下文注入，卖出/加仓/减仓自然语言路由 |
+| W14 | StrategyBacktest + DecisionAudit | MCP 异步 `run_backtest`、job 状态轮询、回测报告、月度复盘 |
+| W15 | 记忆增强 + 财务预警 | 跨标的模式提取、财务恶化和公告风险预警 |
+
+### Phase 5: 桌面打包（远期）
+
+**目标**: 在 Web + MCP 链路稳定后，再打包为 macOS 原生应用。
+
+| 周 | 里程碑 | 交付物 |
+|----|--------|--------|
+| W16 | Tauri 集成 | Sidecar supervisor、窗口管理、系统托盘 |
+| W17 | 通知系统 | macOS 通知推送、价格/风险预警 |
+| W18 | 打包分发 | PyInstaller sidecar、.dmg 构建、自动更新机制 |
+
+### Phase 6: 打磨与扩展（持续）
 
 - 行业对比分析 Skill
 - 金融教育 Skill
@@ -2259,10 +2363,17 @@ jobs:
 |------|------|--------|
 | `TRADINGAGENTS_API_PORT` | API 服务端口 | 8422 |
 | `TRADINGAGENTS_API_HOST` | API 绑定地址 | 127.0.0.1 |
+| `STOCKMANAGER_MCP_URL` | StockManager MCP 服务地址 | http://127.0.0.1:8765/mcp |
+| `STOCKMANAGER_MCP_ENABLED` | 是否启用 StockManager MCP 集成 | true |
+| `STOCKMANAGER_MCP_TIMEOUT` | MCP tool 默认超时秒数 | 30 |
+| `TRADINGAGENTS_SCHEDULER_ENABLED` | 是否启用 FastAPI 内置每日调度 | true |
+| `TRADINGAGENTS_NEWS_BODY_SNIPPET_ITEMS` | 个股新闻正文摘录条数上限 | 5 |
+| `TRADINGAGENTS_NEWS_BODY_SNIPPET_CHARS` | 单条新闻正文摘录字符上限 | 600 |
 | `TRADINGAGENTS_LLM_PROVIDER` | LLM 提供商 | openai |
 | `TRADINGAGENTS_DEEP_THINK_LLM` | 深度思考模型 | gpt-5.5 |
 | `TRADINGAGENTS_QUICK_THINK_LLM` | 快速思考模型 | gpt-5.4-mini |
 | `TRADINGAGENTS_OUTPUT_LANGUAGE` | 输出语言 | English |
+| `VITE_WS_BASE_URL` | 前端 WebSocket 直连地址（开发时绕开 Vite WS proxy） | ws://127.0.0.1:8422 |
 | `OPENAI_API_KEY` | OpenAI API Key | - |
 | `ANTHROPIC_API_KEY` | Anthropic API Key | - |
 | `GOOGLE_API_KEY` | Google API Key | - |
@@ -2274,6 +2385,7 @@ jobs:
 |------|------|------|
 | FastAPI 后端 | 8422 | REST + WebSocket |
 | Vite 开发服务器 | 5173 | 前端 HMR |
+| StockManager MCP | 8765 | 本地 HTTP/Streamable MCP 服务 |
 | Tauri DevTools | 自动分配 | 开发调试 |
 
 ### C. 文件路径约定

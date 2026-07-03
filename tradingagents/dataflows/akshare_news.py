@@ -8,6 +8,7 @@ from typing import Annotated
 import pandas as pd
 
 from .akshare_common import akshare_call, ak_lazy_import, df_to_csv_report
+from .config import get_config
 from .symbol_utils import normalize_for_akshare, normalize_cn_display
 
 
@@ -32,6 +33,7 @@ def get_news(
     #   关键词 / 新闻标题 / 新闻内容 / 发布时间 / 文章来源 / 新闻链接
     col_time = next((c for c in raw.columns if "时间" in c or "日期" in c), None)
     col_title = next((c for c in raw.columns if "标题" in c), None)
+    col_body = next((c for c in raw.columns if "内容" in c or "正文" in c), None)
     col_source = next((c for c in raw.columns if "来源" in c), None)
     col_url = next((c for c in raw.columns if "链接" in c or "url" in c.lower()), None)
 
@@ -45,18 +47,37 @@ def get_news(
         return f"No news found for A-share {ticker} between {start_date} and {end_date}"
 
     display = normalize_cn_display(ticker)
+    config = get_config()
+    body_items = max(0, int(config.get("news_body_snippet_items", 0) or 0))
+    body_chars = max(0, int(config.get("news_body_snippet_chars", 0) or 0))
     lines = [f"# A-share news for {display} ({start_date} -> {end_date})",
              f"# Source: AKShare stock_news_em",
              f"# Items: {len(raw)}", ""]
-    for _, row in raw.iterrows():
+    for idx, (_, row) in enumerate(raw.iterrows()):
         t = row[col_time].strftime("%Y-%m-%d %H:%M") if col_time and pd.notna(row[col_time]) else ""
         title = str(row[col_title]).strip() if col_title else ""
         src = str(row[col_source]).strip() if col_source else ""
         url = str(row[col_url]).strip() if col_url else ""
         lines.append(f"- [{t}] {title}  ({src})")
+        if col_body and idx < body_items and body_chars > 0:
+            body = _clean_snippet(row[col_body], body_chars)
+            if body:
+                lines.append(f"  摘录: {body}")
         if url:
             lines.append(f"  {url}")
     return "\n".join(lines)
+
+
+def _clean_snippet(value: object, max_chars: int) -> str:
+    """Normalize a vendor article body and cap it for prompt safety."""
+    if value is None or pd.isna(value):
+        return ""
+    text = " ".join(str(value).split())
+    if not text or text.lower() == "nan":
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
 
 
 def get_global_news(

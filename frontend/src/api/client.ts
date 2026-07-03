@@ -17,6 +17,7 @@ export interface RunResponse {
   started_at: string | null;
   completed_at: string | null;
   error: string | null;
+  params: Record<string, unknown> | null;
 }
 
 export interface ReportInfo {
@@ -45,6 +46,24 @@ export interface ProviderDetail {
   deep_models: ModelOption[];
 }
 
+export interface DailyPipelineFilters {
+  board_filter?: "" | "main_board" | "chinext_star";
+  exclude_st?: boolean;
+  exclude_suspended?: boolean;
+  exclude_one_price_limit?: boolean;
+  min_amount_20d?: number;
+  min_price?: number;
+  max_price?: number;
+  min_market_cap?: number;
+  max_market_cap?: number;
+  min_listing_days?: number;
+  max_pe?: number;
+  max_pb?: number;
+  max_turnover_rate?: number;
+  include_industries?: string[];
+  exclude_industries?: string[];
+}
+
 export interface ConfigResponse {
   llm_provider: string;
   deep_think_llm: string;
@@ -54,7 +73,33 @@ export interface ConfigResponse {
   max_risk_discuss_rounds: number;
   checkpoint_enabled: boolean;
   backend_url: string | null;
+  stockmanager_mcp_url: string | null;
+  stockmanager_mcp_enabled: boolean;
+  stockmanager_mcp_timeout: number;
+  daily_pipeline_filters: DailyPipelineFilters;
   api_keys: Record<string, boolean>;
+}
+
+export interface UserProfile {
+  investment_style: "short_term" | "medium_term" | "long_term";
+  risk_tolerance: "low" | "moderate" | "high";
+  sector_prefs: string[];
+  updated_at: string | null;
+}
+
+export interface Holding {
+  symbol: string;
+  quantity: number;
+  avg_cost: number;
+  current_price: number | null;
+  notes: string | null;
+  updated_at: string;
+}
+
+export interface RefreshHoldingPricesResponse {
+  updated: number;
+  failed: Array<{ symbol: string; reason: string }>;
+  holdings: Holding[];
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -120,7 +165,43 @@ export async function updateConfig(
   });
 }
 
-export async function healthCheck(): Promise<{ status: string }> {
+export async function getProfile(): Promise<UserProfile> {
+  return fetchJson(`${API_BASE}/profile`);
+}
+
+export async function updateProfile(
+  profile: Partial<UserProfile>
+): Promise<UserProfile> {
+  return fetchJson(`${API_BASE}/profile`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(profile),
+  });
+}
+
+export async function listHoldings(): Promise<Holding[]> {
+  return fetchJson(`${API_BASE}/holdings`);
+}
+
+export async function upsertHolding(holding: Omit<Holding, "updated_at">): Promise<Holding> {
+  return fetchJson(`${API_BASE}/holdings/${encodeURIComponent(holding.symbol)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(holding),
+  });
+}
+
+export async function deleteHolding(symbol: string): Promise<void> {
+  await fetch(`${API_BASE}/holdings/${encodeURIComponent(symbol)}`, { method: "DELETE" });
+}
+
+export async function refreshHoldingPrices(): Promise<RefreshHoldingPricesResponse> {
+  return fetchJson(`${API_BASE}/portfolio/refresh-prices`, {
+    method: "POST",
+  });
+}
+
+export async function healthCheck(): Promise<Record<string, unknown>> {
   return fetchJson(`${API_BASE}/health`);
 }
 
