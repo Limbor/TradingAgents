@@ -237,3 +237,46 @@ async def trigger_reflection(request: Request, background_tasks: BackgroundTasks
 
     background_tasks.add_task(_run_reflection)
     return TriggerResponse(status="accepted", message="Reflection batch triggered in background.")
+
+
+class MinePatternsResponse(BaseModel):
+    status: str
+    total_cases: int = 0
+    buckets_evaluated: int = 0
+    significant_buckets: int = 0
+    lessons_created: int = 0
+    lessons_updated: int = 0
+    message: str = ""
+
+
+@router.post("/reflections/mine-patterns", response_model=MinePatternsResponse)
+async def mine_patterns(request: Request, background_tasks: BackgroundTasks):
+    """Manually trigger cross-symbol pattern mining.
+
+    Runs in the background so the HTTP request returns immediately — mining
+    can take a while when LLM explanation is enabled or the case volume is
+    large. Use ``GET /reflections/strategy-lessons`` to inspect results after
+    the job completes.
+    """
+    from tradingagents.core.cross_symbol_pattern_miner import CrossSymbolPatternMiner
+
+    config: dict[str, Any] = request.app.state.config
+    db = request.app.state.db
+
+    async def _run_mining():
+        try:
+            miner = CrossSymbolPatternMiner(db=db, config=config)
+            result = await miner.mine(
+                lookback_days=config.get("cross_symbol_miner_lookback_days", 30),
+                min_samples=config.get("cross_symbol_miner_min_samples", 5),
+                min_lift=config.get("cross_symbol_miner_min_lift", 0.15),
+            )
+            logger.info("Manual pattern mining completed: %s", result)
+        except Exception as exc:
+            logger.exception("Manual pattern mining failed: %s", exc)
+
+    background_tasks.add_task(_run_mining)
+    return MinePatternsResponse(
+        status="accepted",
+        message="Pattern mining scheduled in background. Check strategy-lessons for results.",
+    )

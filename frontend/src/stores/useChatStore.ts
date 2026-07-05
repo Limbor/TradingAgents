@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type ChatRole = "user" | "assistant" | "system";
-export type ChatMessageKind = "text" | "task";
+export type ChatMessageKind = "text" | "task" | "tool";
 export type ChatTaskStatus = "queued" | "running" | "completed" | "failed";
 
 export interface ChatTaskStep {
@@ -23,6 +23,9 @@ export interface ChatMessage {
   steps?: ChatTaskStep[];
   result?: string;
   timestamp: string;
+  toolCall?: { tool: string; args: Record<string, unknown>; result: unknown; display: string };
+  citations?: Array<{ tool: string; args: Record<string, unknown>; summary: string }>;
+  clarifyOptions?: string[];
 }
 
 interface ChatState {
@@ -34,6 +37,18 @@ interface ChatState {
   setRunning: (running: boolean) => void;
   setCurrentRunId: (runId: string | null) => void;
   addMessage: (message: Omit<ChatMessage, "id" | "timestamp">) => void;
+  addToolMessage: (message: {
+    content: string;
+    tool: string;
+    args: Record<string, unknown>;
+    result: unknown;
+    display: string;
+    citations?: ChatMessage["citations"];
+  }) => void;
+  addClarifyMessage: (message: {
+    content: string;
+    options?: string[];
+  }) => void;
   createTask: (task: {
     runId: string;
     skillId?: string;
@@ -103,6 +118,40 @@ export const useChatStore = create<ChatState>((set) => ({
           ...message,
           id: crypto.randomUUID(),
           kind: message.kind ?? "text",
+          timestamp: now(),
+        },
+      ],
+    })),
+  addToolMessage: (msg) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant" as const,
+          kind: "tool" as const,
+          content: msg.content,
+          toolCall: {
+            tool: msg.tool,
+            args: msg.args,
+            result: msg.result,
+            display: msg.display,
+          },
+          citations: msg.citations,
+          timestamp: now(),
+        },
+      ],
+    })),
+  addClarifyMessage: (msg) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant" as const,
+          kind: "text" as const,
+          content: msg.content,
+          clarifyOptions: msg.options,
           timestamp: now(),
         },
       ],

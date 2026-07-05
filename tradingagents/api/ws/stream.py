@@ -1,17 +1,33 @@
 """WebSocket endpoints for real-time event streaming."""
 
 import asyncio
+import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from tradingagents.api.middleware.auth import verify_ws_token
-from tradingagents.skills.base import SkillEvent
+from tradingagents.skills.base import BaseSkill, SkillEvent
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 TERMINAL_EVENT_TYPES = {"run_complete", "run_cancelled", "error"}
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+
+@dataclass
+class _RouteResultStub:
+    """Lightweight RouteResult-like for when ChatAgent decides to run a skill.
+
+    Avoids importing orchestrator.RouteResult directly to keep ws_chat decoupled.
+    """
+    skill: BaseSkill
+    params: dict[str, Any] = field(default_factory=dict)
+    confidence: float = 0.0
+    reason: str = ""
 
 
 async def _reject_ws(websocket: WebSocket) -> None:
@@ -209,15 +225,94 @@ async def ws_chat(websocket: WebSocket):
                 context=message.get("context") if isinstance(message.get("context"), dict) else None,
             )
             if route.skill is None:
-                await _send({
-                    "type": "chat_reply",
-                    "run_id": "",
-                    "timestamp": _now(),
-                    "payload": {
-                        "content": "I could not map that request to a registered skill.",
-                        "reason": route.reason,
-                    },
-                })
+                # No skill matched — hand off to ChatAgent for free-form conversation.
+                chat_agent = getattr(websocket.app.state, "chat_agent", None)
+                if chat_agent is not None:
+                    try:
+                        chat_response = await chat_agent.handle(
+                            user_text,
+                            session_id=session_id,
+                            context=message.get("context") if isinstance(message.get("context"), dict) else None,
+                        )
+                    except Exception as exc:
+                        logger.exception("ChatAgent.handle failed")
+                        await _send({
+                            "type": "chat_answer",
+                            "run_id": "",
+                            "timestamp": _now(),
+                            "payload": {"content": f"抱歉，处理请求时出错：{exc}"},
+                        })
+                        continue
+
+                    if chat_response.intent == "chat_answer":
+                        await _send({
+                            "type": "chat_answer",
+                            "run_id": "",
+                            "timestamp": _now(),
+                            "payload": {
+                                "content": chat_response.content,
+                                "citations": chat_response.citations,
+                            },
+                        })
+                    elif chat_response.intent == "tool_answer":
+                        await _send({
+                            "type": "tool_answer",
+                            "run_id": "",
+                            "timestamp": _now(),
+                            "payload": {
+                                "tool": chat_response.tool_name,
+                                "args": chat_response.tool_args,
+                                "result": chat_response.tool_result,
+                                "display": chat_response.tool_display,
+                                "citations": chat_response.citations,
+                            },
+                        })
+                    elif chat_response.intent == "clarify":
+                        await _send({
+                            "type": "clarify",
+                            "run_id": "",
+                            "timestamp": _now(),
+                            "payload": {
+                                "question": chat_response.clarify_question or chat_response.content or "请问您需要什么帮助？",
+                                "options": chat_response.clarify_options,
+                            },
+                        })
+                    elif chat_response.intent == "skill_run":
+                        # ChatAgent decided to run a skill — create a run
+                        skill = websocket.app.state.registry.get(chat_response.skill_id)
+                        if skill is None:
+                            await _send({
+                                "type": "chat_answer",
+                                "run_id": "",
+                                "timestamp": _now(),
+                                "payload": {"content": f"抱歉，找不到 '{chat_response.skill_id}' 这个功能。"},
+                            })
+                            continue
+                        route = _RouteResultStub(skill, chat_response.skill_params, 0.85, "ChatAgent skill_run")
+                    else:
+                        await _send({
+                            "type": "chat_answer",
+                            "run_id": "",
+                            "timestamp": _now(),
+                            "payload": {"content": chat_response.content or "抱歉，我不太理解您的意思。"},
+                        })
+                        continue
+                else:
+                    # ChatAgent not available — fall back to the original message
+                    await _send({
+                        "type": "chat_reply",
+                        "run_id": "",
+                        "timestamp": _now(),
+                        "payload": {
+                            "content": "I could not map that request to a registered skill.",
+                            "reason": route.reason,
+                        },
+                    })
+                    continue
+
+            # If the route was set via ChatAgent skill_run, process it
+            if route.skill is None:
+                # This happens when ChatAgent returned skill_run but skill not found
                 continue
 
             run = await run_manager.create_run(route.skill, route.params, config)

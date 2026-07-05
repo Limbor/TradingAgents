@@ -764,8 +764,18 @@ class Database:
         symbol: str | None = None,
         reflection_scope: str | None = None,
         eligible_only: bool = False,
+        lookback_days: int | None = None,
     ) -> list[dict]:
-        """List reflection cases with decoded JSON payloads."""
+        """List reflection cases with decoded JSON payloads.
+
+        Args:
+            limit: Max number of cases to return.
+            status: Filter by status (e.g. 'reflected', 'pending').
+            symbol: Filter by stock symbol.
+            reflection_scope: Filter by reflection scope.
+            eligible_only: Only return cases eligible for strategy learning.
+            lookback_days: Only return cases updated within the last N days.
+        """
         query = "SELECT * FROM reflection_cases"
         clauses: list[str] = []
         params: list[Any] = []
@@ -780,6 +790,10 @@ class Database:
             params.append(reflection_scope)
         if eligible_only:
             clauses.append("eligible_for_strategy_learning = 1")
+        if lookback_days is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+            clauses.append("updated_at >= ?")
+            params.append(cutoff)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY signal_date DESC, created_at DESC LIMIT ?"
@@ -1024,6 +1038,82 @@ class Database:
                 item["payload"] = {}
             result.append(item)
         return result
+
+    def update_strategy_lesson(self, lesson_id: str, **fields: Any) -> dict | None:
+        """Incrementally update a strategy lesson's fields.
+
+        Supports cumulative updates: when ``evidence_count`` is passed, it is
+        ADDED to the existing value rather than replacing it. This allows
+        cross-symbol pattern mining to accumulate evidence over time.
+
+        Returns the updated lesson dict or None if not found.
+        """
+        existing = None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM strategy_lessons WHERE id = ?", (lesson_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            existing = dict(row)
+
+        # Accumulate evidence_count if provided
+        if "evidence_count" in fields:
+            current_count = int(existing.get("evidence_count", 1))
+            fields["evidence_count"] = current_count + int(fields["evidence_count"])
+
+        now = datetime.now(timezone.utc).isoformat()
+        allowed = {
+            "lesson_type", "scope", "target", "finding", "suggested_adjustment",
+            "evidence_count", "confidence", "active", "expires_at", "payload",
+        }
+        sets: list[str] = []
+        params: list[Any] = []
+        for key in fields:
+            if key not in allowed:
+                continue
+            val = fields[key]
+            if key == "payload":
+                val = json.dumps(val or {}, ensure_ascii=False)
+                key = "payload_json"
+            elif key == "active":
+                val = 1 if val else 0
+            sets.append(f"{key} = ?")
+            params.append(val)
+        sets.append("updated_at = ?")
+        params.append(now)
+        params.append(lesson_id)
+
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE strategy_lessons SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            row = conn.execute(
+                "SELECT * FROM strategy_lessons WHERE id = ?", (lesson_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["active"] = bool(result.get("active"))
+        try:
+            result["payload"] = json.loads(result.pop("payload_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            result["payload"] = {}
+        return result
+
+    def deactivate_strategy_lesson(self, lesson_id: str) -> bool:
+        """Deactivate a strategy lesson (sets active=0).
+
+        Returns True if a row was updated, False if the lesson was not found.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE strategy_lessons SET active = 0, updated_at = ? WHERE id = ?",
+                (now, lesson_id),
+            )
+            return int(cur.rowcount or 0) > 0
 
     def upsert_holding(
         self,

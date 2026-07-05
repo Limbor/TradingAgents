@@ -192,7 +192,20 @@ def _build_prompt(
     lesson_section = ""
     if strategy_lessons:
         lesson_lines = []
-        for lesson in strategy_lessons[:5]:
+        # Sort: cross_symbol_pattern first, then by confidence + evidence_count, then scope specificity
+        def _lesson_priority(lesson: dict) -> tuple[int, int, int, int]:
+            lt = str(lesson.get("lesson_type") or "")
+            conf = {"high": 3, "medium": 2, "low": 1}.get(str(lesson.get("confidence") or "").lower(), 0)
+            ev = int(lesson.get("evidence_count") or 0)
+            scope_prio = {"symbol": 4, "industry": 3, "board": 2, "factor": 1, "global": 0}.get(
+                str(lesson.get("scope") or "").lower(), 0
+            )
+            # cross_symbol_pattern: highest priority
+            type_prio = 1 if lt == "cross_symbol_pattern" else 0
+            return (-type_prio, -conf, -ev, -scope_prio)
+
+        sorted_lessons = sorted(strategy_lessons, key=_lesson_priority)
+        for lesson in sorted_lessons[:5]:
             finding = str(lesson.get("finding") or "").strip()
             adjustment = str(lesson.get("suggested_adjustment") or "").strip()
             confidence = str(lesson.get("confidence") or "")

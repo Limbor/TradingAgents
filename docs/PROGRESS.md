@@ -118,7 +118,8 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | DailyReview 收盘复盘 | ✅ 初版完成 | 刷新持仓、风险扫描、反思批处理、每日选股、次日计划 Artifact |
 | Reflection Cases / Strategy Lessons | ✅ 初版完成 | 因果归因框架、策略经验软注入、私人复盘隔离 |
 | StockAnalysis 持仓上下文 | ✅ 完成 | 命中持仓标的时注入成本、盈亏、仓位占比和持仓备注 |
-| Free ChatAgent | ❌ 待建 | 自由聊天、轻量工具增强、Skill Dispatcher 分层 |
+| Free ChatAgent | ✅ 初版完成 | 四分类意图(chat_answer/tool_answer/skill_run/clarify) + 轻量工具注册表(5 工具) + 前端 tool/clarify 消息渲染 + react-markdown |
+| Cross-Symbol Pattern Mining | ✅ 初版完成 | 反思 case 跨标的统计挖掘 + 显著性过滤 + 模板/LLM 解释 + 维度去重 + 陈旧 lesson 自动停用 + 回注 daily_pipeline |
 | PositionAdvisor 持仓建议 | ◐ 部分具备 | StockAnalysis 已能注入持仓上下文；独立卖出/加仓建议 Skill 待建 |
 | StrategyBacktest 回测 Skill | ❌ 待建 | 委托 MCP `run_backtest()` |
 | DecisionAudit 决策复盘 | ❌ 待建 | 历史决策 vs 实际收益追踪 |

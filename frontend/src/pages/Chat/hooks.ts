@@ -6,7 +6,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { chatWsManager, type WSMessage } from "@/api/ws";
-import { useChatStore } from "@/stores/useChatStore";
+import { useChatStore, type ChatMessage } from "@/stores/useChatStore";
 import {
   eventStepLabel,
   formatParams,
@@ -61,6 +61,30 @@ export function useChatWebSocket() {
             content: String(payload.content ?? "我还没有找到合适的技能。"),
           });
         }
+      } else if (message.type === "chat_answer") {
+        const payload = message.payload;
+        addMessage({
+          role: "assistant",
+          kind: "text",
+          content: String(payload.content ?? ""),
+          citations: payload.citations as ChatMessage["citations"] | undefined,
+        });
+      } else if (message.type === "tool_answer") {
+        const payload = message.payload;
+        useChatStore.getState().addToolMessage({
+          content: String(payload.content ?? ""),
+          tool: String(payload.tool ?? "unknown"),
+          args: (payload.args as Record<string, unknown>) ?? {},
+          result: payload.result,
+          display: String(payload.display ?? "text"),
+          citations: payload.citations as ChatMessage["citations"] | undefined,
+        });
+      } else if (message.type === "clarify") {
+        const payload = message.payload;
+        useChatStore.getState().addClarifyMessage({
+          content: String(payload.question ?? "请问您需要什么帮助？"),
+          options: Array.isArray(payload.options) ? (payload.options as string[]) : undefined,
+        });
       } else if (message.type === "skill_progress" || message.type === "progress_update") {
         addTaskStep(message.run_id, {
           label: progressStepLabel(message.payload),

@@ -12,12 +12,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from tradingagents.api.middleware.auth import AuthMiddleware
+from tradingagents.core.chat_agent import ChatAgent
+from tradingagents.core.lightweight_tools import build_all_tools
 from tradingagents.core.mcp_client import get_mcp_client, get_mcp_status, shutdown_mcp_client
 from tradingagents.core.orchestrator import Orchestrator
 from tradingagents.core.persistence import Database
 from tradingagents.core.reflection import ReflectionEngine
 from tradingagents.core.run_manager import RunManager
 from tradingagents.core.scheduler import Scheduler
+from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.skills.registry import SkillRegistry
 
@@ -68,6 +71,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm_router = LLMRouter(registry, config, db=db)
 
     app.state.orchestrator = Orchestrator(registry, config, db=db, llm_router=llm_router)
+
     app.state.scheduler = Scheduler()
     if config.get("scheduler_enabled", True):
         daily_skill = registry.get("daily_pipeline")
@@ -154,6 +158,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else await get_mcp_status(config)
     )
     app.state.mcp_status_checked_at = monotonic_time.monotonic()
+
+    # Initialize lightweight ToolRegistry and register 5 instant tools.
+    # Placed after MCP client init so get_mcp_factor_snapshot tool has a live client.
+    tool_registry = ToolRegistry()
+    for tool_def in build_all_tools(db, app.state.mcp_client, config):
+        tool_registry.register(LightweightTool(**tool_def))
+    app.state.tool_registry = tool_registry
+
+    # Initialize ChatAgent for free-form conversational queries.
+    app.state.chat_agent = ChatAgent(
+        config=config,
+        skill_registry=registry,
+        tool_registry=tool_registry,
+        db=db,
+    )
 
     yield
 

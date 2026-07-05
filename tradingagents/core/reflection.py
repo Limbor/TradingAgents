@@ -522,6 +522,35 @@ class ReflectionEngine:
         except Exception as exc:
             logger.warning("Failed to prune reflection cases: %s", exc)
 
+        # Cross-symbol pattern mining — runs after reflection batch to discover
+        # statistically significant patterns across symbols. Best-effort: never
+        # let mining failure break the reflection batch.
+        if self.config.get("cross_symbol_miner_enabled", False):
+            try:
+                from tradingagents.core.cross_symbol_pattern_miner import CrossSymbolPatternMiner
+
+                miner = CrossSymbolPatternMiner(
+                    db=self.db,
+                    config=self.config,
+                )
+                mining_result = await miner.mine(
+                    lookback_days=self.config.get("cross_symbol_miner_lookback_days", 30),
+                    min_samples=self.config.get("cross_symbol_miner_min_samples", 5),
+                    min_lift=self.config.get("cross_symbol_miner_min_lift", 0.15),
+                )
+                result["cross_symbol_lessons_created"] = mining_result.get("lessons_created", 0)
+                result["cross_symbol_lessons_updated"] = mining_result.get("lessons_updated", 0)
+                result["cross_symbol_buckets"] = mining_result.get("significant_buckets", 0)
+                if mining_result.get("lessons_created") or mining_result.get("lessons_updated"):
+                    logger.info(
+                        "CrossSymbolMiner: %d new, %d updated lessons from %d significant buckets",
+                        mining_result.get("lessons_created", 0),
+                        mining_result.get("lessons_updated", 0),
+                        mining_result.get("significant_buckets", 0),
+                    )
+            except Exception as exc:
+                logger.warning("CrossSymbolMiner failed: %s", exc)
+
         return result
 
 

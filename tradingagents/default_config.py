@@ -24,6 +24,7 @@ _ENV_OVERRIDES = {
     "STOCKMANAGER_MCP_ENABLED":           "stockmanager_mcp_enabled",
     "STOCKMANAGER_MCP_TIMEOUT":           "stockmanager_mcp_timeout",
     "TRADINGAGENTS_SCHEDULER_ENABLED":    "scheduler_enabled",
+    "TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED": "cross_symbol_miner_enabled",
     "TRADINGAGENTS_TICKER_NAME_BACKFILL_ENABLED": "ticker_name_backfill_enabled",
     "TRADINGAGENTS_MCP_STOCKMANAGER_DIR": "mcp_stockmanager_dir",
     "TRADINGAGENTS_INVESTMENT_STYLE":     "investment_style",
@@ -203,4 +204,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # match regex patterns with high confidence are forwarded to LLM for
     # tool_use-based intent recognition. Disabled by default.
     "llm_routing_enabled": False,
+    # Cross-symbol pattern mining. When enabled, the reflection batch runs a
+    # statistical pattern discovery step after processing pending cases.
+    # Patterns are saved as strategy_lessons with lesson_type="cross_symbol_pattern".
+    "cross_symbol_miner_enabled": False,
+    "cross_symbol_miner_min_samples": 5,
+    "cross_symbol_miner_min_lift": 0.15,
+    "cross_symbol_miner_lookback_days": 30,
 })
