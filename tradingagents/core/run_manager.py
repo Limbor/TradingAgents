@@ -41,6 +41,8 @@ class Run:
     events: list[SkillEvent] = field(default_factory=list)
     _task: asyncio.Task | None = field(default=None, repr=False)
     _skill: BaseSkill | None = field(default=None, repr=False)
+    # Monotonic per-run event counter for persisted event ordering.
+    _event_seq: int = field(default=0, repr=False)
 
 
 class RunManager:
@@ -146,8 +148,16 @@ class RunManager:
             )
 
     async def _record_event(self, run: Run, run_id: str, event: SkillEvent) -> None:
-        """Persist an event in memory and broadcast it to subscribers."""
+        """Persist an event in memory, to subscribers, and (best-effort) to the
+        DB so a reconnecting client can replay progress after a server restart."""
         run.events.append(event)
+        # Persist for replay-on-reconnect. Best-effort; never block the pipeline.
+        if self._db is not None and hasattr(self._db, "save_run_event"):
+            run._event_seq += 1
+            try:
+                self._db.save_run_event(run_id, run._event_seq, event.event_type, event.data)
+            except Exception:
+                pass
         await self._broadcast(run_id, event)
 
     async def _broadcast(self, run_id: str, event: SkillEvent) -> None:
@@ -223,11 +233,11 @@ class RunManager:
         self._runs[run.id] = run
         return run
 
-    def list_runs(self, limit: int = 50) -> list[Run]:
-        """List recent runs."""
+    def list_runs(self, limit: int = 50, offset: int = 0) -> list[Run]:
+        """List recent runs with pagination."""
         runs_by_id = dict(self._runs)
         if self._db is not None:
-            for record in self._db.list_runs(limit=limit):
+            for record in self._db.list_runs(limit=limit, offset=offset):
                 if record["id"] not in runs_by_id:
                     runs_by_id[record["id"]] = self._run_from_record(record)
         runs = sorted(runs_by_id.values(), key=lambda r: r.created_at, reverse=True)

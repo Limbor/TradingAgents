@@ -6,11 +6,19 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from tradingagents.api.middleware.auth import verify_ws_token
 from tradingagents.skills.base import SkillEvent
 
 router = APIRouter()
 TERMINAL_EVENT_TYPES = {"run_complete", "run_cancelled", "error"}
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+
+async def _reject_ws(websocket: WebSocket) -> None:
+    """Reject a WebSocket that fails the auth check."""
+    await websocket.accept()
+    await websocket.send_json({"type": "error", "payload": {"message": "Unauthorized"}})
+    await websocket.close(code=4401)
 
 
 @router.websocket("/ws/run/{run_id}")
@@ -20,12 +28,33 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
     Sends historical events first (for reconnection), then streams
     new events as they occur.
     """
+    if not verify_ws_token(websocket.query_params, getattr(websocket.app.state, "config", {}) or {}):
+        await _reject_ws(websocket)
+        return
     await websocket.accept()
 
     run_manager = websocket.app.state.run_manager
+    db = getattr(websocket.app.state, "db", None)
     run = run_manager.get_run(run_id)
 
     if not run:
+        # Run not in memory (server restarted) — try to replay persisted events
+        # from the DB so the reconnecting client sees progress, not just a
+        # "run not found" error. If there's no DB record either, fall through.
+        if db is not None and hasattr(db, "list_run_events"):
+            persisted = db.list_run_events(run_id)
+            if persisted:
+                for evt in persisted:
+                    await websocket.send_json({
+                        "type": evt.get("event_type") or "event",
+                        "run_id": run_id,
+                        "timestamp": evt.get("created_at") or _now(),
+                        "payload": evt.get("payload") or {},
+                    })
+                # Send a synthetic terminal event so the client knows it's done.
+                await websocket.send_json(_terminal_event_for(run_id, db))
+                await websocket.close(code=1000)
+                return
         await websocket.send_json({
             "type": "error",
             "payload": {"message": "Run not found"},
@@ -83,6 +112,9 @@ async def ws_chat(websocket: WebSocket):
     a new request. A send-lock serializes all socket writes so the background
     consumer and the main loop never interleave partial frames.
     """
+    if not verify_ws_token(websocket.query_params, getattr(websocket.app.state, "config", {}) or {}):
+        await _reject_ws(websocket)
+        return
     await websocket.accept()
     orchestrator = websocket.app.state.orchestrator
     run_manager = websocket.app.state.run_manager
@@ -248,6 +280,27 @@ def _terminal_event(run_id: str, run) -> dict:
             event_type="error",
             data={"message": run.error or "Run failed"},
         )
+    return _serialize_event(run_id, event)
+
+
+def _terminal_event_for(run_id: str, db) -> dict:
+    """Build a synthetic terminal event from a persisted run record (used when
+    the run is no longer in memory after a server restart)."""
+    status = "failed"
+    error = None
+    try:
+        record = db.get_run(run_id) if hasattr(db, "get_run") else None
+        if record:
+            status = str(record.get("status") or "failed")
+            error = record.get("error")
+    except Exception:
+        pass
+    if status == "completed":
+        event = SkillEvent(event_type="run_complete", data={"status": status, "result": {}})
+    elif status == "cancelled":
+        event = SkillEvent(event_type="run_cancelled", data={"status": status})
+    else:
+        event = SkillEvent(event_type="error", data={"message": error or "Run failed"})
     return _serialize_event(run_id, event)
 
 

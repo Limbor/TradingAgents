@@ -45,10 +45,10 @@ async def create_run(request: Request, body: CreateRunRequest):
 
 
 @router.get("/runs", response_model=list[RunResponse])
-async def list_runs(request: Request, limit: int = 50):
-    """List recent runs."""
+async def list_runs(request: Request, limit: int = 50, offset: int = 0):
+    """List recent runs with pagination."""
     run_manager = request.app.state.run_manager
-    runs = run_manager.list_runs(limit=limit)
+    runs = run_manager.list_runs(limit=limit, offset=offset)
     return [
         RunResponse(
             id=r.id,
@@ -110,6 +110,7 @@ SKILL_LABELS = {
     "market_scanner": "市场扫描",
     "risk_monitor": "风险监控",
     "portfolio_management": "持仓管理",
+    "daily_review": "收盘复盘",
 }
 
 

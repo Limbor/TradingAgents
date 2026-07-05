@@ -11,6 +11,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from tradingagents.api.middleware.auth import AuthMiddleware
 from tradingagents.core.mcp_client import get_mcp_client, get_mcp_status, shutdown_mcp_client
 from tradingagents.core.orchestrator import Orchestrator
 from tradingagents.core.persistence import Database
@@ -163,6 +164,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Optional token auth (no-op when api_auth_token is empty, the default).
+    app.add_middleware(AuthMiddleware)
 
     # Register REST routes
     app.include_router(health.router, prefix="/api/v1", tags=["health"])

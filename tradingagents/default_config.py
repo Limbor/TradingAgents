@@ -27,6 +27,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_TICKER_NAME_BACKFILL_ENABLED": "ticker_name_backfill_enabled",
     "TRADINGAGENTS_MCP_STOCKMANAGER_DIR": "mcp_stockmanager_dir",
     "TRADINGAGENTS_INVESTMENT_STYLE":     "investment_style",
+    "TRADINGAGENTS_API_AUTH_TOKEN":       "api_auth_token",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_ENABLED": "daily_pipeline_llm_review_enabled",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LIMIT": "daily_pipeline_llm_review_limit",
     "TRADINGAGENTS_DAILY_PIPELINE_BOARD_FILTER": "daily_pipeline_board_filter",
@@ -142,6 +143,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "akshare_rate_limit": 1.0,      # QPS
     "tushare_rate_limit": 3.0,      # QPS
     "cn_trading_calendar_cache": os.path.join(_TRADINGAGENTS_HOME, "cache", "cn_trade_cal.csv"),
+    "trading_time_timezone": "Asia/Shanghai",
+    "cn_a_close_data_available_time": "15:30",
     # Benchmark for alpha calculation in the reflection layer.
     # ``benchmark_ticker`` (when set) overrides the suffix map for all
     # tickers; leave it None to use ``benchmark_map`` for auto-detection
@@ -174,6 +177,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "stockmanager_mcp_health_timeout": 2.0,
     "scheduler_enabled": True,
     "ticker_name_backfill_enabled": True,
+    # API auth: when set (env TRADINGAGENTS_API_AUTH_TOKEN), REST + WS requests
+    # must carry this token (Bearer header for REST, ?token= for WS). Empty by
+    # default so local desktop usage is unaffected; set it when exposing the
+    # API beyond localhost.
+    "api_auth_token": os.getenv("TRADINGAGENTS_API_AUTH_TOKEN", ""),
     # Legacy stdio path kept only for compatibility with older configs.
     "mcp_stockmanager_dir": os.path.expanduser("~/Documents/develop/StockManager"),
     # -------------------------------------------------------------------
@@ -191,4 +199,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # to avoid repeated high-beta 双创 recommendations when the user wants
     # steadier A-share main-board candidates.
     "daily_pipeline_board_filter": "all",
+    # LLM-based intent routing (Phase 3). When enabled, messages that don't
+    # match regex patterns with high confidence are forwarded to LLM for
+    # tool_use-based intent recognition. Disabled by default.
+    "llm_routing_enabled": False,
 })

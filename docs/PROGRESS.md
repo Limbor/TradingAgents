@@ -513,6 +513,13 @@ WebSocket 端点：
 - ✅ **`/ws/chat` 串行无法中断**: run 事件流消费改为后台 `asyncio.Task`，主循环持续 `receive_json`；支持 `{"action":"cancel","run_id"}` 取消当前 run（返回 `run_cancellation_ack`）；`send_lock` 序列化所有 socket 写，避免后台消费者与主循环并发写损坏帧。(`tradingagents/api/ws/stream.py`)
 - ✅ **前端 Dashboard 与 WS 重复轮询**: Dashboard/Watchlist 的 `refetchInterval` 拉长（runs 5s→30s, holdings 10s→60s, health/artifacts 15s→60s），加 `staleTime` + `refetchOnWindowFocus:false`；Chat hooks 在 `run_complete`/`error` 时 `invalidateQueries(["runs"],["dashboard-artifacts"],["holdings"])`，WS 事件驱动刷新取代密集轮询。(`frontend/src/pages/Dashboard/index.tsx`, `frontend/src/pages/Watchlist/index.tsx`, `frontend/src/pages/Chat/hooks.ts`)
 
+### 9.7 已修复（第五批 快修，2026-07-05）
+
+- ✅ **无分页**: `list_runs`/`list_artifacts` 新增 `offset` 参数，`limit` 上限钳到 200 防止无界查询；`/runs`、`/artifacts` 路由暴露 `offset`。(`tradingagents/core/persistence.py`, `tradingagents/api/routes/runs.py`, `tradingagents/api/routes/artifacts.py`)
+- ✅ **无认证/授权**: 新增 `AuthMiddleware` + `verify_ws_token`；配置 `api_auth_token`（env `TRADINGAGENTS_API_AUTH_TOKEN`）为空时放行（本地桌面默认），设置后 REST 要求 `Authorization: Bearer`、WS 要求 `?token=`；`/health` 豁免。(`tradingagents/api/middleware/auth.py`, `tradingagents/api/app.py`, `tradingagents/api/ws/stream.py`, `tradingagents/default_config.py`)
+- ✅ **WebSocket 事件不持久化**: 新增 `run_events` 表；`RunManager._record_event` 把每个事件（含 seq）写入 DB；`/ws/run/{run_id}` 重连时若 run 不在内存（服务重启后），从 DB 回放持久化事件 + 合成终态事件，长跑 skill 中途重启不再丢失进度。(`tradingagents/core/persistence.py`, `tradingagents/core/run_manager.py`, `tradingagents/api/ws/stream.py`)
+- ✅ **Artifact 无版本管理**: 新增 `artifact_versions` 表；`save_artifact` 覆盖前把旧版可变字段（title/subtitle/status/summary/content/payload）存档，版本号自增；新增 `GET /artifacts/{id}/versions` 端点查看历史，可回溯报告演化。(`tradingagents/core/persistence.py`, `tradingagents/api/routes/artifacts.py`)
+
 
 ---
 

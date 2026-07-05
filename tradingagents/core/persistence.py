@@ -163,6 +163,31 @@ CREATE TABLE IF NOT EXISTS strategy_lessons (
 CREATE INDEX IF NOT EXISTS idx_strategy_lessons_active ON strategy_lessons(active);
 CREATE INDEX IF NOT EXISTS idx_strategy_lessons_type ON strategy_lessons(lesson_type);
 CREATE INDEX IF NOT EXISTS idx_strategy_lessons_scope ON strategy_lessons(scope, target);
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    title TEXT,
+    subtitle TEXT,
+    status TEXT,
+    summary TEXT,
+    content_markdown TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    saved_at TEXT NOT NULL,
+    UNIQUE(artifact_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact ON artifact_versions(artifact_id, version);
+
+CREATE TABLE IF NOT EXISTS run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
 """
 
 
@@ -265,6 +290,46 @@ class Database:
         with self._conn() as conn:
             conn.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", values)
 
+    def save_run_event(self, run_id: str, seq: int, event_type: str, payload: dict) -> None:
+        """Persist a run event so a reconnecting client can replay progress
+        even after the server restarts (the in-memory ``Run.events`` list is
+        lost on restart). Best-effort: a write failure is logged, not raised."""
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO run_events (run_id, seq, event_type, payload_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        int(seq),
+                        event_type,
+                        json.dumps(payload or {}, ensure_ascii=False, default=str),
+                        now,
+                    ),
+                )
+        except Exception:
+            # Event persistence must never break the run pipeline.
+            pass
+
+    def list_run_events(self, run_id: str) -> list[dict]:
+        """Replay persisted events for a run, ordered by sequence."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT event_type, payload_json, created_at, seq FROM run_events "
+                "WHERE run_id = ? ORDER BY seq ASC",
+                (run_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json", "{}") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["payload"] = {}
+            result.append(d)
+        return result
+
     def save_report(
         self,
         report_id: str,
@@ -313,11 +378,14 @@ class Database:
             rows = conn.execute(query, params).fetchall()
             return [dict(row) for row in rows]
 
-    def list_runs(self, limit: int = 50) -> list[dict]:
-        """List recent runs."""
+    def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """List recent runs with pagination."""
+        limit = max(0, min(limit, 200))
+        offset = max(0, offset)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -351,10 +419,45 @@ class Database:
         tags: list[str] | None = None,
         created_at: str | None = None,
     ) -> None:
-        """Save a cross-skill artifact for the Library view."""
+        """Save a cross-skill artifact for the Library view.
+
+        If an artifact with the same id already exists, its mutable fields are
+        snapshotted into ``artifact_versions`` before the overwrite so the
+        Library can show how a report evolved across re-runs.
+        """
         now = datetime.now(timezone.utc).isoformat()
         created = created_at or now
         with self._conn() as conn:
+            # Snapshot the existing version before replacing (if any).
+            existing = conn.execute(
+                "SELECT title, subtitle, status, summary, content_markdown, "
+                "payload_json, updated_at FROM artifacts WHERE id = ?",
+                (artifact_id,),
+            ).fetchone()
+            if existing is not None:
+                next_version = (
+                    conn.execute(
+                        "SELECT COALESCE(MAX(version), 0) FROM artifact_versions WHERE artifact_id = ?",
+                        (artifact_id,),
+                    ).fetchone()[0]
+                    + 1
+                )
+                conn.execute(
+                    "INSERT INTO artifact_versions (artifact_id, version, title, subtitle, "
+                    "status, summary, content_markdown, payload_json, saved_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        artifact_id,
+                        next_version,
+                        existing["title"],
+                        existing["subtitle"],
+                        existing["status"],
+                        existing["summary"],
+                        existing["content_markdown"],
+                        existing["payload_json"],
+                        existing["updated_at"] or now,
+                    ),
+                )
             conn.execute(
                 """
                 INSERT OR REPLACE INTO artifacts (
@@ -393,8 +496,11 @@ class Database:
         subject_id: str | None = None,
         run_id: str | None = None,
         q: str | None = None,
+        offset: int = 0,
     ) -> list[dict]:
-        """List Library artifacts with optional filters."""
+        """List Library artifacts with optional filters and pagination."""
+        limit = max(0, min(limit, 200))
+        offset = max(0, offset)
         query = "SELECT * FROM artifacts"
         clauses: list[str] = []
         params: list[Any] = []
@@ -419,8 +525,9 @@ class Database:
             params.extend([like, like, like, like])
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY created_at DESC LIMIT ?"
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
         with self._conn() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._decode_artifact(dict(row)) for row in rows]
@@ -430,6 +537,24 @@ class Database:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
         return self._decode_artifact(dict(row)) if row else None
+
+    def list_artifact_versions(self, artifact_id: str) -> list[dict]:
+        """List historical snapshots of an artifact, newest version first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM artifact_versions WHERE artifact_id = ? "
+                "ORDER BY version DESC",
+                (artifact_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json", "{}") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["payload"] = {}
+            result.append(d)
+        return result
 
     def list_artifacts_for_run(self, run_id: str) -> list[dict]:
         """List all artifacts associated with a run."""
