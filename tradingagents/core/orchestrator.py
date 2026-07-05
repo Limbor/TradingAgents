@@ -17,13 +17,41 @@ logger = logging.getLogger(__name__)
 
 
 NAME_TO_TICKER = {
-    "茅台": "600519.SH",
-    "贵州茅台": "600519.SH",
-    "紫金": "601899.SH",
-    "紫金矿业": "601899.SH",
-    "宁德": "300750.SZ",
-    "宁德时代": "300750.SZ",
-    "五粮液": "000858.SZ",
+    # A股 — 白酒
+    "茅台": "600519.SH", "贵州茅台": "600519.SH",
+    "五粮液": "000858.SZ", "泸州老窖": "000568.SZ",
+    "山西汾酒": "600809.SH", "洋河": "002304.SZ",
+    # A股 — 新能源 / 电池
+    "宁德": "300750.SZ", "宁德时代": "300750.SZ", "宁王": "300750.SZ",
+    "比亚迪": "002594.SZ",
+    "隆基": "601012.SH", "隆基绿能": "601012.SH",
+    "阳光电源": "300274.SZ",
+    # A股 — 金融
+    "平安": "601318.SH", "中国平安": "601318.SH",
+    "招商银行": "600036.SH", "招行": "600036.SH",
+    "工商银行": "601398.SH", "工行": "601398.SH",
+    "中信证券": "600030.SH",
+    "东方财富": "300059.SZ",
+    # A股 — 有色 / 资源
+    "紫金": "601899.SH", "紫金矿业": "601899.SH",
+    "中国铝业": "601600.SH",
+    "北方稀土": "600111.SH",
+    # A股 — 科技 / 半导体
+    "中芯国际": "688981.SH",
+    "海光": "688041.SH", "海光信息": "688041.SH",
+    "中际旭创": "300308.SZ",
+    "立讯精密": "002475.SZ", "立讯": "002475.SZ",
+    "科大讯飞": "002230.SZ",
+    # A股 — 消费 / 医药
+    "恒瑞医药": "600276.SH", "恒瑞": "600276.SH",
+    "迈瑞医疗": "300760.SZ",
+    "伊利": "600887.SH", "伊利股份": "600887.SH",
+    "海天味业": "603288.SH",
+    # A股 — 制造
+    "三一重工": "600031.SH",
+    "美的": "000333.SZ", "美的集团": "000333.SZ",
+    "格力": "000651.SZ", "格力电器": "000651.SZ",
+    # 美股
     "苹果": "AAPL",
     "英伟达": "NVDA",
     "微软": "MSFT",
@@ -62,6 +90,26 @@ class Orchestrator:
         self.config = config or {}
         self.db = db
         self.llm_router = llm_router
+
+    def _resolve_known_ticker(self, text: str) -> str | None:
+        """Resolve a stock name in ``text`` to a ticker.
+
+        Checks the hardcoded ``NAME_TO_TICKER`` alias table first (fast path),
+        then falls back to a DB lookup over previously-analyzed reports so less
+        mainstream names (e.g. "生益科技") still resolve without a hardcoded
+        entry. Returns None if nothing matches.
+        """
+        ticker = _extract_known_name(text)
+        if ticker:
+            return ticker
+        if self.db is not None:
+            try:
+                result = self.db.search_ticker_by_name(text)
+                if result:
+                    return result
+            except Exception:
+                pass  # name lookup is best-effort; never break routing
+        return None
 
     async def route(self, user_message: str, session_id: str = "default") -> RouteResult:
         """Route a user message to the best matching skill.
@@ -112,7 +160,7 @@ class Orchestrator:
         if _contains_any(lowered, ["风险监控", "持仓风险", "风险扫描", "预警", "risk monitor"]):
             return self._route_risk_monitor(text)
 
-        if _has_analysis_intent(lowered) and (_extract_ticker(text) or _extract_known_name(text)):
+        if _has_analysis_intent(lowered) and (_extract_ticker(text) or self._resolve_known_ticker(text)):
             return self._route_stock_analysis(text)
 
         if _contains_any(lowered, ["持仓", "仓位", "组合", "portfolio", "holding", "position", "rebalance"]):
@@ -136,7 +184,7 @@ class Orchestrator:
 
     def _route_stock_analysis(self, text: str) -> RouteResult:
         skill = self.registry.get("stock_analysis")
-        ticker = _extract_ticker(text) or _extract_known_name(text)
+        ticker = _extract_ticker(text) or self._resolve_known_ticker(text)
         if not ticker:
             # No ticker/name resolved — do NOT silently fall back to a hardcoded
             # default (previously 600519.SH / 贵州茅台). Return low confidence so
@@ -184,7 +232,7 @@ class Orchestrator:
             action = "list"
 
         params: dict[str, Any] = {"action": action}
-        ticker = _extract_ticker(text) or _extract_known_name(text)
+        ticker = _extract_ticker(text) or self._resolve_known_ticker(text)
         if ticker:
             params["symbol"] = ticker
 

@@ -9,7 +9,9 @@ export default function Watchlist() {
   const runsQuery = useQuery({
     queryKey: ["runs", "watchlist"],
     queryFn: () => listRuns(50),
-    refetchInterval: 5000,
+    refetchInterval: 30000,
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
   });
   const [limit, setLimit] = useState("5");
   const [starting, setStarting] = useState(false);
@@ -84,7 +86,7 @@ export default function Watchlist() {
             {runs.map((run) => (
               <button
                 key={run.id}
-                onClick={() => navigate(`/analysis/${run.id}`)}
+                onClick={() => navigate(run.status === "completed" ? `/library?run_id=${run.id}` : `/analysis/${run.id}`)}
                 className="flex items-center justify-between rounded-lg border border-stone-800 bg-stone-950 px-3 py-2 text-left transition hover:border-teal-500/60"
               >
                 <div>

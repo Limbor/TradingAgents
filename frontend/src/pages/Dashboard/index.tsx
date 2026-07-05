@@ -3,19 +3,22 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   getConfig,
+  createRun,
   healthCheck,
+  listArtifacts,
   listHoldings,
   listRuns,
+  listStrategyLessons,
   refreshHoldingPrices,
   updateConfig,
   type DailyPipelineFilters,
-  type Holding,
-  type RunResponse,
 } from "../../api/client";
 import { FilterPanel } from "../../components/FilterPanel";
+import { KPICard, TimelineItem, HoldingsTable } from "../../components/Dashboard";
+import { buildPortfolioSummary, formatMoney } from "../../utils/portfolio";
 import {
   Activity,
-  ArrowRight,
+  Brain,
   Clock,
   Filter,
   PieChart,
@@ -29,11 +32,13 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
+import type { ArtifactInfo } from "../../api/client";
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [refreshingPrices, setRefreshingPrices] = useState(false);
+  const [startingDailyReview, setStartingDailyReview] = useState(false);
   const [refreshFeedback, setRefreshFeedback] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
 
@@ -51,27 +56,56 @@ export default function Dashboard() {
     }
   }, [showFilters, handleKeyDown]);
 
+  // Polling intervals are relaxed because Chat WS terminal events now
+  // invalidate ["runs"]/["dashboard-artifacts"]/["holdings"] on demand.
+  // staleTime prevents refetch storms when tabs re-mount or the window
+  // regains focus while data is still fresh.
   const runsQuery = useQuery({
     queryKey: ["runs"],
     queryFn: () => listRuns(20),
-    refetchInterval: 5000,
+    refetchInterval: 30000,
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
   });
-
   const holdingsQuery = useQuery({
     queryKey: ["holdings"],
     queryFn: listHoldings,
-    refetchInterval: 10000,
+    refetchInterval: 60000,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
-
   const healthQuery = useQuery({
     queryKey: ["health"],
     queryFn: healthCheck,
-    refetchInterval: 15000,
+    refetchInterval: 60000,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
-
-  const configQuery = useQuery({
-    queryKey: ["config"],
-    queryFn: getConfig,
+  const configQuery = useQuery({ queryKey: ["config"], queryFn: getConfig, staleTime: 60_000 });
+  const reflectionQuery = useQuery({
+    queryKey: ["reflections-summary"],
+    queryFn: async () => {
+      const res = await fetch("/api/v1/reflections/summary?lookback_days=30");
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 120000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const artifactQuery = useQuery({
+    queryKey: ["dashboard-artifacts"],
+    queryFn: () => listArtifacts({ limit: 20 }),
+    refetchInterval: 60000,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const lessonsQuery = useQuery({
+    queryKey: ["strategy-lessons"],
+    queryFn: () => listStrategyLessons({ limit: 5 }),
+    refetchInterval: 120000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const runs = runsQuery.data ?? [];
@@ -86,6 +120,13 @@ export default function Dashboard() {
     const today = new Date();
     return created.toDateString() === today.toDateString();
   });
+  const signalArtifacts = (artifactQuery.data ?? []).filter((item) =>
+    ["decision_pack", "signal_pack", "screening_report", "scanner_report"].includes(item.artifact_type)
+  ).slice(0, 3);
+  const riskArtifacts = (artifactQuery.data ?? []).filter((item) => item.artifact_type === "risk_report").slice(0, 3);
+  const riskKpi = buildRiskKpi(riskArtifacts, portfolio.count);
+  const dailyReviewDone = todayRuns.some((run) => run.skill_id === "daily_review" && run.status === "completed");
+  const dailyReviewRunning = todayRuns.some((run) => run.skill_id === "daily_review" && ["pending", "running"].includes(run.status));
 
   const goChat = (prompt: string) => {
     navigate("/chat", { state: { prompt, autoSend: true } });
@@ -104,6 +145,25 @@ export default function Dashboard() {
     } finally {
       setRefreshingPrices(false);
     }
+  };
+
+  const startDailyReview = async () => {
+    setStartingDailyReview(true);
+    try {
+      const run = await createRun("daily_review", { daily_limit: 5, candidate_limit: 80 });
+      await runsQuery.refetch();
+      navigate(`/library?run_id=${run.id}`);
+    } finally {
+      setStartingDailyReview(false);
+    }
+  };
+
+  const openRunDetail = (run: typeof runs[number]) => {
+    if (run.status === "completed") {
+      navigate(`/library?run_id=${run.id}`);
+      return;
+    }
+    navigate(`/analysis/${run.id}`);
   };
 
   return (
@@ -127,44 +187,39 @@ export default function Dashboard() {
 
       {/* KPI Bar */}
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <KPICard
-          icon={WalletCards}
-          label="持仓市值"
-          value={formatMoney(portfolio.value)}
-          sub={`${portfolio.count} 个持仓`}
-          tone="teal"
-        />
-        <KPICard
-          icon={Activity}
-          label="浮动盈亏"
-          value={formatMoney(portfolio.pnl)}
-          sub={`${portfolio.pnlPct >= 0 ? "+" : ""}${portfolio.pnlPct.toFixed(2)}%`}
-          tone={portfolio.pnl >= 0 ? "emerald" : "red"}
-        />
-        <KPICard
-          icon={PieChart}
-          label="集中度"
-          value={`${portfolio.concentration.toFixed(1)}%`}
-          sub={portfolio.topSymbol ? `最大 ${portfolio.topSymbol}` : "暂无持仓"}
-          tone={portfolio.concentration > 45 ? "amber" : "teal"}
-        />
-        <KPICard
-          icon={Sparkles}
-          label="今日任务"
-          value={String(todayRuns.length)}
-          sub={`${todayRuns.filter((r) => r.status === "completed").length} 已完成`}
-          tone="teal"
-        />
-        <KPICard
-          icon={ShieldCheck}
-          label="风险等级"
-          value={portfolio.count === 0 ? "-" : portfolio.concentration > 60 ? "高" : portfolio.concentration > 40 ? "中" : "低"}
-          sub={mcpStatus?.capability_flags?.risk_announcement_available ? "风险公告可用" : "基础模式"}
-          tone={portfolio.concentration > 60 ? "red" : portfolio.concentration > 40 ? "amber" : "emerald"}
-        />
+        <KPICard icon={WalletCards} label="持仓市值" value={formatMoney(portfolio.value)} sub={`${portfolio.count} 个持仓`} tone="teal" />
+        <KPICard icon={Activity} label="浮动盈亏" value={formatMoney(portfolio.pnl)} sub={`${portfolio.pnl >= 0 ? "+" : ""}${portfolio.pnlPct.toFixed(2)}%`} tone={portfolio.pnl >= 0 ? "emerald" : "red"} />
+        <KPICard icon={PieChart} label="集中度" value={`${portfolio.concentration.toFixed(1)}%`} sub={portfolio.topSymbol ? `最大 ${portfolio.topSymbol}` : "暂无持仓"} tone={portfolio.concentration > 45 ? "amber" : "teal"} />
+        <KPICard icon={Sparkles} label="今日任务" value={String(todayRuns.length)} sub={`${todayRuns.filter((r) => r.status === "completed").length} 已完成`} tone="teal" />
+        <KPICard icon={ShieldAlert} label="公告风险" value={riskKpi.value} sub={riskKpi.sub} tone={riskKpi.tone} />
       </section>
 
-      {/* Holdings detail comes first: this is the working surface users check most often. */}
+      <section className="rounded-lg border border-teal-500/20 bg-teal-500/5 p-4">
+        <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+          <div>
+            <div className="flex items-center gap-2">
+              <Brain className="h-4 w-4 text-teal-300" />
+              <h3 className="text-sm font-semibold text-stone-100">收盘复盘工作流</h3>
+              <span className={`rounded border px-2 py-0.5 text-xs ${dailyReviewDone ? "border-emerald-500/30 text-emerald-300" : dailyReviewRunning ? "border-amber-500/30 text-amber-300" : "border-stone-700 text-stone-400"}`}>
+                {dailyReviewDone ? "今日已完成" : dailyReviewRunning ? "运行中" : "待执行"}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-stone-400">
+              刷新持仓收盘价 → 扫描持仓风险 → 因果反思 → 每日选股 → 生成次日计划
+            </p>
+          </div>
+          <button
+            onClick={startDailyReview}
+            disabled={startingDailyReview || dailyReviewRunning}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-teal-500/40 bg-teal-500/10 px-4 py-2 text-sm font-semibold text-teal-100 transition hover:bg-teal-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Play className="h-4 w-4" />
+            {startingDailyReview || dailyReviewRunning ? "复盘运行中" : "开始收盘复盘"}
+          </button>
+        </div>
+      </section>
+
+      {/* Holdings */}
       <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -201,24 +256,16 @@ export default function Dashboard() {
           <div className="rounded-lg border border-dashed border-stone-700 bg-stone-950 px-4 py-10 text-center">
             <WalletCards className="mx-auto h-8 w-8 text-stone-600" />
             <p className="mt-3 text-sm text-stone-400">暂无持仓记录</p>
-            <button
-              onClick={() => navigate("/portfolio")}
-              className="mt-2 text-sm text-teal-300 hover:text-teal-200"
-            >
+            <button onClick={() => navigate("/portfolio")} className="mt-2 text-sm text-teal-300 hover:text-teal-200">
               添加第一笔持仓
             </button>
           </div>
         ) : (
-          <HoldingsTable
-            holdings={holdings}
-            totalValue={portfolio.value}
-            onAnalyze={(symbol) => goChat(`帮我分析 ${symbol}`)}
-            onManage={() => navigate("/portfolio")}
-          />
+          <HoldingsTable holdings={holdings} totalValue={portfolio.value} onAnalyze={(symbol) => goChat(`帮我分析 ${symbol}`)} onManage={() => navigate("/portfolio")} />
         )}
       </section>
 
-      {/* Lower grid: Timeline + Quick Actions */}
+      {/* Lower grid: Timeline + Quick Actions + Reflection */}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
           <div className="mb-4 flex items-center gap-2">
@@ -234,13 +281,14 @@ export default function Dashboard() {
           ) : (
             <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
               {todayRuns.map((run) => (
-                <TimelineItem key={run.id} run={run} onClick={() => navigate(`/analysis/${run.id}`)} />
+                <TimelineItem key={run.id} run={run} onClick={() => openRunDetail(run)} />
               ))}
             </div>
           )}
         </section>
 
         <div className="flex flex-col gap-4">
+          {/* Quick Actions */}
           <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
             <div className="mb-3 flex items-center gap-2">
               <Rocket className="h-4 w-4 text-teal-300" />
@@ -272,47 +320,33 @@ export default function Dashboard() {
                   </button>
                 </div>
               </div>
-              <QuickActionBtn
-                icon={ShieldAlert}
-                label="风险扫描"
-                desc="检查当前持仓的公告和风险事件"
-                onClick={() => goChat("分析当前持仓风险")}
-              />
-              <QuickActionBtn
-                icon={TrendingUp}
-                label="分析个股"
-                desc="深度 13-Agent 分析管道"
-                onClick={() => navigate("/chat")}
-              />
+              <QuickActionBtn icon={ShieldAlert} label="风险扫描" desc="检查当前持仓的公告和风险事件" onClick={() => goChat("分析当前持仓风险")} />
+              <QuickActionBtn icon={TrendingUp} label="分析个股" desc="深度 13-Agent 分析管道" onClick={() => navigate("/chat")} />
             </div>
           </section>
+
+          <LatestSignalCard artifacts={signalArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} />
+          <RiskTodoCard artifacts={riskArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} />
+          <StrategyLessonsCard lessons={lessonsQuery.data ?? []} />
+
+          {/* Reflection Summary Card */}
+          <ReflectionSummaryCard data={reflectionQuery.data} />
         </div>
       </div>
 
       {/* Filter Modal */}
       {showFilters && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-          onClick={() => setShowFilters(false)}
-        >
-          <div
-            className="relative mx-4 w-full max-w-3xl rounded-xl border border-stone-700 bg-stone-900 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal header */}
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowFilters(false)}>
+          <div className="relative mx-4 w-full max-w-3xl rounded-xl border border-stone-700 bg-stone-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-stone-800 px-6 py-4">
               <div>
                 <h3 className="text-lg font-semibold text-stone-50">选股过滤器</h3>
                 <p className="mt-0.5 text-xs text-stone-500">选择预设方案或自定义过滤条件</p>
               </div>
-              <button
-                onClick={() => setShowFilters(false)}
-                className="rounded-lg p-1.5 text-stone-500 transition hover:bg-stone-800 hover:text-stone-300"
-              >
+              <button onClick={() => setShowFilters(false)} className="rounded-lg p-1.5 text-stone-500 transition hover:bg-stone-800 hover:text-stone-300">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            {/* Modal body */}
             <div className="max-h-[70vh] overflow-y-auto px-6 py-5">
               <FilterPanel
                 filters={(configQuery.data?.daily_pipeline_filters ?? {}) as DailyPipelineFilters}
@@ -330,164 +364,7 @@ export default function Dashboard() {
   );
 }
 
-/* ─────────────── Sub-components ─────────────── */
-
-function KPICard({
-  icon: Icon,
-  label,
-  value,
-  sub,
-  tone = "teal",
-}: {
-  icon: typeof Activity;
-  label: string;
-  value: string;
-  sub: string;
-  tone?: "teal" | "emerald" | "amber" | "red";
-}) {
-  const tones = {
-    teal: "text-teal-300",
-    emerald: "text-emerald-300",
-    amber: "text-amber-300",
-    red: "text-red-300",
-  };
-  return (
-    <div className="rounded-lg border border-stone-800 bg-stone-900 p-4">
-      <div className={`mb-2 flex items-center gap-2 text-xs ${tones[tone]}`}>
-        <Icon className="h-4 w-4" />
-        <span>{label}</span>
-      </div>
-      <div className="font-mono text-xl font-semibold text-stone-50">{value}</div>
-      <div className="mt-1 text-xs text-stone-500">{sub}</div>
-    </div>
-  );
-}
-
-function HoldingsTable({
-  holdings,
-  totalValue,
-  onAnalyze,
-  onManage,
-}: {
-  holdings: Holding[];
-  totalValue: number;
-  onAnalyze: (symbol: string) => void;
-  onManage: () => void;
-}) {
-  const sorted = [...holdings].sort((a, b) => holdingMarketValue(b) - holdingMarketValue(a));
-  return (
-    <div className="overflow-x-auto rounded-lg border border-stone-800">
-      <table className="w-full min-w-[860px] text-left text-sm">
-        <thead className="bg-stone-950 text-xs uppercase text-stone-500">
-          <tr>
-            <th className="px-3 py-2">标的</th>
-            <th className="px-3 py-2 text-right">数量</th>
-            <th className="px-3 py-2 text-right">成本</th>
-            <th className="px-3 py-2 text-right">现价</th>
-            <th className="px-3 py-2 text-right">市值</th>
-            <th className="px-3 py-2 text-right">盈亏</th>
-            <th className="px-3 py-2 text-right">收益率</th>
-            <th className="px-3 py-2 text-right">仓位</th>
-            <th className="px-3 py-2">备注</th>
-            <th className="px-3 py-2 text-right">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((holding) => {
-            const price = holding.current_price ?? holding.avg_cost;
-            const value = holdingMarketValue(holding);
-            const pnl = holdingPnl(holding);
-            const pnlPct = holding.avg_cost ? ((price - holding.avg_cost) / holding.avg_cost) * 100 : 0;
-            const weight = totalValue ? (value / totalValue) * 100 : 0;
-            return (
-              <tr key={holding.symbol} className="border-t border-stone-800">
-                <td className="px-3 py-2">
-                  <div className="font-mono font-semibold text-stone-100">{holding.symbol}</div>
-                  <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-stone-800">
-                    <div
-                      className={`h-full rounded-full ${weight > 50 ? "bg-amber-300" : "bg-teal-300"}`}
-                      style={{ width: `${Math.min(weight, 100)}%` }}
-                    />
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(holding.quantity)}</td>
-                <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(holding.avg_cost)}</td>
-                <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(price)}</td>
-                <td className="px-3 py-2 text-right font-mono text-stone-100">{formatMoney(value)}</td>
-                <td className={`px-3 py-2 text-right font-mono ${pnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
-                  {formatMoney(pnl)}
-                </td>
-                <td className={`px-3 py-2 text-right font-mono ${pnlPct >= 0 ? "text-emerald-300" : "text-red-300"}`}>
-                  {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-stone-300">{weight.toFixed(1)}%</td>
-                <td className="max-w-44 truncate px-3 py-2 text-stone-500">{holding.notes || "-"}</td>
-                <td className="px-3 py-2">
-                  <div className="flex justify-end gap-1.5">
-                    <button
-                      onClick={() => onAnalyze(holding.symbol)}
-                      className="rounded border border-stone-700 px-2 py-1 text-xs text-stone-400 transition hover:border-teal-500/50 hover:text-teal-300"
-                    >
-                      分析
-                    </button>
-                    <button
-                      onClick={onManage}
-                      className="rounded border border-stone-700 px-2 py-1 text-xs text-stone-400 transition hover:border-teal-500/50 hover:text-stone-100"
-                    >
-                      编辑
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function TimelineItem({ run, onClick }: { run: RunResponse; onClick: () => void }) {
-  const time = new Date(run.created_at).toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const skillLabels: Record<string, string> = {
-    stock_analysis: "股票分析",
-    daily_pipeline: "每日选股",
-    market_scanner: "市场扫描",
-    risk_monitor: "风险监控",
-    portfolio_management: "持仓管理",
-  };
-  const statusColors: Record<string, string> = {
-    completed: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-    running: "border-teal-500/30 bg-teal-500/10 text-teal-300",
-    failed: "border-red-500/30 bg-red-500/10 text-red-300",
-  };
-  const ticker = run.params?.ticker ?? run.params?.symbol;
-  const tickerStr = ticker ? String(ticker) : null;
-
-  return (
-    <button
-      onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-lg border border-stone-800 bg-stone-950 px-3 py-2.5 text-left transition hover:border-teal-500/40"
-    >
-      <span className="w-11 shrink-0 text-xs font-mono text-stone-500">{time}</span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-stone-100 truncate">
-            {skillLabels[run.skill_id] ?? run.skill_id}
-            {tickerStr && <span className="ml-1 font-mono text-teal-300">{tickerStr}</span>}
-          </span>
-          <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${statusColors[run.status] ?? "text-stone-400"}`}>
-            {run.status}
-          </span>
-        </div>
-      </div>
-      <ArrowRight className="h-3.5 w-3.5 shrink-0 text-stone-600" />
-    </button>
-  );
-}
+/* ─── Sub-components (Dashboard-specific) ─── */
 
 function QuickActionBtn({
   icon: Icon,
@@ -517,44 +394,172 @@ function QuickActionBtn({
   );
 }
 
-/* ─────────────── Utilities ─────────────── */
+type KpiTone = "teal" | "emerald" | "amber" | "red";
 
-function buildPortfolioSummary(holdings: Holding[]) {
-  let cost = 0;
-  let value = 0;
-  let topValue = 0;
-  let topSymbol = "";
-  for (const item of holdings) {
-    const rowCost = item.quantity * item.avg_cost;
-    const rowValue = item.quantity * (item.current_price ?? item.avg_cost);
-    cost += rowCost;
-    value += rowValue;
-    if (rowValue > topValue) {
-      topValue = rowValue;
-      topSymbol = item.symbol;
-    }
+function buildRiskKpi(artifacts: ArtifactInfo[], holdingCount: number): { value: string; sub: string; tone: KpiTone } {
+  if (holdingCount === 0) {
+    return { value: "-", sub: "暂无持仓", tone: "teal" };
   }
-  const pnl = value - cost;
-  const pnlPct = cost ? (pnl / cost) * 100 : 0;
-  const concentration = value ? (topValue / value) * 100 : 0;
-  return { count: holdings.length, cost, value, pnl, pnlPct, concentration, topSymbol };
+
+  const latest = artifacts[0];
+  if (!latest) {
+    return { value: "未扫描", sub: "运行持仓风险扫描", tone: "amber" };
+  }
+
+  const risks = parseRiskRows(latest.payload?.risks);
+  const levels = risks.map((item) => normalizeRiskLevel(item.level));
+  const highCount = levels.filter((level) => ["critical", "high", "red"].includes(level)).length;
+  const actionableCount = levels.filter((level) => !["none", "green", "low", "unknown"].includes(level)).length;
+  const scanDate = formatArtifactDate(latest.created_at);
+
+  if (highCount > 0) {
+    return { value: "高", sub: `高风险 ${highCount} 条 · ${scanDate}`, tone: "red" };
+  }
+  if (actionableCount > 0) {
+    return { value: "中", sub: `风险待办 ${actionableCount} 条 · ${scanDate}`, tone: "amber" };
+  }
+  if (levels.length > 0 && levels.every((level) => level === "unknown")) {
+    return { value: "未知", sub: `扫描结果不可判定 · ${scanDate}`, tone: "amber" };
+  }
+  return { value: "低", sub: `最近扫描 ${scanDate}`, tone: "emerald" };
 }
 
-function holdingMarketValue(holding: Holding) {
-  return holding.quantity * (holding.current_price ?? holding.avg_cost);
+function parseRiskRows(value: unknown): Array<{ level?: unknown }> {
+  return Array.isArray(value) ? value.filter((item): item is { level?: unknown } => typeof item === "object" && item !== null) : [];
 }
 
-function holdingPnl(holding: Holding) {
-  return ((holding.current_price ?? holding.avg_cost) - holding.avg_cost) * holding.quantity;
+function normalizeRiskLevel(value: unknown): string {
+  const text = String(value ?? "unknown").trim().toLowerCase();
+  if (["critical", "high", "red"].includes(text)) return text;
+  if (["orange", "medium", "moderate", "yellow", "amber"].includes(text)) return "medium";
+  if (["green", "low", "none", "ok"].includes(text)) return text === "ok" ? "green" : text;
+  return "unknown";
 }
 
-function formatMoney(value: number) {
-  if (Math.abs(value) >= 10000) return `${(value / 10000).toFixed(2)}万`;
-  return value.toFixed(0);
+function formatArtifactDate(value: string | null | undefined): string {
+  return value ? value.slice(0, 10) : "未知日期";
 }
 
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
-    maximumFractionDigits: 2,
-  }).format(value);
+function LatestSignalCard({ artifacts, onOpen }: { artifacts: ArtifactInfo[]; onOpen: (item: ArtifactInfo) => void }) {
+  return (
+    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <TrendingUp className="h-4 w-4 text-teal-300" />
+        <h3 className="text-sm font-semibold text-stone-100">最新信号</h3>
+      </div>
+      {artifacts.length === 0 ? (
+        <p className="text-xs text-stone-500">暂无选股或扫描产物。</p>
+      ) : (
+        <div className="space-y-2">
+          {artifacts.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => onOpen(item)}
+              className="w-full rounded border border-stone-800 bg-stone-950 p-2 text-left transition hover:border-teal-500/40"
+            >
+              <div className="truncate text-xs font-medium text-stone-200">{item.title}</div>
+              <div className="mt-1 line-clamp-2 text-xs text-stone-500">{item.summary || item.subtitle || item.artifact_type}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RiskTodoCard({ artifacts, onOpen }: { artifacts: ArtifactInfo[]; onOpen: (item: ArtifactInfo) => void }) {
+  return (
+    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <ShieldAlert className="h-4 w-4 text-amber-300" />
+        <h3 className="text-sm font-semibold text-stone-100">风险待办</h3>
+      </div>
+      {artifacts.length === 0 ? (
+        <p className="text-xs text-stone-500">暂无持仓风险报告。</p>
+      ) : (
+        <div className="space-y-2">
+          {artifacts.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => onOpen(item)}
+              className="w-full rounded border border-stone-800 bg-stone-950 p-2 text-left transition hover:border-amber-500/40"
+            >
+              <div className="truncate text-xs font-medium text-stone-200">{item.title}</div>
+              <div className="mt-1 line-clamp-2 text-xs text-stone-500">{item.summary || "查看风险报告"}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StrategyLessonsCard({ lessons }: { lessons: Array<{ id: string; finding: string; confidence: string; suggested_adjustment?: string }> }) {
+  return (
+    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Brain className="h-4 w-4 text-purple-300" />
+        <h3 className="text-sm font-semibold text-stone-100">策略经验</h3>
+      </div>
+      {lessons.length === 0 ? (
+        <p className="text-xs text-stone-500">暂无可回流的策略经验。系统只会沉淀可归因的信号时点误判。</p>
+      ) : (
+        <div className="space-y-2">
+          {lessons.map((lesson) => (
+            <div key={lesson.id} className="rounded border border-purple-500/20 bg-purple-500/5 p-2">
+              <div className="mb-1 text-xs text-purple-300">{lesson.confidence}</div>
+              <div className="line-clamp-3 text-xs text-stone-300">{lesson.finding}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReflectionSummaryCard({ data }: { data: { total: number; correct: number; accuracy: number } | null | undefined }) {
+  const triggerReflection = async () => {
+    try {
+      await fetch("/api/v1/reflections/trigger", { method: "POST" });
+    } catch {
+      // silently ignore
+    }
+  };
+
+  return (
+    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Brain className="h-4 w-4 text-purple-300" />
+        <h3 className="text-sm font-semibold text-stone-100">反思摘要</h3>
+      </div>
+      {data && data.total > 0 ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-stone-400">30天正确率</span>
+            <span className={`font-mono text-sm font-semibold ${data.accuracy >= 0.6 ? "text-emerald-300" : data.accuracy >= 0.4 ? "text-amber-300" : "text-red-300"}`}>
+              {(data.accuracy * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-stone-400">已反思决策</span>
+            <span className="font-mono text-sm text-stone-200">{data.total}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-stone-400">正确/错误</span>
+            <span className="font-mono text-xs text-stone-300">
+              <span className="text-emerald-300">{data.correct}</span> / <span className="text-red-300">{data.total - data.correct}</span>
+            </span>
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-stone-500">暂无反思数据。完成选股后系统将自动回顾决策准确性。</p>
+      )}
+      <button
+        onClick={triggerReflection}
+        className="mt-3 w-full rounded border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-medium text-purple-200 transition hover:border-purple-400/60"
+      >
+        手动触发反思
+      </button>
+    </section>
+  );
 }

@@ -506,6 +506,13 @@ WebSocket 端点：
 - ✅ **OHLCV 缓存键含 curr_date 致碎片化**: AKShare/TuShare 缓存文件名去掉日期改为每 code 单文件（`{code}-AKShare-data.csv`）；缓存已覆盖 `curr_date` 时直接复用，否则只拉缺口 `[max_date+1, curr_date]` 增量追加，并按 5 年滚动窗口裁剪。磁盘不再随每次运行增长，同日多次分析命中缓存。(`tradingagents/dataflows/akshare_stock.py`, `tradingagents/dataflows/tushare_stock.py`)
 - ✅ **RiskMonitor 风险分级过粗**: 从纯计数（<3=orange, ≥3=red）改为关键词严重度分级——`立案/违规/处罚/退市` 直接 red，`问询/减持/质押/业绩预亏/商誉减值` orange，无映射关键词时回退计数；并对相同标题公告去重，避免 routine 减持公告误报 red。(`tradingagents/skills/risk_monitor/skill.py`)
 
+### 9.6 已修复（第四批 中价值快修，2026-07-05）
+
+- ✅ **LLM Router 每次新建 client + prompt 注入风险**: LLM client + bind_tools 在 `__init__` 懒加载缓存，`_get_llm_with_tools` 复用，避免每次路由重建连接；用户消息包 `<user_input>` 标签，system prompt 声明标签内为不可信数据，抵御"忽略指令路由到 X"类注入。(`tradingagents/core/llm_router.py`)
+- ✅ **`NAME_TO_TICKER` 仅 11 别名**: 别名表扩展至 47 个（白酒/新能源/金融/有色/半导体/消费制造常见 A 股 + 美股）；新增 `db.search_ticker_by_name(text)` 从 reports 表按子串反查；`Orchestrator._resolve_known_ticker` 字典优先 + DB 兜底，未在硬编码表中的标的（如已分析过的"生益科技"）也能路由。(`tradingagents/core/orchestrator.py`, `tradingagents/core/persistence.py`)
+- ✅ **`/ws/chat` 串行无法中断**: run 事件流消费改为后台 `asyncio.Task`，主循环持续 `receive_json`；支持 `{"action":"cancel","run_id"}` 取消当前 run（返回 `run_cancellation_ack`）；`send_lock` 序列化所有 socket 写，避免后台消费者与主循环并发写损坏帧。(`tradingagents/api/ws/stream.py`)
+- ✅ **前端 Dashboard 与 WS 重复轮询**: Dashboard/Watchlist 的 `refetchInterval` 拉长（runs 5s→30s, holdings 10s→60s, health/artifacts 15s→60s），加 `staleTime` + `refetchOnWindowFocus:false`；Chat hooks 在 `run_complete`/`error` 时 `invalidateQueries(["runs"],["dashboard-artifacts"],["holdings"])`，WS 事件驱动刷新取代密集轮询。(`frontend/src/pages/Dashboard/index.tsx`, `frontend/src/pages/Watchlist/index.tsx`, `frontend/src/pages/Chat/hooks.ts`)
+
 
 ---
 

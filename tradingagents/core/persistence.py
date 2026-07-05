@@ -820,6 +820,36 @@ class Database:
             )
             return cursor.rowcount > 0
 
+    def search_ticker_by_name(self, text: str) -> str | None:
+        """Resolve a company name embedded in ``text`` to a ticker.
+
+        Best-effort lookup that loads distinct ``ticker_name`` values from
+        reports and checks whether any appears as a substring of ``text``. This
+        covers names not in the hardcoded ``NAME_TO_TICKER`` alias table (e.g.
+        "生益科技" resolves if the user has analyzed it before). Returns the
+        first matching ticker or None.
+        """
+        cleaned = (text or "").strip()
+        if not cleaned or len(cleaned) < 2:
+            return None
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ticker_name, ticker FROM reports "
+                "WHERE ticker_name IS NOT NULL AND length(ticker_name) >= 2 "
+                "ORDER BY created_at DESC LIMIT 500"
+            ).fetchall()
+        # Longer names first so "宁德时代" wins over a generic shorter substring.
+        candidates = sorted(
+            (dict(r) for r in rows if r["ticker_name"] and r["ticker"]),
+            key=lambda r: len(r["ticker_name"]),
+            reverse=True,
+        )
+        for row in candidates:
+            name = row["ticker_name"]
+            if name and name in cleaned:
+                return row["ticker"]
+        return None
+
     def list_holdings(self) -> list[dict]:
         """List all holdings."""
         with self._conn() as conn:
