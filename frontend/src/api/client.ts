@@ -34,6 +34,88 @@ export interface ReportDetail extends ReportInfo {
   content: string;
 }
 
+export interface ArtifactInfo {
+  id: string;
+  run_id: string;
+  skill_id: string;
+  artifact_type: string;
+  title: string;
+  subtitle: string | null;
+  subject_type: string | null;
+  subject_id: string | null;
+  subject_name: string | null;
+  status: string;
+  summary: string | null;
+  content_markdown: string | null;
+  payload: Record<string, unknown>;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategyLesson {
+  id: string;
+  lesson_type: string;
+  scope: string;
+  target: string;
+  finding: string;
+  suggested_adjustment: string;
+  evidence_count: number;
+  confidence: string;
+  active: boolean;
+  expires_at: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReflectionCase {
+  id: string;
+  source_type: string;
+  reflection_scope: string;
+  eligible_for_strategy_learning: boolean;
+  status: string;
+  symbol: string;
+  name: string | null;
+  signal_date: string;
+  horizon_days: number;
+  due_date: string | null;
+  source_run_id: string;
+  source_artifact_id: string;
+  snapshot_payload: Record<string, unknown>;
+  outcome_payload: Record<string, unknown>;
+  attribution_payload: Record<string, unknown>;
+  lesson_payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TradeCondition {
+  kind?: string;
+  description?: string;
+  source?: string;
+}
+
+export interface Plan {
+  id: string;
+  symbol: string;
+  name: string | null;
+  entry_zone: number[];
+  stop_loss: number | null;
+  targets: number[];
+  position_pct: number | null;
+  conditions: TradeCondition[];
+  rating: string | null;
+  status: string;
+  source: string;
+  artifact_id: string;
+  reflection_case_id: string;
+  created_at: string;
+  updated_at: string;
+  triggered_at: string | null;
+  trigger_reason: string | null;
+}
+
 export interface ModelOption {
   label: string;
   value: string;
@@ -80,6 +162,21 @@ export interface ConfigResponse {
   api_keys: Record<string, boolean>;
 }
 
+export interface TradingTemporalContext {
+  market: string;
+  now: string;
+  timezone: string;
+  market_asof_date: string;
+  latest_close_date: string;
+  decision_target_date: string;
+  info_cutoff: string;
+  calendar_state: "trading_day" | "holiday";
+  session_state: "before_close_data" | "after_close_data" | "non_trading";
+  source: string;
+  warnings: string[];
+  data_policy: Record<string, string>;
+}
+
 export interface UserProfile {
   investment_style: "short_term" | "medium_term" | "long_term";
   risk_tolerance: "low" | "moderate" | "high";
@@ -89,11 +186,21 @@ export interface UserProfile {
 
 export interface Holding {
   symbol: string;
+  name?: string | null;
   quantity: number;
   avg_cost: number;
   current_price: number | null;
   notes: string | null;
   updated_at: string;
+  latest_analysis?: {
+    artifact_id?: string | null;
+    run_id?: string | null;
+    date?: string | null;
+    created_at?: string | null;
+    rating?: string | null;
+    summary?: string | null;
+    title?: string | null;
+  } | null;
 }
 
 export interface RefreshHoldingPricesResponse {
@@ -151,8 +258,154 @@ export async function getReport(reportId: string): Promise<ReportDetail> {
   return fetchJson(`${API_BASE}/reports/${reportId}`);
 }
 
+export async function listArtifacts(params: {
+  limit?: number;
+  skill_id?: string;
+  artifact_type?: string;
+  subject_type?: string;
+  subject_id?: string;
+  run_id?: string;
+  q?: string;
+} = {}): Promise<ArtifactInfo[]> {
+  const search = new URLSearchParams({ limit: String(params.limit ?? 50) });
+  for (const key of ["skill_id", "artifact_type", "subject_type", "subject_id", "run_id", "q"] as const) {
+    const value = params[key];
+    if (value) search.set(key, value);
+  }
+  return fetchJson(`${API_BASE}/artifacts?${search}`);
+}
+
+export async function getArtifact(artifactId: string): Promise<ArtifactInfo> {
+  return fetchJson(`${API_BASE}/artifacts/${artifactId}`);
+}
+
+export async function listRunArtifacts(runId: string): Promise<ArtifactInfo[]> {
+  return fetchJson(`${API_BASE}/runs/${runId}/artifacts`);
+}
+
+export async function listStrategyLessons(params: {
+  active_only?: boolean;
+  lesson_type?: string;
+  limit?: number;
+} = {}): Promise<StrategyLesson[]> {
+  const search = new URLSearchParams({
+    active_only: String(params.active_only ?? true),
+    limit: String(params.limit ?? 20),
+  });
+  if (params.lesson_type) search.set("lesson_type", params.lesson_type);
+  return fetchJson(`${API_BASE}/strategy-lessons?${search}`);
+}
+
+export async function listReflectionCases(params: {
+  status?: string;
+  symbol?: string;
+  reflection_scope?: string;
+  eligible_only?: boolean;
+  limit?: number;
+} = {}): Promise<ReflectionCase[]> {
+  const search = new URLSearchParams({ limit: String(params.limit ?? 50) });
+  if (params.status) search.set("status", params.status);
+  if (params.symbol) search.set("symbol", params.symbol);
+  if (params.reflection_scope) search.set("reflection_scope", params.reflection_scope);
+  if (params.eligible_only !== undefined) search.set("eligible_only", String(params.eligible_only));
+  return fetchJson(`${API_BASE}/reflection-cases?${search}`);
+}
+
+export async function saveCandidateAction(body: {
+  action: "adopt" | "plan" | "executed" | "watch" | "observe" | "private" | "private_review" | "ignore" | "dismiss";
+  symbol: string;
+  name?: string;
+  run_id?: string;
+  artifact_id?: string;
+  trade_date?: string;
+  payload?: Record<string, unknown>;
+}): Promise<{ status: string; case_id?: string | null; message: string }> {
+  return fetchJson(`${API_BASE}/candidate-actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createPlan(body: {
+  symbol: string;
+  name?: string;
+  entry_zone?: number[];
+  stop_loss?: number;
+  targets?: number[];
+  position_pct?: number;
+  conditions?: TradeCondition[];
+  rating?: string;
+  status?: string;
+  source?: string;
+  artifact_id?: string;
+  reflection_case_id?: string;
+}): Promise<Plan> {
+  return fetchJson(`${API_BASE}/plans`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listPlans(params: {
+  status?: string;
+  symbol?: string;
+  source?: string;
+  limit?: number;
+} = {}): Promise<Plan[]> {
+  const search = new URLSearchParams({ limit: String(params.limit ?? 50) });
+  if (params.status) search.set("status", params.status);
+  if (params.symbol) search.set("symbol", params.symbol);
+  if (params.source) search.set("source", params.source);
+  return fetchJson(`${API_BASE}/plans?${search}`);
+}
+
+export async function updatePlan(
+  planId: string,
+  body: { status?: string; reflection_case_id?: string },
+): Promise<Plan> {
+  return fetchJson(`${API_BASE}/plans/${planId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deletePlan(planId: string): Promise<{ deleted: number }> {
+  return fetchJson(`${API_BASE}/plans/${planId}`, { method: "DELETE" });
+}
+
+export interface PlanAlert {
+  plan_id: string;
+  symbol: string;
+  name: string | null;
+  reason: string;
+  details: string[];
+  price: number | null;
+  trade_date: string | null;
+  triggered_at: string;
+}
+
+export async function advanceTradingDay(): Promise<{
+  refreshed_prices: {
+    updated: number;
+    failed: { symbol: string; reason: string }[];
+    holdings: Record<string, unknown>[];
+  };
+  plan_alerts: PlanAlert[];
+  temporal_context: TradingTemporalContext;
+}> {
+  return fetchJson(`${API_BASE}/portfolio/advance-trading-day`, { method: "POST" });
+}
+
 export async function getConfig(): Promise<ConfigResponse> {
   return fetchJson(`${API_BASE}/config`);
+}
+
+export async function getTradingTime(market = "cn_a"): Promise<TradingTemporalContext> {
+  const params = new URLSearchParams({ market });
+  return fetchJson(`${API_BASE}/trading-time?${params}`);
 }
 
 export async function updateConfig(

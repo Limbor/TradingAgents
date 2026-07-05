@@ -234,3 +234,5 @@ frontend/dist/
 # Dev logs and pids
 .dev-logs/
 .dev-pids/
+# Claude Code worktrees (local working copies, not part of the repo)
+.claude/worktrees/

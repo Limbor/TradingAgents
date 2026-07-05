@@ -9,6 +9,9 @@ from functools import lru_cache
 from datetime import date, timedelta
 from typing import Any
 
+from tradingagents.core.trading_time import get_temporal_context
+from tradingagents.dataflows.symbol_utils import detect_market
+
 logger = logging.getLogger(__name__)
 
 _KNOWN_CN_NAMES = {
@@ -64,6 +67,29 @@ def resolve_portfolio_symbol(raw: str) -> str:
     return upper
 
 
+def resolve_portfolio_name(symbol: str) -> str:
+    """Resolve a display name for a canonical holding symbol.
+
+    This is intentionally best-effort and non-fatal. It first uses the small
+    built-in name map, then the cached AKShare A-share code/name table.
+    """
+
+    canonical = resolve_portfolio_symbol(symbol)
+    for name, mapped in _KNOWN_CN_NAMES.items():
+        if mapped == canonical:
+            return name
+    if re.fullmatch(r"\d{6}\.(?:SH|SZ|BJ)", canonical):
+        code = canonical.split(".")[0]
+        try:
+            mapping = _cn_name_map()
+            for name, mapped in mapping.items():
+                if mapped == canonical or mapped.split(".")[0] == code:
+                    return name
+        except Exception as exc:
+            logger.info("Portfolio name lookup unavailable for %s: %s", canonical, exc)
+    return canonical
+
+
 async def resolve_portfolio_symbol_async(raw: str) -> str:
     """Resolve symbol with optional dynamic CN name lookup."""
 
@@ -81,10 +107,13 @@ async def latest_close(symbol: str, config: dict[str, Any]) -> dict[str, Any] | 
     """Fetch latest close from MCP first, then local dataflows."""
 
     canonical = resolve_portfolio_symbol(symbol)
-    mcp_quote = await _latest_close_from_mcp(canonical, config)
+    market = detect_market(canonical)
+    temporal_context = get_temporal_context(config, market=market)
+    asof_date = date.fromisoformat(temporal_context.market_asof_date)
+    mcp_quote = await _latest_close_from_mcp(canonical, config, asof_date)
     if mcp_quote is not None:
         return mcp_quote
-    return await asyncio.to_thread(_latest_close_from_dataflows, canonical)
+    return await asyncio.to_thread(_latest_close_from_dataflows, canonical, asof_date)
 
 
 def _looks_like_cn_name(text: str) -> bool:
@@ -123,22 +152,35 @@ def _resolve_cn_name_with_akshare(name: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-async def _latest_close_from_mcp(symbol: str, config: dict[str, Any]) -> dict[str, Any] | None:
+async def _latest_close_from_mcp(symbol: str, config: dict[str, Any], end: date) -> dict[str, Any] | None:
     from tradingagents.core.mcp_client import get_mcp_client
 
     client = await get_mcp_client(config)
     if client is None:
         return None
-    end = date.today()
-    start = end - timedelta(days=14)
-    try:
-        payload = await client.get_stock_daily(
-            [symbol],
-            start.isoformat(),
-            end.isoformat(),
-        )
-    except Exception as exc:
-        logger.info("MCP latest close failed for %s: %s", symbol, exc)
+    start = end - timedelta(days=30)
+    payload = None
+    last_error: Exception | None = None
+    # StockManager tools historically accepted compact YYYYMMDD; some local
+    # callers used ISO dates. Try compact first, then ISO for compatibility.
+    for start_date, end_date in (
+        (start.strftime("%Y%m%d"), end.strftime("%Y%m%d")),
+        (start.isoformat(), end.isoformat()),
+    ):
+        try:
+            payload = await client.get_stock_daily(
+                [symbol],
+                start_date,
+                end_date,
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+        if _latest_row_from_payload(payload, symbol) is not None:
+            break
+    if payload is None:
+        if last_error is not None:
+            logger.info("MCP latest close failed for %s: %s", symbol, last_error)
         return None
     row = _latest_row_from_payload(payload, symbol)
     if row is None:
@@ -150,25 +192,33 @@ async def _latest_close_from_mcp(symbol: str, config: dict[str, Any]) -> dict[st
     return {"symbol": symbol, "close": close, "trade_date": trade_date, "source": "stockmanager_mcp"}
 
 
-def _latest_close_from_dataflows(symbol: str) -> dict[str, Any] | None:
+def _latest_close_from_dataflows(symbol: str, end: date) -> dict[str, Any] | None:
     from tradingagents.dataflows.akshare_stock import load_ohlcv_cn
-    from tradingagents.dataflows.symbol_utils import detect_market
     from tradingagents.dataflows.y_finance import get_YFin_data_online
 
-    end = date.today()
+    market = detect_market(symbol)
     try:
-        if detect_market(symbol) == "cn_a":
+        if market == "cn_a":
             data = load_ohlcv_cn(symbol, end.isoformat())
         else:
             start = (end - timedelta(days=21)).isoformat()
             data = get_YFin_data_online(symbol, start, end.isoformat())
     except Exception as exc:
         logger.info("Local latest close failed for %s: %s", symbol, exc)
+        # Final lightweight fallback for A-shares: call AKShare directly with a
+        # short window. This avoids failures caused by stale/empty framework
+        # cache files or stricter cleaning in load_ohlcv_cn.
+        if market == "cn_a":
+            return _latest_close_from_akshare_direct(symbol, end)
         return None
     if data is None or data.empty or "Close" not in data.columns:
+        if market == "cn_a":
+            return _latest_close_from_akshare_direct(symbol, end)
         return None
     data = data.dropna(subset=["Close"])
     if data.empty:
+        if market == "cn_a":
+            return _latest_close_from_akshare_direct(symbol, end)
         return None
     row = data.iloc[-1]
     close = float(row["Close"])
@@ -185,7 +235,14 @@ def _latest_row_from_payload(payload: Any, symbol: str) -> dict[str, Any] | None
         return None
     rows = payload.get("rows") or payload.get("data") or payload.get(symbol)
     if isinstance(rows, dict):
-        rows = rows.get("rows") or rows.get("data") or [rows]
+        rows = (
+            rows.get("rows")
+            or rows.get("data")
+            or rows.get(symbol)
+            or rows.get(symbol.upper())
+            or _flatten_symbol_rows(rows)
+            or [rows]
+        )
     if not isinstance(rows, list) or not rows:
         return None
     dict_rows = [row for row in rows if isinstance(row, dict)]
@@ -195,6 +252,20 @@ def _latest_row_from_payload(payload: Any, symbol: str) -> dict[str, Any] | None
         dict_rows,
         key=lambda row: str(row.get("trade_date") or row.get("date") or row.get("Date") or ""),
     )[-1]
+
+
+def _flatten_symbol_rows(value: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in value.values():
+        if isinstance(item, list):
+            rows.extend(row for row in item if isinstance(row, dict))
+        elif isinstance(item, dict):
+            nested = item.get("rows") or item.get("data")
+            if isinstance(nested, list):
+                rows.extend(row for row in nested if isinstance(row, dict))
+            else:
+                rows.append(item)
+    return rows
 
 
 def _first_float(row: dict[str, Any], *keys: str) -> float | None:
@@ -207,3 +278,34 @@ def _first_float(row: dict[str, Any], *keys: str) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _latest_close_from_akshare_direct(symbol: str, end: date) -> dict[str, Any] | None:
+    try:
+        from tradingagents.dataflows.akshare_common import akshare_call, ak_lazy_import
+        from tradingagents.dataflows.symbol_utils import normalize_for_akshare
+
+        ak = ak_lazy_import()
+        code = normalize_for_akshare(symbol)
+        start = end - timedelta(days=30)
+        raw = akshare_call(
+            ak.stock_zh_a_hist,
+            symbol=code,
+            period="daily",
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+            adjust="qfq",
+        )
+        if raw is None or raw.empty:
+            return None
+        row = raw.dropna(subset=["收盘"]).iloc[-1]
+        trade_date = str(row.get("日期") or "")
+        return {
+            "symbol": symbol,
+            "close": float(row["收盘"]),
+            "trade_date": trade_date,
+            "source": "akshare_direct",
+        }
+    except Exception as exc:
+        logger.info("Direct AKShare latest close failed for %s: %s", symbol, exc)
+        return None

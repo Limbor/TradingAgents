@@ -21,7 +21,7 @@ from tradingagents.core.scheduler import Scheduler
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.skills.registry import SkillRegistry
 
-from .routes import artifacts, config, health, portfolio, profile, reflections, reports, runs, skills, trading_time
+from .routes import artifacts, config, health, plans, portfolio, profile, reflections, reports, runs, skills, trading_time
 from .ws import stream
 
 
@@ -117,6 +117,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logging.getLogger(__name__).info("Reflection batch completed: %s", result)
 
         app.state.scheduler.register_daily("reflection_job", time(16, 30), run_reflection_pipeline)
+
+        # Plan monitoring — runs after the reflection job, evaluates active
+        # plans' conditions (price levels / golden cross / cash flow) against
+        # the fresh close and flags triggers as plan_alert artifacts.
+        async def run_plan_evaluation() -> None:
+            from tradingagents.core.plan_monitor import evaluate_active_plans
+            from tradingagents.core.trading_time import get_temporal_context
+
+            ctx = get_temporal_context(app.state.config, market="cn_a")
+            if ctx.calendar_state != "trading_day":
+                return
+            alerts = await evaluate_active_plans(app.state.db, app.state.config)
+            if alerts:
+                logging.getLogger(__name__).info(
+                    "Plan evaluation triggered %d alert(s)", len(alerts)
+                )
+
+        app.state.scheduler.register_daily("plan_evaluation", time(16, 45), run_plan_evaluation)
         app.state.scheduler.start()
     # MCP init is wrapped in a timeout so a hung StockManager probe cannot block
     # FastAPI startup for the full tool_timeout (default 120s). On timeout we
@@ -176,6 +194,7 @@ def create_app() -> FastAPI:
     app.include_router(config.router, prefix="/api/v1", tags=["config"])
     app.include_router(profile.router, prefix="/api/v1", tags=["profile"])
     app.include_router(portfolio.router, prefix="/api/v1", tags=["portfolio"])
+    app.include_router(plans.router, prefix="/api/v1", tags=["plans"])
     app.include_router(reflections.router, prefix="/api/v1", tags=["reflections"])
     app.include_router(trading_time.router, prefix="/api/v1", tags=["trading-time"])
 

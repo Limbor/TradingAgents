@@ -1,7 +1,7 @@
 # TradingAgents v2 — 架构设计与开发指南
 
 > 版本: 1.0.0-draft  
-> 日期: 2026-06-17  
+> 日期: 2026-07-04  
 > 作者: TradingAgents Team
 
 ---
@@ -42,7 +42,7 @@ TradingAgents v0.2.5 是一个基于 LangGraph 的多智能体金融分析框架
 |------|------|
 | **界面** | Web-first 可视化工作台，远期打包为 macOS 原生桌面应用（Tauri） |
 | **架构** | 从"单一分析管道"进化为"可插拔技能框架"，并通过 StockManager MCP 委托 A 股量化计算 |
-| **交互** | 自然语言意图路由，用户说话即可触发对应技能 |
+| **交互** | Chat-first 智能体工作台：自由问答、轻量工具增强和关键 Skill 触发共用同一入口 |
 | **扩展** | 新 Skill 只需实现标准接口即可接入，无需改动核心框架 |
 
 ### 1.3 设计原则
@@ -159,7 +159,7 @@ LLM 配置采用统一 Backbone：
 | `deep_think_llm` | Research Manager、Portfolio Manager 等高权重决策任务 |
 | `backend_url` | OpenAI-compatible 或私有网关地址 |
 
-系统不维护独立的 Chat API 配置；Chat 当前为规则路由，未来如加入 LLM fallback router，默认复用 quick model。
+系统不维护独立的 Chat API 配置；ChatAgent、LLM Router 和候选股 LLM Review 默认复用 quick model，完整个股分析中的高权重裁决继续使用 deep model。
 
 ### 2.4 Chat-first 交互模型
 
@@ -174,6 +174,27 @@ TradingAgents 的主交互面从“所有 Skill 跳转 Analysis”调整为“Ch
 | Analysis | 深度详情页 | 仅用于完整股票分析、Agent 图谱、报告章节、调试和审计，不作为轻量 Skill 的默认终点 |
 
 Chat 中展示的是“执行链路状态”和“可审计摘要”，不是原始模型 CoT。后端 Skill 应优先发送用户可理解的 `agent_status` / `tool_call` / structured result 事件，例如“正在查询股票公告”“正在计算持仓盈亏”“正在生成风险摘要”。前端按 `run_id` 聚合这些事件，形成一张任务卡片；任务卡片可以跳转 Analysis 查看完整报告。
+
+### 2.5 自由 ChatAgent 与工具增强
+
+Chat 不应把每一句话都强行路由为长任务 Skill。后续 Chat 编排层采用四类意图：
+
+| 意图类型 | 行为 | 示例 |
+|----------|------|------|
+| `chat_answer` | 直接调用统一 LLM Backbone 生成自然语言回复，可引用已知上下文 | “解释一下 WATCHLIST 是什么意思” |
+| `tool_answer` | 调用轻量工具后回答，不创建长 run | “生益科技现在估值和资金流怎么样” |
+| `skill_run` | 创建 run 并进入 Skill 任务卡 | “跑一下每日选股 top 5”“分析 600519” |
+| `clarify` | 参数不足或风险较高时追问 | “你要看主板还是全市场？” |
+
+ChatAgent 可读取和调用的上下文/工具分层：
+
+| 层级 | 能力 | 边界 |
+|------|------|------|
+| 本地上下文 | Library artifacts、最近 runs、持仓、策略反思、用户配置 | 只读为主，用户明确操作时才写入 |
+| 轻量工具 | MCP 股票名称/行情/因子快照、持仓摘要、artifact search、reflection lessons | 单次低延迟查询，不进入完整 Skill |
+| 长任务 Skill | daily_pipeline、stock_analysis、risk_monitor、daily_review、portfolio_management | 有 run_id、事件流、artifact、可审计结果 |
+
+ChatAgent 输出必须是“可解释的工作台回复”，不能暴露模型内部 CoT。需要展示过程时，使用可审计的阶段摘要，例如“正在读取持仓”“正在查询 MCP 因子快照”“需要启动每日选股任务”。若轻量回答中引用工具数据，必须附带 `as_of_date/source/warnings` 摘要；若判断需要完整 Agent 管道，应建议或自动触发对应 Skill。
 
 ---
 
@@ -641,6 +662,43 @@ skill = StockAnalysisSkill()
 | `alert_system` | 预警通知 | 价格/指标触发推送 macOS 通知 | Phase 5 |
 
 ### 5.6 意图路由（Orchestrator）
+
+当前 `Orchestrator` 仍承担 Skill 路由职责；下一步会在它之前增加 `ChatAgent` 编排层：
+
+```
+User Message
+    │
+    ▼
+ChatAgent Intent Classifier
+    ├── chat_answer  ──► LLM 自由回复
+    ├── tool_answer  ──► Lightweight Tool Registry ──► LLM 汇总回复
+    ├── skill_run    ──► Orchestrator ──► Skill Run / WS 任务卡
+    └── clarify      ──► 参数追问
+```
+
+`Orchestrator` 的职责收敛为“把明确的任务意图映射到 Skill + params”。自由聊天、轻量工具查询、上下文解释不应创建 run，也不应进入 Analysis 页面。
+
+建议接口：
+
+```python
+class ChatIntent(BaseModel):
+    intent_type: Literal["chat_answer", "tool_answer", "skill_run", "clarify"]
+    skill_id: str | None = None
+    params: dict[str, Any] = {}
+    tool_plan: list[dict[str, Any]] = []
+    response_hint: str = ""
+    confidence: float = 0.0
+```
+
+轻量工具第一版范围：
+
+| Tool | 用途 |
+|------|------|
+| `get_portfolio_summary` | 回答“我的持仓/仓位/盈亏怎么样” |
+| `search_artifacts` | 回答“刚才报告/历史选股为什么这么判断” |
+| `get_recent_runs` | 解释最近任务状态 |
+| `get_mcp_factor_snapshot` | 单票估值、资金流、动量、质量快速查询 |
+| `get_strategy_lessons` | 引用近期反思经验 |
 
 ```python
 # tradingagents/core/orchestrator.py
@@ -2301,7 +2359,7 @@ jobs:
 | W5 | 意图路由 | Orchestrator 实现、Chat 页面、WS /chat 端点 |
 | W6 | Portfolio Skill | 持仓管理技能（CRUD 持仓、绩效计算、再平衡建议） |
 | W7 | Market Scanner | 条件筛选 + AI 评分（集成 AKShare/yfinance 筛选接口） |
-| W8 | 设置 + 历史 | Settings 页（LLM/数据源配置）、Reports 历史页、SQLite 持久化 |
+| W8 | 设置 + 历史 | Settings 页（LLM/数据源配置）、Library 产物库、SQLite 持久化 |
 
 **验收标准**: 用自然语言说"帮我看看茅台"，自动路由到分析技能并流式展示。
 
@@ -2324,15 +2382,16 @@ jobs:
 4. 每日选股结果包含可审计 Evidence Card、`quant_score`、`llm_confidence`、`fusion_mode`，并写入报告历史；Top 5 完整深度 Agent 分析作为 Phase 3 后半段增强。
 5. RiskMonitor 可扫描当前持仓并通过 MCP 风险公告生成报告；Portfolio 风险仪表盘分级作为后续前端增强。
 
-### Phase 4: 自动化 + 学习闭环（3 周）
+### Phase 4: ChatAgent + 自动化 + 学习闭环（4 周）
 
-**目标**: 在稳定 MCP 合约之上增加持仓建议、异步回测和决策复盘。
+**目标**: 在稳定 MCP 合约之上，把 Chat 升级为自由问答 + 轻量工具增强 + Skill 触发的统一入口，并补齐持仓建议、异步回测和决策复盘。
 
 | 周 | 里程碑 | 交付物 |
 |----|--------|--------|
-| W13 | PositionAdvisor | 成本价/持仓天数/止损价上下文注入，卖出/加仓/减仓自然语言路由 |
-| W14 | StrategyBacktest + DecisionAudit | MCP 异步 `run_backtest`、job 状态轮询、回测报告、月度复盘 |
-| W15 | 记忆增强 + 财务预警 | 跨标的模式提取、财务恶化和公告风险预警 |
+| W13 | Free ChatAgent | `chat_answer/tool_answer/skill_run/clarify` 意图分类、轻量工具注册表、自由回复、上下文引用 |
+| W14 | PositionAdvisor | 成本价/持仓天数/止损价上下文注入，卖出/加仓/减仓自然语言路由 |
+| W15 | StrategyBacktest + DecisionAudit | MCP 异步 `run_backtest`、job 状态轮询、回测报告、月度复盘 |
+| W16 | 记忆增强 + 财务预警 | 跨标的模式提取、财务恶化和公告风险预警 |
 
 ### Phase 5: 桌面打包（远期）
 
@@ -2340,9 +2399,9 @@ jobs:
 
 | 周 | 里程碑 | 交付物 |
 |----|--------|--------|
-| W16 | Tauri 集成 | Sidecar supervisor、窗口管理、系统托盘 |
-| W17 | 通知系统 | macOS 通知推送、价格/风险预警 |
-| W18 | 打包分发 | PyInstaller sidecar、.dmg 构建、自动更新机制 |
+| W17 | Tauri 集成 | Sidecar supervisor、窗口管理、系统托盘 |
+| W18 | 通知系统 | macOS 通知推送、价格/风险预警 |
+| W19 | 打包分发 | PyInstaller sidecar、.dmg 构建、自动更新机制 |
 
 ### Phase 6: 打磨与扩展（持续）
 

@@ -167,6 +167,66 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
 # ---------------------------------------------------------------------------
 
 
+class TradeCondition(BaseModel):
+    """A discrete condition that triggers a plan action.
+
+    Captures composite signals the user wants monitored — e.g. a golden cross
+    plus positive operating-cash-flow confirmation as the full-position
+    trigger, or a death cross plus northbound outflow as the stop trigger.
+    """
+
+    kind: Literal["entry", "full", "stop", "take_profit"] = Field(
+        description=(
+            "What this condition triggers: 'entry' = open the position, "
+            "'full' = scale to full position, 'stop' = exit for loss protection, "
+            "'take_profit' = exit for profit."
+        ),
+    )
+    description: str = Field(
+        description=(
+            "Concrete, monitorable description, e.g. "
+            "'5日均线上穿20日均线（金叉）且经营现金流连续两季为正' or '收盘跌破前低 9.00'."
+        ),
+    )
+    source: str | None = Field(
+        default=None,
+        description="Optional indicator basis, e.g. 'MA金叉+现金流', '价格', 'MACD死叉+北向资金'.",
+    )
+
+
+class TradePlan(BaseModel):
+    """Structured, monitorable trade plan produced by the Portfolio Manager.
+
+    Complements the prose ``executive_summary`` with machine-readable levels
+    and conditions so the frontend can render a plan card and (later) a
+    scheduler can evaluate the conditions at close.
+    """
+
+    entry_zone: list[float] | None = Field(
+        default=None,
+        description="Entry price zone [low, high] in the instrument's quote currency.",
+    )
+    stop_loss: float | None = Field(
+        default=None,
+        description="Stop-loss price.",
+    )
+    targets: list[float] | None = Field(
+        default=None,
+        description="Ordered profit-target prices.",
+    )
+    position_pct: float | None = Field(
+        default=None,
+        description="Suggested position size as a percentage of portfolio (0-100).",
+    )
+    conditions: list[TradeCondition] = Field(
+        default_factory=list,
+        description=(
+            "Monitorable conditions for entry / full position / stop / take profit "
+            "(e.g. golden cross + cash flow, death cross + northbound outflow)."
+        ),
+    )
+
+
 class PortfolioDecision(BaseModel):
     """Structured output produced by the Portfolio Manager.
 
@@ -203,6 +263,16 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    trade_plan: TradePlan | None = Field(
+        default=None,
+        description=(
+            "Structured, monitorable trade plan: entry zone, stop loss, targets, "
+            "position sizing, and the conditions (e.g. golden cross + cash flow) "
+            "that trigger entry / full position / stop / take profit. Fill this "
+            "even when the rating is Hold, so the user can see the levels they "
+            "would act on."
+        ),
+    )
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
@@ -224,6 +294,20 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
+    tp = decision.trade_plan
+    if tp is not None:
+        parts.extend(["", "**Trade Plan**"])
+        if tp.entry_zone:
+            parts.append(f"- Entry Zone: {tp.entry_zone}")
+        if tp.stop_loss is not None:
+            parts.append(f"- Stop Loss: {tp.stop_loss}")
+        if tp.targets:
+            parts.append(f"- Targets: {tp.targets}")
+        if tp.position_pct is not None:
+            parts.append(f"- Position Sizing: {tp.position_pct}%")
+        for cond in tp.conditions:
+            src = f" ({cond.source})" if cond.source else ""
+            parts.append(f"- Condition [{cond.kind}]{src}: {cond.description}")
     return "\n".join(parts)
 
 

@@ -75,13 +75,32 @@ export function useChatWebSocket() {
         });
         appendTaskResult(message.run_id, String(message.payload.content ?? ""));
       } else if (message.type === "scanner_candidates") {
-        const count = (message.payload.candidates as unknown[] | undefined)?.length ?? 0;
+        const candidates = (message.payload.candidates as unknown[] | undefined) ?? [];
+        const count = candidates.length;
+        const warnings = (message.payload.warnings as string[] | undefined) ?? undefined;
+        const asOfDate = message.payload.as_of_date ? String(message.payload.as_of_date) : undefined;
+        const dataWindowNote = message.payload.data_window_note
+          ? String(message.payload.data_window_note)
+          : undefined;
+        const sessionState = message.payload.session_state
+          ? String(message.payload.session_state)
+          : undefined;
         addTaskStep(message.run_id, {
           label: "完成候选池筛选",
-          detail: `找到 ${count} 个候选标的`,
-          status: "completed",
+          detail: `找到 ${count} 个候选标的${count === 0 ? "（无候选）" : ""}`,
+          status: count === 0 ? "failed" : "completed",
         });
-        appendTaskResult(message.run_id, JSON.stringify({ __type: "candidates", data: message.payload.candidates }));
+        appendTaskResult(
+          message.run_id,
+          JSON.stringify({
+            __type: "candidates",
+            data: candidates,
+            warnings,
+            asOfDate,
+            dataWindowNote,
+            sessionState,
+          }),
+        );
       } else if (message.type === "daily_pipeline_candidates") {
         const rows =
           (message.payload.reviewed_candidates as unknown[] | undefined) ??
@@ -118,6 +137,21 @@ export function useChatWebSocket() {
           status: "completed",
         });
       } else if (message.type === "skill_complete") {
+        const payload = message.payload || {};
+        // Capture the structured conclusion (e.g. stock_analysis trade plan) so
+        // the frontend can render a plan card instead of regex-scraping the text.
+        const structured = payload.structured_conclusion;
+        if (structured && typeof structured === "object") {
+          appendTaskResult(
+            message.run_id,
+            JSON.stringify({
+              __type: "analysis_summary",
+              data: structured,
+              selectionContext: payload.selection_context ?? undefined,
+              artifactId: typeof payload.artifact_id === "string" ? payload.artifact_id : undefined,
+            }),
+          );
+        }
         addTaskStep(message.run_id, {
           label: "技能执行完成",
           status: "completed",

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
   BriefcaseBusiness,
@@ -12,10 +12,11 @@ import {
   ShieldAlert,
   Trash2,
 } from "lucide-react";
+import { PlanListCard } from "@/components/Portfolio/PlanListCard";
 import {
   deleteHolding,
   listHoldings,
-  refreshHoldingPrices,
+  advanceTradingDay,
   upsertHolding,
   type Holding,
 } from "@/api/client";
@@ -38,6 +39,7 @@ const EMPTY_FORM: HoldingForm = {
 
 export default function Portfolio() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const holdingsQuery = useQuery({
     queryKey: ["holdings"],
     queryFn: listHoldings,
@@ -118,10 +120,15 @@ export default function Portfolio() {
     setRefreshing(true);
     setError(null);
     try {
-      await refreshHoldingPrices();
+      const result = await advanceTradingDay();
       await holdingsQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["plans"] });
+      await queryClient.invalidateQueries({ queryKey: ["reflection-cases", "pending"] });
+      if (result.plan_alerts.length) {
+        setError(`${result.plan_alerts.length} 个计划触发提醒，见下方"交易计划"`);
+      }
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "刷新价格失败");
+      setError(exc instanceof Error ? exc.message : "刷新失败");
     } finally {
       setRefreshing(false);
     }
@@ -157,7 +164,7 @@ export default function Portfolio() {
           className="inline-flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-sm font-medium text-teal-200 transition hover:border-teal-400/60 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RotateCcw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-          刷新收盘价
+          进入下一交易日
         </button>
       </div>
 
@@ -291,10 +298,33 @@ export default function Portfolio() {
                     const value = marketValue(item);
                     const pnl = unrealizedPnl(item);
                     const weight = summary.value ? (value / summary.value) * 100 : 0;
+                    const displayName = item.name && item.name !== item.symbol ? item.name : item.symbol;
                     return (
                       <tr key={item.symbol} className="border-t border-stone-800">
                         <td className="px-3 py-2">
-                          <div className="font-mono font-semibold text-stone-100">{item.symbol}</div>
+                          <div className="font-semibold text-stone-100">{displayName}</div>
+                          {displayName !== item.symbol && (
+                            <div className="mt-0.5 font-mono text-xs text-stone-500">{item.symbol}</div>
+                          )}
+                          {item.latest_analysis && (
+                            <div
+                              className="mt-1 max-w-64 truncate text-xs text-stone-500"
+                              title={[
+                                item.latest_analysis.date ? `分析日期 ${item.latest_analysis.date}` : "",
+                                item.latest_analysis.summary ?? "",
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            >
+                              <span className="mr-1 rounded bg-teal-500/10 px-1.5 py-0.5 text-teal-200">
+                                {item.latest_analysis.rating || "最近分析"}
+                              </span>
+                              {item.latest_analysis.date && (
+                                <span className="mr-1 text-stone-500">{item.latest_analysis.date}</span>
+                              )}
+                              {item.latest_analysis.summary && <span>{item.latest_analysis.summary}</span>}
+                            </div>
+                          )}
                           <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-stone-800">
                             <div
                               className={`h-full rounded-full ${weight > 50 ? "bg-amber-300" : "bg-teal-300"}`}
@@ -341,6 +371,8 @@ export default function Portfolio() {
         </section>
       </div>
 
+      <PlanListCard />
+
       {sortedHoldings.length > 0 && (
         <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
           <div className="mb-4 flex items-center gap-2 text-stone-100">
@@ -348,16 +380,20 @@ export default function Portfolio() {
             <h3 className="text-sm font-semibold">仓位分布</h3>
           </div>
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {sortedHoldings.slice(0, 9).map((item) => {
-              const value = marketValue(item);
-              const weight = summary.value ? (value / summary.value) * 100 : 0;
-              return (
-                <div key={item.symbol} className="rounded-lg border border-stone-800 bg-stone-950 px-3 py-2">
-                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-                    <span className="font-mono text-stone-100">{item.symbol}</span>
-                    <span className="text-stone-500">{weight.toFixed(1)}%</span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-stone-800">
+	            {sortedHoldings.slice(0, 9).map((item) => {
+	              const value = marketValue(item);
+	              const weight = summary.value ? (value / summary.value) * 100 : 0;
+	              const displayName = item.name && item.name !== item.symbol ? item.name : item.symbol;
+	              return (
+	                <div key={item.symbol} className="rounded-lg border border-stone-800 bg-stone-950 px-3 py-2">
+	                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+	                    <span className="truncate text-stone-100">{displayName}</span>
+	                    <span className="text-stone-500">{weight.toFixed(1)}%</span>
+	                  </div>
+	                  {displayName !== item.symbol && (
+	                    <div className="mb-2 font-mono text-xs text-stone-600">{item.symbol}</div>
+	                  )}
+	                  <div className="h-2 overflow-hidden rounded-full bg-stone-800">
                     <div
                       className={`h-full rounded-full ${weight > 50 ? "bg-amber-300" : "bg-teal-300"}`}
                       style={{ width: `${Math.min(weight, 100)}%` }}

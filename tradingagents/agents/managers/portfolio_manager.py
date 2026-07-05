@@ -63,6 +63,10 @@ def create_portfolio_manager(llm):
 
 ---
 
+**Trade Plan** (fill the `trade_plan` field):
+- `entry_zone`, `stop_loss`, `targets`, `position_pct`: concrete, monitorable price levels and sizing, grounded in the analyst evidence and recent price.
+- `conditions`: the discrete signals that trigger each action. `kind` is one of `entry` (open position), `full` (scale to full position), `stop` (loss-protection exit), `take_profit` (profit exit). Composite signals belong in one condition's `description` — e.g. "5/20 日均线金叉且经营现金流连续两季为正" (full), "收盘跌破前低 9.00" (stop), "MACD 死叉 + 北向大幅净流出" (stop). Put the indicator basis in `source`.
+
 Be decisive and ground every conclusion in specific evidence from the analysts.{get_market_risk_instruction(market)}{get_language_instruction(market)}"""
 
         final_trade_decision = invoke_structured_or_freetext(

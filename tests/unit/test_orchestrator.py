@@ -8,6 +8,7 @@ from tradingagents.skills.stock_analysis.skill import StockAnalysisSkill
 from tradingagents.skills.portfolio_management.skill import PortfolioManagementSkill
 from tradingagents.skills.market_scanner.skill import MarketScannerSkill
 from tradingagents.skills.daily_pipeline.skill import DailyPipelineSkill
+from tradingagents.skills.daily_review.skill import DailyReviewSkill
 from tradingagents.skills.risk_monitor.skill import RiskMonitorSkill
 
 
@@ -17,6 +18,7 @@ def _registry():
     registry.register(PortfolioManagementSkill())
     registry.register(MarketScannerSkill())
     registry.register(DailyPipelineSkill())
+    registry.register(DailyReviewSkill())
     registry.register(RiskMonitorSkill())
     return registry
 
@@ -41,6 +43,16 @@ def test_route_portfolio_upsert_extracts_basic_numbers():
         assert route.params["quantity"] == 200
         assert route.params["avg_cost"] == 18.5
         assert route.params["current_price"] == 20.1
+
+    asyncio.run(run())
+
+
+def test_route_holding_stock_analysis_prioritizes_analysis_intent():
+    async def run():
+        route = await Orchestrator(_registry()).route("帮我分析我的持仓茅台")
+        assert route.skill is not None
+        assert route.skill.metadata.id == "stock_analysis"
+        assert route.params["ticker"] == "600519.SH"
 
     asyncio.run(run())
 
@@ -74,6 +86,17 @@ def test_route_daily_pipeline_main_board_filter():
         assert route.skill is not None
         assert route.skill.metadata.id == "daily_pipeline"
         assert route.params["limit"] == 5
+        assert route.params["board_filter"] == "main_board"
+
+    asyncio.run(run())
+
+
+def test_route_daily_review_main_board_filter():
+    async def run():
+        route = await Orchestrator(_registry()).route("收盘复盘 top 5 主板")
+        assert route.skill is not None
+        assert route.skill.metadata.id == "daily_review"
+        assert route.params["daily_limit"] == 5
         assert route.params["board_filter"] == "main_board"
 
     asyncio.run(run())

@@ -54,6 +54,44 @@ async def refresh_holding_prices(request: Request):
     }
 
 
+@router.post("/portfolio/advance-trading-day")
+async def advance_trading_day(request: Request):
+    """Refresh closing prices + evaluate active plans + return the trading-day context.
+
+    The unified "进入下一交易日" button: combines the old "刷新收盘价" (price
+    refresh) with plan monitoring, and returns the asof/session so the UI can
+    show which trading day the system is now anchored to.
+    """
+    db = request.app.state.db
+    config = request.app.state.config
+    holdings = db.list_holdings()
+    updated = 0
+    failed: list[dict] = []
+    for holding in holdings:
+        symbol = holding["symbol"]
+        quote = await latest_close(symbol, config)
+        if quote is None:
+            failed.append({"symbol": symbol, "reason": "latest close unavailable"})
+            continue
+        db.update_holding_price(symbol=symbol, current_price=float(quote["close"]))
+        updated += 1
+
+    from tradingagents.core.plan_monitor import evaluate_active_plans
+    from tradingagents.core.trading_time import get_temporal_context
+
+    alerts = await evaluate_active_plans(db, config)
+    ctx = get_temporal_context(config, market="cn_a").to_dict()
+    return {
+        "refreshed_prices": {
+            "updated": updated,
+            "failed": failed,
+            "holdings": _with_holding_names(db, db.list_holdings()),
+        },
+        "plan_alerts": alerts,
+        "temporal_context": ctx,
+    }
+
+
 @router.put("/holdings/{symbol}")
 async def upsert_holding(request: Request, symbol: str, body: HoldingInput):
     resolved_path = await resolve_portfolio_symbol_async(symbol)

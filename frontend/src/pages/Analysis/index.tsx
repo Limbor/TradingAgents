@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useRunStore } from "@/stores/useRunStore";
 import { wsManager } from "@/api/ws";
 import { type WSMessage } from "@/api/ws";
@@ -124,6 +124,13 @@ export default function Analysis() {
           <Kpi icon={Layers3} label="Agents" value={completedAgents} />
           <Kpi icon={ScrollText} label="Sections" value={sectionCount} />
           <Kpi icon={RadioTower} label="Tools" value={toolCalls.length} />
+          <Link
+            to={`/library?run_id=${runId}`}
+            className="inline-flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-xs font-medium text-teal-200 transition hover:border-teal-400/60"
+          >
+            <ScrollText className="h-4 w-4" />
+            Library
+          </Link>
           <button
             onClick={handleCancel}
             disabled={status !== "running"}

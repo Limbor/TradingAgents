@@ -164,6 +164,30 @@ CREATE INDEX IF NOT EXISTS idx_strategy_lessons_active ON strategy_lessons(activ
 CREATE INDEX IF NOT EXISTS idx_strategy_lessons_type ON strategy_lessons(lesson_type);
 CREATE INDEX IF NOT EXISTS idx_strategy_lessons_scope ON strategy_lessons(scope, target);
 
+CREATE TABLE IF NOT EXISTS plans (
+    id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    name TEXT,
+    entry_zone TEXT NOT NULL DEFAULT '[]',
+    stop_loss REAL,
+    targets TEXT NOT NULL DEFAULT '[]',
+    position_pct REAL,
+    conditions TEXT NOT NULL DEFAULT '[]',
+    rating TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    source TEXT NOT NULL DEFAULT 'analysis',
+    artifact_id TEXT NOT NULL DEFAULT '',
+    reflection_case_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    triggered_at TEXT,
+    trigger_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plans_symbol ON plans(symbol);
+CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+CREATE INDEX IF NOT EXISTS idx_plans_source ON plans(source);
+CREATE INDEX IF NOT EXISTS idx_plans_artifact ON plans(artifact_id);
+
 CREATE TABLE IF NOT EXISTS artifact_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     artifact_id TEXT NOT NULL,
@@ -801,6 +825,129 @@ class Database:
                 row[key] = json.loads(row.get(key) or "{}")
             except (json.JSONDecodeError, TypeError):
                 row[key] = {}
+        return row
+
+    def save_plan(
+        self,
+        plan_id: str,
+        *,
+        symbol: str,
+        name: str | None = None,
+        entry_zone: list[float] | None = None,
+        stop_loss: float | None = None,
+        targets: list[float] | None = None,
+        position_pct: float | None = None,
+        conditions: list[dict] | None = None,
+        rating: str | None = None,
+        status: str = "draft",
+        source: str = "analysis",
+        artifact_id: str = "",
+        reflection_case_id: str = "",
+    ) -> None:
+        """Save or replace a trade plan (entry/stop/targets/conditions)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO plans (
+                    id, symbol, name, entry_zone, stop_loss, targets, position_pct,
+                    conditions, rating, status, source, artifact_id, reflection_case_id,
+                    created_at, updated_at, triggered_at, trigger_reason
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan_id,
+                    symbol.strip().upper(),
+                    name,
+                    json.dumps(entry_zone or [], ensure_ascii=False),
+                    stop_loss,
+                    json.dumps(targets or [], ensure_ascii=False),
+                    position_pct,
+                    json.dumps(conditions or [], ensure_ascii=False),
+                    rating,
+                    status,
+                    source,
+                    artifact_id or "",
+                    reflection_case_id or "",
+                    now,
+                    now,
+                    None,
+                    None,
+                ),
+            )
+
+    def update_plan(
+        self,
+        plan_id: str,
+        *,
+        status: str | None = None,
+        triggered_at: str | None = None,
+        trigger_reason: str | None = None,
+        reflection_case_id: str | None = None,
+    ) -> None:
+        """Update mutable plan fields (status / trigger / reflection link)."""
+        sets: list[str] = ["updated_at = ?"]
+        values: list[Any] = [datetime.now(timezone.utc).isoformat()]
+        if status is not None:
+            sets.append("status = ?")
+            values.append(status)
+        if triggered_at is not None:
+            sets.append("triggered_at = ?")
+            values.append(triggered_at)
+        if trigger_reason is not None:
+            sets.append("trigger_reason = ?")
+            values.append(trigger_reason)
+        if reflection_case_id is not None:
+            sets.append("reflection_case_id = ?")
+            values.append(reflection_case_id)
+        values.append(plan_id)
+        with self._conn() as conn:
+            conn.execute(f"UPDATE plans SET {', '.join(sets)} WHERE id = ?", values)
+
+    def list_plans(
+        self,
+        limit: int = 50,
+        status: str | None = None,
+        symbol: str | None = None,
+        source: str | None = None,
+    ) -> list[dict]:
+        query = "SELECT * FROM plans"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol.strip().upper())
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._decode_plan(dict(row)) for row in rows]
+
+    def get_plan(self, plan_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+        return self._decode_plan(dict(row)) if row else None
+
+    def delete_plan(self, plan_id: str) -> int:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+            return int(cur.rowcount or 0)
+
+    def _decode_plan(self, row: dict) -> dict:
+        for key in ("entry_zone", "targets", "conditions"):
+            try:
+                row[key] = json.loads(row.get(key) or "[]")
+            except (json.JSONDecodeError, TypeError):
+                row[key] = []
         return row
 
     def save_strategy_lesson(

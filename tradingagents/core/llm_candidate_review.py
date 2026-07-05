@@ -80,10 +80,11 @@ class CandidateLLMReview(BaseModel):
 class CandidateReviewer:
     """Review top quant candidates with the configured quick LLM."""
 
-    def __init__(self, llm: Any, *, style: str, trade_date: str) -> None:
+    def __init__(self, llm: Any, *, style: str, trade_date: str, strategy_lessons: list[dict[str, Any]] | None = None) -> None:
         self._llm = llm
         self._style = style
         self._trade_date = trade_date
+        self._strategy_lessons = strategy_lessons or []
         self._structured_llm = self._bind_structured(llm)
 
     async def review(
@@ -92,7 +93,13 @@ class CandidateReviewer:
         context: "CandidateContext | None" = None,
     ) -> CandidateLLMReview:
         """Review a candidate with optional real-time context."""
-        prompt = _build_prompt(candidate, self._style, self._trade_date, context=context)
+        prompt = _build_prompt(
+            candidate,
+            self._style,
+            self._trade_date,
+            context=context,
+            strategy_lessons=_matching_lessons(candidate, self._strategy_lessons),
+        )
         return await asyncio.to_thread(self._review_sync, prompt)
 
     def _review_sync(self, prompt: str) -> CandidateLLMReview:
@@ -121,6 +128,7 @@ def build_candidate_reviewer(
     *,
     style: str,
     trade_date: str,
+    strategy_lessons: list[dict[str, Any]] | None = None,
 ) -> CandidateReviewer | None:
     """Create a reviewer from the unified LLM backbone, returning None on config errors."""
     try:
@@ -134,7 +142,12 @@ def build_candidate_reviewer(
             base_url=config.get("backend_url"),
             **_provider_kwargs(config),
         )
-        return CandidateReviewer(client.get_llm(), style=style, trade_date=trade_date)
+        return CandidateReviewer(
+            client.get_llm(),
+            style=style,
+            trade_date=trade_date,
+            strategy_lessons=strategy_lessons,
+        )
     except Exception as exc:
         logger.warning("Daily pipeline LLM reviewer unavailable: %s", exc)
         return None
@@ -159,6 +172,7 @@ def _build_prompt(
     style: str,
     trade_date: str,
     context: "CandidateContext | None" = None,
+    strategy_lessons: list[dict[str, Any]] | None = None,
 ) -> str:
     style_label = {
         "short_term": "短线，重视动量、成交、资金流和隔日风险",
@@ -175,12 +189,29 @@ def _build_prompt(
         except Exception:
             pass
 
+    lesson_section = ""
+    if strategy_lessons:
+        lesson_lines = []
+        for lesson in strategy_lessons[:5]:
+            finding = str(lesson.get("finding") or "").strip()
+            adjustment = str(lesson.get("suggested_adjustment") or "").strip()
+            confidence = str(lesson.get("confidence") or "")
+            scope = str(lesson.get("scope") or "global")
+            target = str(lesson.get("target") or "")
+            if finding:
+                lesson_lines.append(
+                    f"- [{confidence}] {scope}{':' + target if target else ''}: {finding}"
+                    + (f" 建议: {adjustment}" if adjustment else "")
+                )
+        if lesson_lines:
+            lesson_section = "\n\n## 近期策略反思摘要\n" + "\n".join(lesson_lines)
+
     return f"""你是 A 股候选股票的快速复核 Agent。请基于下方结构化量化证据和市场信息进行判断。
 
 交易日: {trade_date}
 投资风格: {style_label}
 
-{evidence}{context_section}
+{evidence}{context_section}{lesson_section}
 
 请输出严格 JSON，字段如下：
 {{
@@ -206,6 +237,36 @@ def _build_prompt(
 - 如果有明确利好催化（重组、增持、业绩超预期），可上调 catalyst_score 和 llm_confidence。
 - 北向资金大幅净卖出时应降低信心。
 """
+
+
+def _matching_lessons(candidate: dict[str, Any], lessons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not lessons:
+        return []
+    symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
+    industry = str(candidate.get("industry") or "")
+    board = str(candidate.get("board") or "")
+    factor_scores = candidate.get("factor_scores") or {}
+    data_coverage = candidate.get("data_coverage") or {}
+    missing_keys = {
+        key for key, value in data_coverage.items()
+        if str(value).lower() == "missing"
+    } if isinstance(data_coverage, dict) else set()
+    factor_keys = set(factor_scores.keys()) if isinstance(factor_scores, dict) else set()
+    matched: list[dict[str, Any]] = []
+    for lesson in lessons:
+        scope = str(lesson.get("scope") or "global")
+        target = str(lesson.get("target") or "")
+        if scope == "global":
+            matched.append(lesson)
+        elif scope == "symbol" and target == symbol:
+            matched.append(lesson)
+        elif scope == "industry" and target and target == industry:
+            matched.append(lesson)
+        elif scope == "board" and target and target == board:
+            matched.append(lesson)
+        elif scope == "factor" and target and (target in factor_keys or target in missing_keys):
+            matched.append(lesson)
+    return matched
 
 
 def _coerce_review(value: Any) -> CandidateLLMReview:

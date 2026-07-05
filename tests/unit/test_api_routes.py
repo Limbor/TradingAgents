@@ -66,6 +66,17 @@ def test_get_config(client):
     assert "stockmanager_mcp_url" in config
 
 
+def test_get_trading_time_context(client):
+    res = client.get("/api/v1/trading-time?market=us")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["market"] == "us"
+    assert payload["market_asof_date"]
+    assert payload["decision_target_date"]
+    assert payload["info_cutoff"]
+    assert payload["data_policy"]["price"] == "asof_market_close"
+
+
 def test_update_config(client):
     res = client.put(
         "/api/v1/config",
@@ -189,6 +200,38 @@ def test_holdings_crud(client):
     res = client.get("/api/v1/holdings")
     assert res.status_code == 200
     assert res.json() == []
+
+
+def test_holdings_include_latest_stock_analysis(client):
+    res = client.put(
+        "/api/v1/holdings/600519.SH",
+        json={
+            "symbol": "600519.SH",
+            "quantity": 10,
+            "avg_cost": 1500,
+            "current_price": 1600,
+            "notes": "core",
+        },
+    )
+    assert res.status_code == 200
+
+    client.app.state.db.save_report(
+        report_id="report-holding-1",
+        run_id="run-stock-analysis-1",
+        ticker="600519.SH",
+        ticker_name="贵州茅台",
+        rating="BUY",
+        content="维持买入。基本面稳定，风险可控。",
+        path=None,
+    )
+
+    res = client.get("/api/v1/holdings")
+    assert res.status_code == 200
+    analysis = res.json()[0]["latest_analysis"]
+    assert analysis["rating"] == "BUY"
+    assert analysis["date"]
+    assert analysis["artifact_id"] == "report-holding-1"
+    assert analysis["run_id"] == "run-stock-analysis-1"
 
 
 def test_holdings_accept_name_and_auto_latest_close(client, monkeypatch):

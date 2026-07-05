@@ -9,12 +9,14 @@ import {
   listHoldings,
   listRuns,
   listStrategyLessons,
-  refreshHoldingPrices,
+  advanceTradingDay,
+
   updateConfig,
   type DailyPipelineFilters,
 } from "../../api/client";
 import { FilterPanel } from "../../components/FilterPanel";
 import { KPICard, TimelineItem, HoldingsTable } from "../../components/Dashboard";
+import { ReflectionQueueCard } from "../../components/Dashboard/ReflectionQueueCard";
 import { buildPortfolioSummary, formatMoney } from "../../utils/portfolio";
 import {
   Activity,
@@ -136,12 +138,20 @@ export default function Dashboard() {
     setRefreshingPrices(true);
     setRefreshFeedback(null);
     try {
-      const result = await refreshHoldingPrices();
+      const result = await advanceTradingDay();
       await holdingsQuery.refetch();
-      const failedText = result.failed.length ? `，${result.failed.length} 个失败` : "";
-      setRefreshFeedback(`已更新 ${result.updated} 个持仓收盘价${failedText}`);
+      await queryClient.invalidateQueries({ queryKey: ["plans"] });
+      await queryClient.invalidateQueries({ queryKey: ["reflection-cases", "pending"] });
+      const failedText = result.refreshed_prices.failed.length
+        ? `，${result.refreshed_prices.failed.length} 个失败`
+        : "";
+      const alertText = result.plan_alerts.length
+        ? `；${result.plan_alerts.length} 个计划触发提醒`
+        : "";
+      const asof = result.temporal_context?.market_asof_date ?? "";
+      setRefreshFeedback(`已进入交易日 ${asof}：更新 ${result.refreshed_prices.updated} 个收盘价${failedText}${alertText}`);
     } catch (exc) {
-      setRefreshFeedback(exc instanceof Error ? exc.message : "刷新价格失败");
+      setRefreshFeedback(exc instanceof Error ? exc.message : "刷新失败");
     } finally {
       setRefreshingPrices(false);
     }
@@ -241,7 +251,7 @@ export default function Dashboard() {
               className="inline-flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-sm font-medium text-teal-200 transition hover:border-teal-400/60 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${refreshingPrices ? "animate-spin" : ""}`} />
-              {refreshingPrices ? "刷新中" : "刷新收盘价"}
+              {refreshingPrices ? "刷新中" : "进入下一交易日"}
             </button>
             <button
               onClick={() => navigate("/portfolio")}
@@ -331,6 +341,7 @@ export default function Dashboard() {
 
           {/* Reflection Summary Card */}
           <ReflectionSummaryCard data={reflectionQuery.data} />
+          <ReflectionQueueCard />
         </div>
       </div>
 

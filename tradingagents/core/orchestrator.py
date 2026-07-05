@@ -111,7 +111,12 @@ class Orchestrator:
                 pass  # name lookup is best-effort; never break routing
         return None
 
-    async def route(self, user_message: str, session_id: str = "default") -> RouteResult:
+    async def route(
+        self,
+        user_message: str,
+        session_id: str = "default",
+        context: dict[str, Any] | None = None,
+    ) -> RouteResult:
         """Route a user message to the best matching skill.
 
         Strategy:
@@ -120,12 +125,17 @@ class Orchestrator:
         3. If confidence < 0.8 and LLM router available, try LLM
         4. Use whichever result has higher confidence
         5. On LLM failure, fall back to regex result
+
+        ``context`` is an optional side-channel for structured data the text
+        itself cannot carry — e.g. the selection plan to hand off to
+        ``stock_analysis`` when the user clicks "分析" on a candidate. It is
+        merged into the routed skill's params by :meth:`_with_selection_context`.
         """
         regex_result = await self._regex_route(user_message)
 
         # High-confidence regex match — skip LLM
         if regex_result.confidence >= 0.8:
-            return regex_result
+            return self._with_selection_context(regex_result, context)
 
         # Try LLM router if available
         if self.llm_router is not None:
@@ -135,16 +145,41 @@ class Orchestrator:
                     # Convert LLM RouteResult to orchestrator RouteResult
                     skill = self.registry.get(llm_result.skill_id)
                     if skill is not None:
-                        return RouteResult(
-                            skill=skill,
-                            params=llm_result.params,
-                            confidence=llm_result.confidence,
-                            reason=llm_result.reason,
+                        return self._with_selection_context(
+                            RouteResult(
+                                skill=skill,
+                                params=llm_result.params,
+                                confidence=llm_result.confidence,
+                                reason=llm_result.reason,
+                            ),
+                            context,
                         )
             except Exception as exc:
                 logger.debug("LLM router fallback to regex: %s", exc)
 
-        return regex_result
+        return self._with_selection_context(regex_result, context)
+
+    def _with_selection_context(
+        self,
+        result: RouteResult,
+        context: dict[str, Any] | None,
+    ) -> RouteResult:
+        """Merge a structured selection plan into stock_analysis params.
+
+        When the user clicks "分析" on a candidate, the frontend sends the
+        candidate's already-structured plan (entry/stop/targets/conditions/
+        reasoning) as ``context.selection_context``. Injecting it here lets the
+        multi-agent graph see the selection's conclusion instead of re-analyzing
+        from scratch and potentially contradicting it.
+        """
+        if not context or result.skill is None:
+            return result
+        if result.skill.metadata.id != "stock_analysis":
+            return result
+        selection = context.get("selection_context")
+        if isinstance(selection, dict) and selection:
+            result.params["selection_context"] = selection
+        return result
 
     async def _regex_route(self, user_message: str) -> RouteResult:
         """Deterministic regex-based routing (the original fast path)."""

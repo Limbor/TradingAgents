@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.persistence import Database
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
@@ -153,6 +154,7 @@ class PortfolioManagementSkill(BaseSkill):
         )
         summary = _build_summary(holdings)
         report = _render_report(holdings, summary)
+        _save_portfolio_artifact(config, input_params, holdings, summary, report)
 
         yield SkillEvent(
             event_type="report_chunk",
@@ -261,6 +263,34 @@ def _render_report(holdings: list[dict[str, Any]], summary: dict[str, Any]) -> s
         ]
     )
     return "\n".join(lines)
+
+
+def _save_portfolio_artifact(
+    config: dict[str, Any],
+    input_params: PortfolioInput,
+    holdings: list[dict[str, Any]],
+    summary: dict[str, Any],
+    report: str,
+) -> None:
+    save_skill_artifact(
+        config,
+        skill_id="portfolio_management",
+        artifact_type="portfolio_report",
+        title="组合持仓报告",
+        subtitle=f"{input_params.action} · {summary.get('holding_count', 0)} 个持仓",
+        subject_type="portfolio",
+        subject_id="default",
+        subject_name="当前持仓",
+        status="success",
+        summary=(
+            f"市值 {summary.get('market_value', 0)}，"
+            f"未实现盈亏 {summary.get('unrealized_pnl', 0)}，"
+            f"风险等级 {summary.get('risk_level', '-')}"
+        ),
+        content_markdown=report,
+        payload={"action": input_params.action, "holdings": holdings, "summary": summary},
+        tags=["portfolio", input_params.action],
+    )
 
 
 skill = PortfolioManagementSkill()

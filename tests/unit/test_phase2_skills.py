@@ -5,6 +5,7 @@ import importlib
 
 from tradingagents.core.persistence import Database
 from tradingagents.core.signal_fusion import fuse_candidate_signal
+from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows
 from tradingagents.skills.daily_pipeline.skill import DailyPipelineInput, DailyPipelineSkill
 from tradingagents.skills.market_scanner.skill import MarketScannerInput, MarketScannerSkill
 from tradingagents.skills.portfolio_management.skill import PortfolioInput, PortfolioManagementSkill
@@ -113,10 +114,15 @@ def test_daily_pipeline_runs_with_mcp_disabled(tmp_path):
         complete = [event for event in events if event.event_type == "skill_complete"][-1]
         assert complete.data["mcp_used"] is False
         assert len(complete.data["candidates"]) == 3
-        reports = db.list_reports(ticker="DAILY_PIPELINE")
-        assert len(reports) == 1
         assert len(db.list_signals(trade_date=complete.data["trade_date"])) == 3
-        assert "Daily A-share Research Queue" in reports[0]["content"]
+        artifacts = db.list_artifacts(run_id="", skill_id="daily_pipeline")
+        assert {item["artifact_type"] for item in artifacts} == {
+            "screening_report",
+            "signal_pack",
+            "decision_pack",
+        }
+        report = [item for item in artifacts if item["artifact_type"] == "screening_report"][0]
+        assert "Daily A-share Research Queue" in report["content_markdown"]
         assert {"prepare", "universe", "quant_rank", "llm_review", "report"} <= _progress_stage_ids(events)
 
     asyncio.run(run())
@@ -280,13 +286,127 @@ def test_daily_pipeline_can_exclude_dual_growth_boards(monkeypatch, tmp_path):
         candidates = complete.data["candidates"]
         assert calls[0]["limit"] > 2
         assert calls[0]["enable_decision"] is True
-        assert calls[0]["max_per_industry"] == 3
+        assert calls[0]["max_per_industry"] == 2
         assert calls[0]["filters"]["board_filter"] == "main_board"
         assert [item["symbol"] for item in candidates] == ["603986.SH", "600519.SH"]
         assert all(item["board"] == "main" for item in candidates)
         candidates_event = [event for event in events if event.event_type == "daily_pipeline_candidates"][-1]
         assert candidates_event.data["board_filter"] == "main_board"
         assert any("removed chinext:1" in item and "star:1" in item for item in candidates_event.data["warnings"])
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_limits_industry_concentration(monkeypatch, tmp_path):
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            return {
+                "status": "success",
+                "rows": [
+                    {"rank": 1, "ts_code": "000657.SZ", "name": "中钨高新", "industry": "有色金属", "quant_score": 92, "decision": "BUY", "factor_scores": {}, "tradability": {"is_tradable": True}},
+                    {"rank": 2, "ts_code": "601899.SH", "name": "紫金矿业", "industry": "有色 黄金 铜", "quant_score": 91, "decision": "BUY", "factor_scores": {}, "tradability": {"is_tradable": True}},
+                    {"rank": 3, "ts_code": "603993.SH", "name": "洛阳钼业", "industry": "有色金属", "quant_score": 90, "decision": "BUY", "factor_scores": {}, "tradability": {"is_tradable": True}},
+                    {"rank": 4, "ts_code": "600519.SH", "name": "贵州茅台", "industry": "消费 白酒", "quant_score": 88, "decision": "BUY", "factor_scores": {}, "tradability": {"is_tradable": True}},
+                    {"rank": 5, "ts_code": "600036.SH", "name": "招商银行", "industry": "银行", "quant_score": 86, "decision": "BUY", "factor_scores": {}, "tradability": {"is_tradable": True}},
+                ],
+            }
+
+    async def fake_get_mcp(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp)
+
+    async def run():
+        db = Database(tmp_path / "industry-cap.db")
+        skill = DailyPipelineSkill()
+        events = [
+            event
+            async for event in skill.execute(
+                DailyPipelineInput(trade_date="2026-07-04", limit=4, candidate_limit=20),
+                {"db": db, "daily_pipeline_max_per_industry": 2},
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        symbols = [item["symbol"] for item in complete.data["candidates"]]
+        assert symbols == ["000657.SZ", "601899.SH", "600519.SH", "600036.SH"]
+
+    asyncio.run(run())
+
+
+def test_mcp_adapter_infers_coverage_and_grouped_rows():
+    rows = payload_rows({
+        "data": {
+            "600519.SH": [
+                {"ts_code": "600519.SH", "trade_date": "20260703", "close": 1688.0},
+            ]
+        }
+    })
+    assert rows[0]["close"] == 1688.0
+
+    candidate = normalize_quant_candidate({
+        "ts_code": "600519.SH",
+        "quant_score": 80,
+        "data_coverage": {"valuation": "missing", "flow": "missing"},
+        "key_metrics": {"pe_ttm": 22.0, "northbound_net_5d": 1.2},
+    })
+    assert candidate["data_coverage"]["valuation"] == "available"
+    assert candidate["data_coverage"]["flow"] == "available"
+
+
+def test_daily_pipeline_enriches_latest_price_with_compact_dates(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            return {
+                "status": "success",
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "600519.SH",
+                        "name": "贵州茅台",
+                        "industry": "消费 白酒",
+                        "quant_score": 80,
+                        "decision": "BUY",
+                        "factor_scores": {},
+                        "tradability": {"is_tradable": True},
+                    }
+                ],
+            }
+
+        async def get_stock_daily(self, ts_codes, start_date, end_date, adj_type="qfq"):
+            calls.append((ts_codes, start_date, end_date))
+            return {
+                "data": {
+                    "600519.SH": [
+                        {"ts_code": "600519.SH", "trade_date": "20260703", "close": 1688.0},
+                    ]
+                }
+            }
+
+    async def fake_get_mcp(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp)
+
+    async def run():
+        db = Database(tmp_path / "daily-price.db")
+        skill = DailyPipelineSkill()
+        events = [
+            event
+            async for event in skill.execute(
+                DailyPipelineInput(trade_date="2026-07-04", limit=1, candidate_limit=5),
+                {"db": db, "daily_pipeline_llm_review_enabled": False},
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidate = complete.data["candidates"][0]
+        assert calls[0][1] == "20260603"
+        assert calls[0][2] == "20260703"
+        assert candidate["latest_price"] == 1688.0
+        assert candidate["entry_zone"]
+        assert candidate["targets"]
+        assert candidate["stop_loss"]
 
     asyncio.run(run())
 
@@ -540,3 +660,171 @@ def test_risk_monitor_runs_with_empty_portfolio(tmp_path):
         assert {"prepare", "announcement_scan", "risk_summary"} <= _progress_stage_ids(events)
 
     asyncio.run(run())
+
+
+def test_market_scanner_fuses_llm_review(monkeypatch):
+    """market_scanner now runs the LLM reviewer (was entirely skipped before)."""
+
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            return {
+                "status": "success",
+                "as_of_date": kwargs["trade_date"],
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "600519.SH",
+                        "name": "贵州茅台",
+                        "industry": "消费 白酒",
+                        "quant_score": 82,
+                        "factor_scores": {"momentum": 72, "liquidity": 91, "quality": 96, "risk_control": 82},
+                        "tradability": {"is_tradable": True, "st_flag": False, "limit_status": "normal"},
+                        "risk_flags": [],
+                        "score_explain": ["quality top 5%"],
+                    }
+                ],
+            }
+
+    class FakeReviewer:
+        async def review(self, candidate):
+            return {
+                "llm_view": "positive",
+                "catalyst_strength": "likely",
+                "llm_confidence": 78,
+                "risk_override": False,
+                "invalidates_quant": False,
+                "key_catalysts": ["高端白酒需求回暖"],
+                "key_risks": ["估值偏高"],
+                "risk_flags": [],
+                "reasoning": "量化质量分强，且近期催化明确，维持买入。",
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(market_scanner_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        skill = MarketScannerSkill()
+        events = [
+            event
+            async for event in skill.execute(
+                MarketScannerInput(market="cn_a", min_score=60, limit=3),
+                {
+                    "market_scanner_trade_date": "2026-06-30",
+                    "market_scanner_llm_reviewer": FakeReviewer(),
+                    "market_scanner_llm_review_limit": 5,
+                    "market_scanner_llm_review_enrich": False,
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        cand = complete.data["candidates"][0]
+        assert cand["fusion_mode"] == "quant_llm_fused"
+        assert cand["llm_confidence"] == 78
+        assert cand["reasoning"].startswith("量化质量分强")
+        assert cand["key_catalysts"] == ["高端白酒需求回暖"]
+        assert cand["key_risks"] == ["估值偏高"]
+        assert cand["final_decision"] == "BUY"
+        assert complete.data["review_meta"]["reviewed"] == 1
+        assert complete.data["review_meta"]["available"] is True
+        # transparency metadata flows through to the frontend
+        assert complete.data["as_of_date"] == "2026-06-30"
+        assert "使用指定交易日 2026-06-30" in complete.data["data_window_note"]
+        assert cand["price_trade_date"] == "2026-06-30"
+        scan_evt = [event for event in events if event.event_type == "scanner_candidates"][-1]
+        assert scan_evt.data["data_window_note"] == complete.data["data_window_note"]
+        assert scan_evt.data["review_meta"]["available"] is True
+
+    asyncio.run(run())
+
+
+def test_market_scanner_llm_review_unavailable_is_visible(monkeypatch):
+    """When the reviewer cannot be built, degradation must be visible (not silent)."""
+
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            return {
+                "status": "success",
+                "as_of_date": kwargs["trade_date"],
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "600519.SH",
+                        "name": "贵州茅台",
+                        "industry": "消费 白酒",
+                        "quant_score": 82,
+                        "factor_scores": {},
+                        "tradability": {"is_tradable": True},
+                        "risk_flags": [],
+                    }
+                ],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(market_scanner_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        skill = MarketScannerSkill()
+        events = [
+            event
+            async for event in skill.execute(
+                MarketScannerInput(market="cn_a", min_score=60, limit=3),
+                {"market_scanner_trade_date": "2026-06-30"},  # no LLM configured
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        cand = complete.data["candidates"][0]
+        assert cand["decision_stage"] == "llm_unavailable"
+        assert cand["final_decision"] == "WATCHLIST"
+        assert cand["signal"] == "WATCHLIST"
+        assert cand.get("reasoning") is None
+        assert complete.data["review_meta"]["available"] is False
+        scan_evt = [event for event in events if event.event_type == "scanner_candidates"][-1]
+        assert any("Market scanner LLM reviewer unavailable" in w for w in scan_evt.data["warnings"])
+
+    asyncio.run(run())
+
+
+def test_market_scanner_data_window_note_sessions():
+    """_data_window explains pre-close / post-close / non-trading / override / US."""
+    from types import SimpleNamespace
+
+    def ctx(session, asof):
+        return SimpleNamespace(
+            session_state=session,
+            market_asof_date=asof,
+            decision_target_date=asof,
+            calendar_state="trading_day",
+        )
+
+    asof, note = market_scanner_module._data_window(
+        "cn_a", ctx("before_close_data", "2026-07-04"), {}, {"as_of_date": "2026-07-04"}
+    )
+    assert asof == "2026-07-04"
+    assert "盘前" in note and "2026-07-04" in note
+
+    _, note = market_scanner_module._data_window(
+        "cn_a", ctx("after_close_data", "2026-07-05"), {}, {"as_of_date": "2026-07-05"}
+    )
+    assert "盘后" in note
+
+    _, note = market_scanner_module._data_window(
+        "cn_a", ctx("non_trading", "2026-07-04"), {}, {"as_of_date": "2026-07-04"}
+    )
+    assert "非交易日" in note
+
+    asof, note = market_scanner_module._data_window(
+        "cn_a",
+        ctx("after_close_data", "2026-07-05"),
+        {"market_scanner_trade_date": "2026-06-30"},
+        {"as_of_date": "2026-06-30"},
+    )
+    assert asof == "2026-06-30"
+    assert "指定交易日" in note
+
+    asof, note = market_scanner_module._data_window("us", None, {}, {})
+    assert "演示" in note
+    assert asof is None

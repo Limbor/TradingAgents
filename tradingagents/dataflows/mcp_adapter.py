@@ -120,6 +120,13 @@ def payload_rows(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     data = payload.get("data")
     if isinstance(data, dict) and isinstance(data.get("rows"), list):
         return [row for row in data["rows"] if isinstance(row, dict)]
+    if isinstance(data, dict):
+        grouped = _flatten_grouped_rows(data)
+        if grouped:
+            return grouped
+    grouped = _flatten_grouped_rows(payload)
+    if grouped:
+        return grouped
     return []
 
 
@@ -145,11 +152,22 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
     risk_flags = [str(item) for item in row.get("risk_flags") or []]
     score = _float_or(row.get("quant_score") or row.get("score"), 0.0)
     quant_decision = str(row.get("quant_decision") or row.get("decision") or _decision_from_score(score)).upper()
-    data_coverage = row.get("data_coverage") if isinstance(row.get("data_coverage"), dict) else {}
     warnings = [str(item) for item in row.get("warnings") or []]
-    if not data_coverage:
-        warnings.append("data_coverage unavailable; neutral factor values may indicate missing MCP data.")
-    return {
+    key_metrics = row.get("key_metrics") if isinstance(row.get("key_metrics"), dict) else {}
+    latest_price = _first_present(
+        row,
+        key_metrics,
+        factor_snapshot,
+        keys=("latest_price", "current_price", "close", "Close", "收盘"),
+    )
+    data_coverage = _normalize_data_coverage(
+        row.get("data_coverage") if isinstance(row.get("data_coverage"), dict) else {},
+        key_metrics,
+        factor_snapshot,
+    )
+    if not row.get("data_coverage"):
+        warnings.append("data_coverage unavailable; inferred coverage from returned metrics where possible.")
+    normalized = {
         "symbol": symbol,
         "ts_code": symbol,
         "name": str(row.get("name") or symbol),
@@ -165,7 +183,7 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "universe_percentile": row.get("universe_percentile"),
         "factor_scores": factor_scores,
         "factor_snapshot": factor_snapshot,
-        "key_metrics": row.get("key_metrics") if isinstance(row.get("key_metrics"), dict) else {},
+        "key_metrics": key_metrics,
         "data_coverage": data_coverage,
         "factor_data_source": "stockmanager_mcp",
         "tradability": tradability,
@@ -173,6 +191,10 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "score_explain": [str(item) for item in row.get("score_explain") or []],
         "warnings": warnings,
     }
+    if latest_price is not None:
+        normalized["latest_price"] = latest_price
+        normalized["close"] = latest_price
+    return normalized
 
 
 def _decision_from_score(score: float) -> str:
@@ -198,3 +220,74 @@ def _float_or(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _first_present(*containers: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            value = container.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _flatten_grouped_rows(value: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key, item in value.items():
+        if key in {"status", "message", "warnings", "meta", "strategy_meta", "selection_meta", "concentration_meta"}:
+            continue
+        if isinstance(item, list):
+            for row in item:
+                if isinstance(row, dict):
+                    rows.append(row)
+        elif isinstance(item, dict):
+            nested = item.get("rows") or item.get("data")
+            if isinstance(nested, list):
+                rows.extend(row for row in nested if isinstance(row, dict))
+            elif any(field in item for field in ("close", "Close", "trade_date", "ts_code", "symbol")):
+                rows.append(item)
+    return rows
+
+
+def _normalize_data_coverage(
+    coverage: dict[str, Any],
+    key_metrics: dict[str, Any],
+    factor_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(coverage)
+    groups = {
+        "valuation": (
+            "pe", "pe_ttm", "pb", "ps", "pe_percentile", "pb_percentile",
+            "valuation_score", "ep_ttm", "dv_ttm", "dividend_yield",
+        ),
+        "flow": (
+            "northbound_net", "northbound_net_3d", "northbound_net_5d",
+            "main_net_inflow", "main_force_net", "net_inflow", "fund_flow",
+            "flow_score", "institutional_flow", "net_mf_ratio", "main_net_ratio",
+        ),
+        "quality": ("roe", "roe_ttm", "roa", "gross_margin", "revenue_growth"),
+        "liquidity": ("amount", "amount_20d", "turnover_rate", "volume_ratio"),
+        "momentum": ("momentum_20d", "momentum_60d", "return_20d", "return_60d"),
+        "risk_control": ("volatility_20d", "volatility_60d", "max_drawdown_60d", "max_drawdown_120d"),
+    }
+    for group, keys in groups.items():
+        if _has_any_metric(key_metrics, factor_snapshot, keys=keys):
+            result[group] = "available"
+    return result
+
+
+def _has_any_metric(*containers: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            value = container.get(key)
+            if value not in (None, "", "N/A"):
+                return True
+    return False

@@ -203,7 +203,11 @@ async def ws_chat(websocket: WebSocket):
                 })
                 continue
 
-            route = await orchestrator.route(user_text, session_id=session_id)
+            route = await orchestrator.route(
+                user_text,
+                session_id=session_id,
+                context=message.get("context") if isinstance(message.get("context"), dict) else None,
+            )
             if route.skill is None:
                 await _send({
                     "type": "chat_reply",

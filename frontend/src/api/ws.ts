@@ -183,11 +183,11 @@ class ChatWebSocketManager {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  send(message: string): void {
+  send(message: string, context?: Record<string, unknown>): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Chat socket is not connected");
     }
-    this.ws.send(JSON.stringify({ message }));
+    this.ws.send(JSON.stringify({ message, context }));
   }
 
   disconnect(): void {

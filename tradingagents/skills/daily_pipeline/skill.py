@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.core.candidate_enrichment import CandidateContext, enrich_candidates
 from tradingagents.core.artifacts import save_skill_artifact
-from tradingagents.core.llm_candidate_review import CandidateLLMReview, build_candidate_reviewer
+from tradingagents.core.candidate_review_runner import apply_llm_reviews
 from tradingagents.core.mcp_client import get_mcp_client
 from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
@@ -888,110 +888,28 @@ async def _apply_llm_reviews(
     candidates: list[dict[str, Any]],
     strategy_lessons: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
-    if not candidates:
-        return [], {"enabled": bool(config.get("daily_pipeline_llm_review_enabled", True)), "reviewed": 0}
+    """Delegate to the shared LLM review runner.
 
+    Daily-pipeline-specific config keys and warning wording are preserved; the
+    review loop, enrichment, and re-fusion live in
+    :mod:`tradingagents.core.candidate_review_runner`.
+    """
     enabled = bool(config.get("daily_pipeline_llm_review_enabled", True))
-    if not enabled:
-        return ["Daily pipeline LLM review disabled by config."], {"enabled": False, "reviewed": 0}
-
     reviewer = config.get("daily_pipeline_llm_reviewer")
-    if reviewer is None:
-        reviewer = build_candidate_reviewer(
-            config,
-            style=str(profile.get("investment_style") or "medium_term"),
-            trade_date=input_params.trade_date,
-            strategy_lessons=strategy_lessons or [],
-        )
-    if reviewer is None:
-        for candidate in candidates:
-            candidate["decision_stage"] = "llm_unavailable"
-            candidate["final_decision"] = "WATCHLIST" if candidate.get("quant_decision") == "BUY" else candidate.get("final_decision", candidate.get("signal", "MONITOR"))
-            candidate["signal"] = candidate["final_decision"]
-            if candidate["final_decision"] != "BUY":
-                candidate["position_pct"] = 0.0
-        return ["Daily pipeline LLM reviewer unavailable; using quant-only fusion."], {
-            "enabled": True,
-            "available": False,
-            "reviewed": 0,
-        }
-
-    review_limit = int(config.get("daily_pipeline_llm_review_limit", min(5, len(candidates))) or 0)
-    review_limit = max(0, min(review_limit, len(candidates)))
-    warnings: list[str] = []
-    reviewed = 0
-
-    # Enrich candidates with real-time data (news, announcements, northbound flow)
-    context_map: dict[str, CandidateContext] = {}
-    try:
-        context_map = await enrich_candidates(
-            candidates[:review_limit],
-            input_params.trade_date,
-            config,
-        )
-    except Exception as exc:
-        logger.warning("Candidate enrichment failed; proceeding without context: %s", exc)
-
-    # Concurrent LLM reviews via asyncio.gather
-    async def _do_review(candidate: dict[str, Any]) -> tuple[dict[str, Any], Any | None, Exception | None]:
-        try:
-            symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
-            ctx = context_map.get(symbol)
-            # Pass context if reviewer supports it; gracefully degrade otherwise
-            if "context" in inspect.signature(reviewer.review).parameters:
-                raw_review = await reviewer.review(candidate, context=ctx)
-            else:
-                raw_review = await reviewer.review(candidate)
-            return candidate, raw_review, None
-        except Exception as exc:
-            return candidate, None, exc
-
-    review_tasks = [_do_review(c) for c in candidates[:review_limit]]
-    results = await asyncio.gather(*review_tasks)
-
-    for candidate, raw_review, exc in results:
-        if exc is not None:
-            symbol = candidate.get("symbol") or candidate.get("ts_code") or "unknown"
-            logger.warning("LLM review failed for %s: %s", symbol, exc)
-            warnings.append(f"LLM review failed for {symbol}; kept quant-only signal.")
-            continue
-        review = _coerce_llm_review(raw_review)
-        lesson_hits = _candidate_lesson_hits(candidate, strategy_lessons or [])
-        candidate["llm_review"] = review.model_dump()
-        candidate["key_catalysts"] = review.key_catalysts
-        candidate["key_risks"] = review.key_risks
-        candidate["strategy_lesson_hits"] = lesson_hits
-        if lesson_hits:
-            candidate["lesson_adjustment_reason"] = "LLM review considered recent strategy reflection lessons."
-        candidate.update(
-            fuse_candidate_signal(
-                candidate,
-                str(profile.get("investment_style") or "medium_term"),
-                review.as_fusion_payload(),
-            )
-        )
-        candidate["rationale"] = candidate_rationale(candidate, include_llm=True)
-        reviewed += 1
-
-    for candidate in candidates[review_limit:]:
-        candidate["llm_review_status"] = "skipped_by_review_limit"
-
-    return warnings, {
-        "enabled": True,
-        "available": True,
-        "reviewed": reviewed,
-        "review_limit": review_limit,
-    }
-
-
-def _coerce_llm_review(value: Any) -> CandidateLLMReview:
-    if isinstance(value, CandidateLLMReview):
-        return value
-    if isinstance(value, dict):
-        return CandidateLLMReview.model_validate(value)
-    if isinstance(value, BaseModel):
-        return CandidateLLMReview.model_validate(value.model_dump())
-    raise TypeError(f"Unsupported LLM review payload: {type(value)!r}")
+    review_limit = int(config.get("daily_pipeline_llm_review_limit", 5) or 0)
+    return await apply_llm_reviews(
+        candidates,
+        config=config,
+        trade_date=input_params.trade_date,
+        style=str(profile.get("investment_style") or "medium_term"),
+        reviewer=reviewer,
+        review_limit=review_limit,
+        enabled=enabled,
+        strategy_lessons=strategy_lessons,
+        enrich=True,
+        disabled_warning="Daily pipeline LLM review disabled by config.",
+        unavailable_warning="Daily pipeline LLM reviewer unavailable; using quant-only fusion.",
+    )
 
 
 def _attach_payload_meta(candidate: dict[str, Any], payload: dict[str, Any] | None) -> None:
@@ -1038,6 +956,7 @@ def _candidate_cards(candidates: list[dict[str, Any]], *, include_llm: bool) -> 
                     "position_pct": item.get("position_pct", 0.0),
                     "strategy_lesson_hits": item.get("strategy_lesson_hits") or [],
                     "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
+                    "reasoning": item.get("reasoning"),
                 }
             )
         cards.append(card)
@@ -1069,41 +988,6 @@ def _load_strategy_lessons(db: Database) -> list[dict[str, Any]]:
     except Exception as exc:
         logger.warning("Failed to load strategy lessons for daily pipeline: %s", exc)
         return []
-
-
-def _candidate_lesson_hits(candidate: dict[str, Any], lessons: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not lessons:
-        return []
-    symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
-    industry = str(candidate.get("industry") or "")
-    board = str(candidate.get("board") or "")
-    data_coverage = candidate.get("data_coverage") or {}
-    missing_keys = {
-        key for key, value in data_coverage.items()
-        if str(value).lower() == "missing"
-    } if isinstance(data_coverage, dict) else set()
-    hits: list[dict[str, Any]] = []
-    for lesson in lessons:
-        scope = str(lesson.get("scope") or "global")
-        target = str(lesson.get("target") or "")
-        matched = scope == "global"
-        matched = matched or (scope == "symbol" and target == symbol)
-        matched = matched or (scope == "industry" and target and target == industry)
-        matched = matched or (scope == "board" and target and target == board)
-        matched = matched or (scope == "factor" and target in missing_keys)
-        if matched:
-            hits.append(
-                {
-                    "id": lesson.get("id"),
-                    "lesson_type": lesson.get("lesson_type"),
-                    "scope": scope,
-                    "target": target,
-                    "finding": lesson.get("finding"),
-                    "suggested_adjustment": lesson.get("suggested_adjustment"),
-                    "confidence": lesson.get("confidence"),
-                }
-            )
-    return hits[:5]
 
 
 def _quant_meta(payload: dict[str, Any] | None, input_params: DailyPipelineInput, profile: dict[str, Any]) -> dict[str, Any]:

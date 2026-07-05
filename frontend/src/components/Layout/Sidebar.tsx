@@ -13,7 +13,7 @@ const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/chat", label: "Chat", icon: MessageSquareText },
   { to: "/portfolio", label: "Portfolio", icon: BriefcaseBusiness },
-  { to: "/reports", label: "Reports", icon: FileText },
+  { to: "/library", label: "Library", icon: FileText },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

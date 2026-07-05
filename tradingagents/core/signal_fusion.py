@@ -379,9 +379,15 @@ def _targets(candidate: dict[str, Any]) -> list[float] | None:
 
 
 def _latest_price(candidate: dict[str, Any]) -> float | None:
-    for container in (candidate, candidate.get("factor_snapshot") or {}):
+    for container in (candidate, candidate.get("key_metrics") or {}, candidate.get("factor_snapshot") or {}):
         if isinstance(container, dict):
-            value = container.get("latest_price") or container.get("close")
+            value = (
+                container.get("latest_price")
+                or container.get("current_price")
+                or container.get("close")
+                or container.get("Close")
+                or container.get("收盘")
+            )
             if value is not None:
                 return _float_or(value, None)
     return None
