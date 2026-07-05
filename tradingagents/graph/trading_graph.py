@@ -44,6 +44,7 @@ from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
+from tradingagents.reporting import write_report_tree
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -53,6 +54,21 @@ from .setup import GraphSetup
 from .signal_processing import SignalProcessor
 
 logger = logging.getLogger(__name__)
+
+
+def _yahoo_close_series(symbol: str, start: str, end: str) -> list[float]:
+    """Close-price series for ``symbol`` from yfinance over [start, end].
+
+    Returns an empty list on any failure so callers can fall back to None alpha
+    rather than raising. Kept module-level so it can be reused/mocked without a
+    class instance.
+    """
+    try:
+        df = yf.Ticker(symbol).history(start=start, end=end)
+        return [float(c) for c in df["Close"].tolist()]
+    except Exception as exc:
+        logger.debug("yfinance close fetch failed for %s: %s", symbol, exc)
+        return []
 
 
 class TradingAgentsGraph:
@@ -256,33 +272,48 @@ class TradingAgentsGraph:
         caller via ``_resolve_benchmark``). Returns ``(raw_return, alpha_return,
         actual_holding_days)`` or ``(None, None, None)`` if price data is
         unavailable (too recent, delisted, or network error).
+
+        A-share stocks are fetched from the local AKShare OHLCV (the same source
+        the analysis priced off) because yfinance's A-share quotes are frequently
+        delayed, missing, or inconsistently adjusted — which previously left
+        pending reflection entries unresolved forever. CN indices used as
+        benchmarks are still fetched via yfinance (they are more reliable there
+        than individual A-share stocks); if the benchmark is unavailable, alpha
+        is returned as None.
         """
-        from tradingagents.dataflows.symbol_utils import normalize_symbol
+        from tradingagents.dataflows.symbol_utils import detect_market, normalize_symbol
 
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
             end_str = end.strftime("%Y-%m-%d")
 
-            # Normalize so the realized-return lookup hits the same instrument
-            # the analysis priced (e.g. XAUUSD -> GC=F) (#984). The benchmark is
-            # already a canonical Yahoo symbol from ``_resolve_benchmark``.
-            stock = yf.Ticker(normalize_symbol(ticker)).history(start=trade_date, end=end_str)
-            bench = yf.Ticker(benchmark).history(start=trade_date, end=end_str)
+            market = detect_market(ticker)
+            if market == "cn_a":
+                stock_closes = self._cn_close_series(ticker, trade_date, end_str)
+            else:
+                stock_closes = _yahoo_close_series(normalize_symbol(ticker), trade_date, end_str)
+            bench_closes = _yahoo_close_series(benchmark, trade_date, end_str)
 
-            if len(stock) < 2 or len(bench) < 2:
+            if len(stock_closes) < 2:
                 return None, None, None
 
-            actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
+            bench_len = len(bench_closes)
+            if bench_len >= 2:
+                actual_days = min(holding_days, len(stock_closes) - 1, bench_len - 1)
+            else:
+                actual_days = min(holding_days, len(stock_closes) - 1)
+
             raw = float(
-                (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
-                / stock["Close"].iloc[0]
+                (stock_closes[actual_days] - stock_closes[0]) / stock_closes[0]
             )
-            bench_ret = float(
-                (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
-                / bench["Close"].iloc[0]
-            )
-            alpha = raw - bench_ret
+            if bench_len >= 2:
+                bench_ret = float(
+                    (bench_closes[actual_days] - bench_closes[0]) / bench_closes[0]
+                )
+                alpha = raw - bench_ret
+            else:
+                alpha = None
             return raw, alpha, actual_days
         except Exception as e:
             logger.warning(
@@ -290,6 +321,25 @@ class TradingAgentsGraph:
                 ticker, trade_date, benchmark, e,
             )
             return None, None, None
+
+    def _cn_close_series(self, ticker: str, start: str, end: str) -> list[float]:
+        """Close-price series for an A-share ticker via AKShare, in [start, end].
+
+        Reuses ``load_ohlcv_cn`` (the same qfq OHLCV the analysis used) so the
+        realized return is measured against the same adjusted prices.
+        """
+        try:
+            import pandas as pd
+
+            from tradingagents.dataflows.akshare_stock import load_ohlcv_cn
+
+            df = load_ohlcv_cn(ticker, end)  # filtered to <= end internally
+            start_dt = pd.to_datetime(start)
+            df = df[df["Date"] >= start_dt]
+            return [float(c) for c in df["Close"].tolist()]
+        except Exception as exc:
+            logger.debug("AKShare close fetch failed for %s: %s", ticker, exc)
+            return []
 
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
@@ -343,6 +393,26 @@ class TradingAgentsGraph:
         identity = resolve_instrument_identity(ticker)
         return build_instrument_context(ticker, asset_type, identity)
 
+    def _merge_memory_context(self, past_context: str) -> str:
+        extra = str(self.config.get("memory_extra_context") or "").strip()
+        if not extra:
+            return past_context
+        if past_context:
+            return f"{past_context}\n\n{extra}"
+        return extra
+
+    def save_reports(self, final_state: dict[str, Any], ticker: str, save_path: str | Path | None = None) -> Path:
+        """Write a completed graph state as a markdown report tree."""
+
+        if save_path is None:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = (
+                Path(self.config["results_dir"])
+                / "reports"
+                / f"{safe_ticker_component(ticker)}_{stamp}"
+            )
+        return write_report_tree(final_state, ticker, save_path)
+
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
         """Run the trading agents graph for a company on a specific date.
 
@@ -388,7 +458,7 @@ class TradingAgentsGraph:
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
-        past_context = self.memory_log.get_past_context(company_name)
+        past_context = self._merge_memory_context(self.memory_log.get_past_context(company_name))
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
         market = detect_market(company_name)
         init_agent_state = self.propagator.create_initial_state(
@@ -398,6 +468,7 @@ class TradingAgentsGraph:
             past_context=past_context,
             instrument_context=instrument_context,
             market=market,
+            investment_style=str(self.config.get("investment_style") or ""),
         )
         args = self.propagator.get_graph_args()
 
@@ -525,7 +596,7 @@ class TradingAgentsGraph:
         self.ticker = ticker
 
         instrument_context = self.resolve_instrument_context(ticker, asset_type)
-        past_context = self.memory_log.get_past_context(ticker)
+        past_context = self._merge_memory_context(self.memory_log.get_past_context(ticker))
         market = detect_market(ticker)
 
         init_agent_state = self.propagator.create_initial_state(
@@ -535,75 +606,102 @@ class TradingAgentsGraph:
             past_context=past_context,
             instrument_context=instrument_context,
             market=market,
+            investment_style=str(self.config.get("investment_style") or ""),
         )
 
         workflow = self.graph_setup.setup_graph(selected_analysts)
-        graph = workflow.compile()
         args = self.propagator.get_graph_args()
+
+        # Mirror propagate()'s checkpointer handling so the Skill entry point
+        # (astream_propagate) also benefits from resume-after-crash when the user
+        # opts in via checkpoint_enabled. Previously this path compiled the graph
+        # without a saver, silently ignoring the config.
+        checkpointer_ctx = None
+        if self.config.get("checkpoint_enabled"):
+            checkpointer_ctx = get_checkpointer(self.config["data_cache_dir"], ticker)
+            saver = checkpointer_ctx.__enter__()
+            graph = workflow.compile(checkpointer=saver)
+            tid = thread_id(ticker, str(date))
+            args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
+            step = checkpoint_step(self.config["data_cache_dir"], ticker, str(date))
+            if step is not None:
+                logger.info("Resuming from step %d for %s on %s (streaming)", step, ticker, date)
+            else:
+                logger.info("Starting fresh for %s on %s (streaming)", ticker, date)
+        else:
+            graph = workflow.compile()
 
         seen_agents = set()
         final_sections: dict[str, str] = {}
 
-        async for event in graph.astream_events(
-            init_agent_state,
-            version="v2",
-            config=args.get("config", {}),
-        ):
-            kind = event.get("event", "")
-            name = event.get("name", "")
-            data = event.get("data", {})
+        try:
+            async for event in graph.astream_events(
+                init_agent_state,
+                version="v2",
+                config=args.get("config", {}),
+            ):
+                kind = event.get("event", "")
+                name = event.get("name", "")
+                data = event.get("data", {})
 
-            if kind == "on_chain_start" and name in AGENT_NAMES and name not in seen_agents:
-                yield {
-                    "type": "agent_status",
-                    "data": {"agent": name, "status": "running"},
-                }
+                if kind == "on_chain_start" and name in AGENT_NAMES and name not in seen_agents:
+                    yield {
+                        "type": "agent_status",
+                        "data": {"agent": name, "status": "running"},
+                    }
 
-            elif kind == "on_chain_end" and name in AGENT_NAMES and name not in seen_agents:
-                seen_agents.add(name)
-                yield {
-                    "type": "agent_status",
-                    "data": {"agent": name, "status": "completed"},
-                }
-                # Extract report sections from the node's output
-                output = data.get("output")
-                if isinstance(output, dict):
-                    for key in REPORT_KEYS:
-                        if key in output and output[key]:
-                            final_sections[key] = output[key]
-                            yield {
-                                "type": "report_chunk",
-                                "data": {
-                                    "section": key,
-                                    "content": output[key],
-                                    "is_final": key == "final_trade_decision",
-                                },
-                            }
+                elif kind == "on_chain_end" and name in AGENT_NAMES and name not in seen_agents:
+                    seen_agents.add(name)
+                    yield {
+                        "type": "agent_status",
+                        "data": {"agent": name, "status": "completed"},
+                    }
+                    # Extract report sections from the node's output
+                    output = data.get("output")
+                    if isinstance(output, dict):
+                        for key in REPORT_KEYS:
+                            if key in output and output[key]:
+                                final_sections[key] = output[key]
+                                yield {
+                                    "type": "report_chunk",
+                                    "data": {
+                                        "section": key,
+                                        "content": output[key],
+                                        "is_final": key == "final_trade_decision",
+                                    },
+                                }
 
-            elif kind == "on_tool_start":
+                elif kind == "on_tool_start":
+                    yield {
+                        "type": "tool_call",
+                        "data": {
+                            "tool": name or "unknown",
+                            "args": data.get("input", {}),
+                        },
+                    }
+
+            # Emit complete report with all sections
+            if final_sections:
                 yield {
-                    "type": "tool_call",
+                    "type": "report_complete",
                     "data": {
-                        "tool": name or "unknown",
-                        "args": data.get("input", {}),
+                        "sections": final_sections,
+                        "ticker": ticker,
+                        "date": date,
                     },
                 }
 
-        # Emit complete report with all sections
-        if final_sections:
-            yield {
-                "type": "report_complete",
-                "data": {
-                    "sections": final_sections,
-                    "ticker": ticker,
-                    "date": date,
-                },
-            }
+            # Store decision for deferred reflection
+            if "final_trade_decision" in final_sections:
+                self.memory_log.store_decision(
+                    ticker=ticker,
+                    trade_date=date,
+                    final_trade_decision=final_sections["final_trade_decision"],
+                )
 
-        # Store decision for deferred reflection
-        if "final_trade_decision" in final_sections:
-            self.memory_log.store_decision(
-                ticker=ticker,
-                trade_date=date,
-                final_trade_decision=final_sections["final_trade_decision"],
-            )
+            # Clear checkpoint on successful completion to avoid stale state.
+            if checkpointer_ctx is not None:
+                clear_checkpoint(self.config["data_cache_dir"], ticker, str(date))
+        finally:
+            if checkpointer_ctx is not None:
+                checkpointer_ctx.__exit__(None, None, None)

@@ -118,6 +118,52 @@ def get_market_risk_instruction(market: str | None = None) -> str:
     )
 
 
+# Investment-style prompt fragments. ``investment_style`` (short/medium/long_term)
+# is documented as driving analyst focus, factor weights, and decision framing,
+# but the 13-agent pipeline previously ignored it. These instructions make the
+# style visible to each analyst's system prompt so a short-term run and a
+# long-term run actually produce differently-focused reports.
+_INVESTMENT_STYLE_INSTRUCTIONS: dict[str, str] = {
+    "short_term": (
+        " Investment style: SHORT-TERM (hold 3-10 trading days). Focus on "
+        "momentum, turnover/换手, northbound flow intraday, theme heat, and "
+        "limit-up/limit-down dynamics. Prioritize entry timing, intraday "
+        "volume spikes, and short-term catalysts over fundamentals. Frame "
+        "stops in ATR×2 / -8% terms and targets at ATR×2-4."
+    ),
+    "medium_term": (
+        " Investment style: MEDIUM-TERM (hold 2-4 weeks). Balance momentum and "
+        "quality: weight recent price action, northbound flow trends, and "
+        "sector rotation alongside ROE, valuation percentile, and gross margin. "
+        "Frame stops at ATR×2 / -8% and targets at +8% to +16%."
+    ),
+    "long_term": (
+        " Investment style: LONG-TERM (hold 1-3 months). Lead with fundamentals "
+        "— ROE, gross margin, revenue growth, valuation percentile — and treat "
+        "momentum/flow as secondary confirmation. Frame decisions around "
+        "business quality and valuation, with stops at ATR×2 / -8% and targets "
+        "at +8% to +16%."
+    ),
+}
+
+
+def get_investment_style_instruction(style: str | None = None) -> str:
+    """Return a prompt fragment describing the configured investment style.
+
+    ``style`` is usually read from ``state["investment_style"]`` (set by
+    ``create_initial_state`` from config). Falls back to the global config's
+    ``investment_style`` when ``style`` is None. Returns "" for unknown styles
+    so agents are unaffected when the feature is off.
+    """
+    if style is None:
+        try:
+            from tradingagents.dataflows.config import get_config
+            style = (get_config() or {}).get("investment_style") or ""
+        except Exception:
+            return ""
+    return _INVESTMENT_STYLE_INSTRUCTIONS.get((style or "").strip().lower(), "")
+
+
 def _clean_identity_value(value: Any) -> str | None:
     """Return a trimmed string, or None for empty / placeholder-ish values."""
     if not isinstance(value, str):

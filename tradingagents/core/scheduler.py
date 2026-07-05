@@ -8,10 +8,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 ScheduledJob = Callable[[], Awaitable[Any]]
+
+# A-share market jobs are timed against Asia/Shanghai. Using the system local
+# timezone (the previous naive ``datetime.now()``) made daily jobs fire at the
+# wrong wall-clock time on hosts whose system clock is UTC (e.g. Docker/CI).
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass
@@ -39,11 +45,24 @@ class Scheduler:
     def register_daily(self, name: str, run_at: time, job: ScheduledJob) -> None:
         self._tasks[name] = ScheduledTask(name=name, run_at=run_at, job=job)
 
+    def register_interval(self, name: str, interval_seconds: float, job: ScheduledJob) -> None:
+        """Register a job that repeats every *interval_seconds*.
+
+        Internally stored as a ScheduledTask with run_at=None; the _run_interval
+        loop handles timing.
+        """
+        task = ScheduledTask(name=name, run_at=time(0, 0), job=job)
+        task._interval = interval_seconds  # type: ignore[attr-defined]
+        self._tasks[name] = task
+
     def start(self) -> None:
         self._stopped.clear()
         for item in self._tasks.values():
             if item.task is None or item.task.done():
-                item.task = asyncio.create_task(self._run_daily(item))
+                if hasattr(item, "_interval"):
+                    item.task = asyncio.create_task(self._run_interval(item))
+                else:
+                    item.task = asyncio.create_task(self._run_daily(item))
 
     async def stop(self) -> None:
         self._stopped.set()
@@ -85,8 +104,28 @@ class Scheduler:
                 logger.exception("Scheduled job %s failed", item.name)
 
 
+    async def _run_interval(self, item: ScheduledTask) -> None:
+        interval = getattr(item, "_interval", 3600)
+        while not self._stopped.is_set():
+            try:
+                await asyncio.wait_for(self._stopped.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+            try:
+                await item.job()
+                item.last_run_at = datetime.now(timezone.utc).isoformat()
+                item.error = None
+            except Exception as exc:
+                item.error = f"{type(exc).__name__}: {exc}"
+                logger.exception("Scheduled interval job %s failed", item.name)
+
+
 def _seconds_until(target: time) -> float:
-    now = datetime.now()
+    # Interpret ``target`` as a Shanghai wall-clock time, regardless of the host
+    # system timezone, so daily_pipeline at 08:30 fires at 08:30 Asia/Shanghai.
+    now = datetime.now(SHANGHAI_TZ)
     next_run = now.replace(
         hour=target.hour,
         minute=target.minute,

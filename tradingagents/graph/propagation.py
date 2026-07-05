@@ -23,6 +23,7 @@ class Propagator:
         past_context: str = "",
         instrument_context: str = "",
         market: str = "us",
+        investment_style: str = "",
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -31,6 +32,10 @@ class Propagator:
         ``TradingAgentsGraph.resolve_instrument_context``). When empty, agents
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
+
+        ``investment_style`` (short/medium/long_term) is stored in state so each
+        analyst node can adapt its focus and decision framing via
+        ``get_investment_style_instruction``.
         """
         return {
             "messages": [("human", company_name)],
@@ -38,6 +43,7 @@ class Propagator:
             "asset_type": asset_type,
             "market": market,
             "instrument_context": instrument_context,
+            "investment_style": investment_style,
             "trade_date": str(trade_date),
             "past_context": past_context,
             "investment_debate_state": InvestDebateState(

@@ -7,6 +7,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_fundamentals,
     get_income_statement,
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
     get_lhb_detail,
     get_margin_balance,
@@ -19,6 +20,7 @@ def create_fundamentals_analyst(llm):
         current_date = state["trade_date"]
         market = state.get("market")
         instrument_context = get_instrument_context_from_state(state)
+        style_instruction = get_investment_style_instruction(state.get("investment_style"))
 
         tools = [
             get_fundamentals,
@@ -36,7 +38,8 @@ def create_fundamentals_analyst(llm):
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
             + " For China A-shares, also use `get_announcements`, `get_lhb_detail`, `get_margin_balance`, and `get_unlock_schedule` to cover公告/监管、龙虎榜资金、融资融券和解禁风险."
-            + get_language_instruction(market),
+            + get_language_instruction(market)
+            + style_instruction,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -49,8 +52,9 @@ def create_fundamentals_analyst(llm):
                     " will help where you left off. Execute what you can to make progress."
                     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
                     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. {instrument_context}",
+                    " You have access to the following tools: {tool_names}."
+                    " Today's date is {current_date}; treat it as 'now' for all analysis and tool-call date ranges. {instrument_context}\n"
+                    "{system_message}",
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]

@@ -32,6 +32,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
     get_news,
     get_social_sentiment,
@@ -87,6 +88,7 @@ def create_sentiment_analyst(llm):
             reddit_block=reddit_block,
             cn_social_block=cn_social_block,
             market=market,
+            investment_style=state.get("investment_style"),
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -96,8 +98,8 @@ def create_sentiment_analyst(llm):
                     "You are a helpful AI assistant, collaborating with other assistants."
                     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
                     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    "\n{system_message}\n"
-                    "For your reference, the current date is {current_date}. {instrument_context}",
+                    " Today's date is {current_date}; treat it as 'now' for all analysis and date ranges. {instrument_context}\n"
+                    "{system_message}",
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]
@@ -138,6 +140,7 @@ def _build_system_message(
     reddit_block: str,
     cn_social_block: str = "",
     market: str | None = None,
+    investment_style: str | None = None,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
@@ -199,7 +202,7 @@ Fill the following fields:
 - **confidence**: low / medium / high, based on data quality and sample size.
 - **narrative**: Full source-by-source breakdown, divergences, dominant narrative themes, catalysts and risks, and a markdown summary table of key sentiment signals (direction, source, supporting evidence).
 
-{get_language_instruction(market)}"""
+{get_language_instruction(market)}{get_investment_style_instruction(investment_style)}"""
 
 
 # ---------------------------------------------------------------------------

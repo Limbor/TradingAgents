@@ -91,7 +91,10 @@ class StockManagerMCPClient:
         self._write: Any = None
         self._get_session_id: Callable[[], str | None] | None = None
         self._connected = False
-        self._call_lock = asyncio.Lock()
+        # A semaphore (not a lock) so multiple MCP tool calls can run concurrently
+        # — RiskMonitor scanning N holdings would otherwise serialize and a
+        # single 120s timeout would block every subsequent call.
+        self._call_semaphore = asyncio.Semaphore(8)
         self._status = MCPStatus(enabled=self._config.enabled, url=self._config.url)
 
     async def __aenter__(self) -> "StockManagerMCPClient":
@@ -143,6 +146,12 @@ class StockManagerMCPClient:
         """Establish the MCP Streamable HTTP session. Returns True on success."""
         if self._connected:
             return True
+        # Clean up any leftover session/transport from a prior failed call so the
+        # next connection attempt starts from a clean slate. We only mark
+        # ``_connected = False`` on failure (never disconnect while holding the
+        # call lock), so dangling resources may exist here.
+        if self._session is not None or self._transport_context is not None:
+            await self.disconnect()
         status = await self.refresh_status()
         if not self._config.enabled:
             return False
@@ -222,7 +231,7 @@ class StockManagerMCPClient:
         if not await self.connect():
             logger.warning("MCP not connected; skipping %s", name)
             return None
-        async with self._call_lock:
+        async with self._call_semaphore:
             try:
                 result = await asyncio.wait_for(
                     self._session.call_tool(name, arguments),
@@ -241,9 +250,16 @@ class StockManagerMCPClient:
                     name,
                     self._config.tool_timeout,
                 )
+                # A timeout usually means the session is stuck; mark disconnected so
+                # the next call re-establishes the session rather than reusing it.
+                self._connected = False
                 return None
             except Exception as exc:
                 logger.warning("MCP tool %s failed: %s", name, exc)
+                # Mark disconnected so the next call triggers reconnect. We do not
+                # disconnect() here because we hold the call semaphore; connect()
+                # will clean up dangling resources before rebuilding.
+                self._connected = False
                 return None
 
     # Data Query Tools

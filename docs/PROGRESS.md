@@ -1,6 +1,6 @@
 # TradingAgents 开发进度汇总
 
-> 最后更新: 2026-06-28
+> 最后更新: 2026-07-04
 > 对应设计文档: [SPEC.md](./SPEC.md)
 
 ---
@@ -13,7 +13,7 @@
 4. [Phase 1 — API 层 + 基础前端](#4-phase-1--api-层--基础前端)
 5. [Phase 2 — 技能扩展 + 对话式交互](#5-phase-2--技能扩展--对话式交互)
 6. [Phase 3 — MCP 集成 + 决策增强](#6-phase-3--mcp-集成--决策增强)
-7. [Phase 4 — 自动化 + 学习闭环](#7-phase-4--自动化--学习闭环)
+7. [Phase 4 — ChatAgent + 自动化 + 学习闭环](#7-phase-4--chatagent--自动化--学习闭环)
 8. [Phase 5 — 桌面打包](#8-phase-5--桌面打包)
 9. [已知问题](#9-已知问题)
 10. [下一步建议](#10-下一步建议)
@@ -80,8 +80,8 @@ TradingAgents 最初是一个基于 **LangGraph** 的多智能体金融分析框
 ```
 Phase 1 (API + 基础前端)    ██████████████████████  100%  ← 已完成
 Phase 2 (技能扩展 + 对话)    ██████████████████████  100%  ← 已完成
-Phase 3 (MCP 集成 + 决策增强) ███████████████░░░░░░░   ~70%  ← 可运行初版
-Phase 4 (自动化 + 学习闭环)   ░░░░░░░░░░░░░░░░░░░░░░   ~0%  ← 后续
+Phase 3 (MCP 集成 + 决策增强) ███████████████████░░░   ~85%  ← 可运行闭环
+Phase 4 (ChatAgent + 反思闭环) █████████░░░░░░░░░░░░░   ~40%  ← 当前重点
 Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░░░░░░░░   ~0%  ← 远期
 ```
 
@@ -98,14 +98,14 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | SQLite 持久化 | ✅ 完成 | [tradingagents/core/persistence.py](../tradingagents/core/persistence.py) |
 | React Dashboard | ✅ 完成 | [frontend/src/pages/Dashboard/](../frontend/src/pages/Dashboard/) |
 | React Analysis (Agent 图 + 报告) | ✅ 完成 | [frontend/src/pages/Analysis/](../frontend/src/pages/Analysis/) |
-| React Reports 历史页 | ✅ 完成 | [frontend/src/pages/Reports/](../frontend/src/pages/Reports/) |
+| React Library 产物库 | ✅ 初版完成 | [frontend/src/pages/Library/](../frontend/src/pages/Library/)；旧 Reports API 保留兼容 |
 | React Settings 配置页 | ✅ 完成 | [frontend/src/pages/Settings/](../frontend/src/pages/Settings/) |
 | WebSocket 前端管理 | ✅ 完成 | [frontend/src/api/ws.ts](../frontend/src/api/ws.ts) |
 | 单元测试 (5 个文件) | ✅ 完成 | [tests/unit/](../tests/unit/) |
 | Orchestrator 意图路由 | ✅ 完成 | [tradingagents/core/orchestrator.py](../tradingagents/core/orchestrator.py) |
 | WS /chat 对话端点 | ✅ 完成 | [tradingagents/api/ws/stream.py](../tradingagents/api/ws/stream.py) |
 | Chat 前端页面 | ✅ 完成 | [frontend/src/pages/Chat/](../frontend/src/pages/Chat/) |
-| Chat 任务流交互 | ✅ 初版完成 | Skill 按钮进入 Chat 自动执行；按 run 聚合进度步骤、结构化结果和详情链接 |
+| Chat 任务流交互 | ✅ 初版完成 | Skill 按钮进入 Chat 自动执行；按 run 聚合进度步骤、结构化结果和 Library 详情链接 |
 | Dashboard 账户驾驶舱 | ✅ 初版完成 | 持仓市值/成本/浮动盈亏/集中度/MCP 状态 |
 | 额外 Skill (Portfolio/Scanner 等) | ✅ 完成 | portfolio_management / market_scanner |
 | 集成/E2E 测试 | ✅ 完成 | [tests/integration/test_phase1_flow.py](../tests/integration/test_phase1_flow.py) |
@@ -113,9 +113,13 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | MCP Client 基础设施 | ✅ 完成 | HTTP/Streamable MCP + health/capabilities + `/api/v1/health` |
 | UserProfile 投资风格配置 | ✅ 初版完成 | 短线/中线/长线参数 + SQLite + `GET/PUT /api/v1/profile` + Settings 投资风格卡 |
 | Scheduler 定时调度 | ✅ 初版完成 | `Scheduler` 已接入 FastAPI lifespan，默认注册每日 08:30 `daily_pipeline` |
-| DailyPipeline 每日选股编排 | ✅ 初版完成 | MCP 候选池 + 风格权重打分 + 早报事件 + SQLite 报告入库；Top5 深度 Agent 分析待补 |
+| DailyPipeline 每日选股编排 | ✅ 可运行 | MCP 候选池 + 量化门控 + LLM 离散复核 + 状态机融合 + 价格/交易计划 + Artifact 入库 |
 | RiskMonitor 风险监控 | ✅ 初版完成 | 持仓巡检 + MCP 公告扫描 + 报告事件；风险仪表盘分级待增强 |
-| PositionAdvisor 持仓建议 | ❌ 待建 | 卖出/加仓建议（复用 Agent 管道） |
+| DailyReview 收盘复盘 | ✅ 初版完成 | 刷新持仓、风险扫描、反思批处理、每日选股、次日计划 Artifact |
+| Reflection Cases / Strategy Lessons | ✅ 初版完成 | 因果归因框架、策略经验软注入、私人复盘隔离 |
+| StockAnalysis 持仓上下文 | ✅ 完成 | 命中持仓标的时注入成本、盈亏、仓位占比和持仓备注 |
+| Free ChatAgent | ❌ 待建 | 自由聊天、轻量工具增强、Skill Dispatcher 分层 |
+| PositionAdvisor 持仓建议 | ◐ 部分具备 | StockAnalysis 已能注入持仓上下文；独立卖出/加仓建议 Skill 待建 |
 | StrategyBacktest 回测 Skill | ❌ 待建 | 委托 MCP `run_backtest()` |
 | DecisionAudit 决策复盘 | ❌ 待建 | 历史决策 vs 实际收益追踪 |
 | 前端 Portfolio 持仓页 | ✅ 初版完成 | 持仓 CRUD + P&L 展示；风险仪表盘待增强 |
@@ -218,9 +222,9 @@ WebSocket 端点：
 | 项 | 状态 |
 |----|------|
 | Settings 页（LLM/数据源配置）| ✅ |
-| Reports 历史页 | ✅ |
+| Library 统一产物库 | ✅ |
 | SQLite 持久化 | ✅ |
-| 磁盘报告自动导入 | ✅ |
+| 磁盘报告自动导入 / Artifact 展示 | ✅ |
 | Ticker 名称解析回填 | ✅ |
 
 ---
@@ -315,20 +319,22 @@ WebSocket 端点：
 
 | 项 | 说明 |
 |----|------|
-| 全市场初筛 | MCP `get_index_constituents` → A股规则过滤（ST/停牌/低流动性/一字涨跌停/近期风险公告） |
-| 多因子打分 | 短线因子（动量/换手/北向/板块热度）vs 长线因子（ROE/PE分位/毛利率/营收增速），权重由 `UserProfile.investment_style` 决定 |
-| Evidence Card | 每只候选股返回可审计证据：数据截止日、复权口径、行业、流动性、风险扣分、因子分位、资金流摘要 |
-| LLM 快筛融合 | ✅ 初版接入：Top N 量化候选使用统一 LLM Backbone 快速复核催化剂/风险，并通过 `signal_fusion` 输出 `quant_llm_fused`；无 API key 时显式降级为 `quant_only` |
+| 全市场初筛 | MCP `rank_factor_candidates(enable_decision=True)` → A股规则过滤（ST/停牌/低流动性/一字涨跌停/行业槽位） |
+| 多因子打分 | MCP 输出 momentum/liquidity/quality/valuation/flow/risk_control，TradingAgents 保留字段 provenance 和 coverage |
+| Evidence Card | 每只候选股返回可审计证据：数据截止日、复权口径、行业、量化门控、估值/资金流、关键风险 |
+| LLM 快筛融合 | ✅ 初版接入：Top N 量化候选使用统一 LLM Backbone 输出 `llm_view/catalyst_strength/risk_assessment/invalidates_quant` |
+| 状态机决策 | ✅ 完成：`quant_decision` 仅代表量化资格，最终输出 `final_decision=BUY/WATCHLIST/MONITOR/HOLD_REVIEW/SKIP` |
+| 价格与交易计划 | ✅ 完成：选股候选补最新收盘价，并生成 entry_zone/stop_loss/targets/action_plan |
 | Top 5 深度分析 | 后续增强：对得分最高的 5 只，跑完整 StockAnalysisSkill/13-Agent 管道 |
-| 早报生成 | 当前以 `report_chunk` 事件输出 Markdown，并以 `DAILY_PIPELINE` 报告入库 |
-| 前端 | Watchlist 页面已支持手动触发每日选股和查看近期运行；Dashboard 卡片待增强 |
+| Artifact 入库 | ✅ 完成：每日选股以一个主 item 进入 Library，signal/decision pack 在详情内展示 |
+| 前端 | Chat/Library 候选表已展示最终决策、量化门控、LLM reasoning、价格计划、数据覆盖和反思命中 |
 
 ### Phase 3D / Week 12: RiskMonitor + 前端补全
 
 | 项 | 说明 |
 |----|------|
 | RiskMonitor | 每日扫描持仓：ST 检测 / 停牌 / 涨跌停 / 质押预警 / 解禁提醒 / MCP `get_risk_announcements` |
-| 前端 Portfolio 页 | 已支持持仓 CRUD 和 P&L；待补风险仪表盘（绿/黄/橙/红分级） |
+| 前端 Portfolio 页 | 已支持持仓 CRUD、中文名称、最新收盘价刷新和 P&L；待补风险仪表盘（绿/黄/橙/红分级） |
 | 前端增强 | 待补：Chat 页面新增「卖出建议」「加仓建议」快捷触发按钮 |
 
 ### MCP / Agent 通信原则
@@ -357,9 +363,37 @@ WebSocket 端点：
 | 项 | 说明 |
 |----|------|
 | 全局配置 | 系统只保留一套 `llm_provider` + `quick_think_llm` + `deep_think_llm` + `backend_url` |
-| Chat | 当前 Chat 是规则路由，不单独调用 LLM；未来 LLM fallback router 默认复用 quick model |
+| Chat | 当前 Chat 是“任务触发 + Skill 事件流”入口；LLM Router 可辅助 Skill 路由，但尚未提供自由聊天/工具增强回答 |
 | 判股管道 | Analysts / Debate / Trader 使用 quick model，Research Manager / Portfolio Manager 使用 deep model |
 | 可切换 Provider | DeepSeek、Qwen/Qwen-CN、OpenAI、OpenAI Compatible 等统一走同一套 Backbone 配置 |
+
+### Free ChatAgent 后续方案（新增）
+
+当前 Chat 还不是完整自由对话智能体。后续要把 Chat 层升级为四类意图分流：
+
+| 意图 | 行为 | 是否创建 run |
+|------|------|--------------|
+| `chat_answer` | 自由聊天、解释已有结果、回答术语/流程问题 | 否 |
+| `tool_answer` | 调用轻量工具后回复，如 MCP 因子快照、持仓摘要、Library 搜索 | 否 |
+| `skill_run` | 触发 DailyPipeline/StockAnalysis/RiskMonitor 等长任务 | 是 |
+| `clarify` | 参数不足时追问，如市场、板块、时间范围 | 否 |
+
+第一版轻量工具注册表建议：
+
+| Tool | 数据来源 | 用途 |
+|------|----------|------|
+| `get_portfolio_summary` | SQLite holdings | 回答持仓、盈亏、仓位集中度 |
+| `search_artifacts` | artifacts 表 | 查询历史报告、每日选股、反思记录 |
+| `get_recent_runs` | runs 表 | 解释最近任务状态 |
+| `get_mcp_factor_snapshot` | StockManager MCP | 查询单票估值、资金流、动量、质量 |
+| `get_strategy_lessons` | strategy_lessons 表 | 引用近期反思经验 |
+
+验收标准：
+
+1. 用户问“刚才为什么推荐生益科技”时，ChatAgent 能搜索最近 Library artifact 并自然解释，不启动新 run。
+2. 用户问“中际旭创现在估值和资金流怎么样”时，ChatAgent 调 MCP 快照并回答，附 `as_of_date/source/warnings`。
+3. 用户说“跑一下每日选股 top 5”时，仍触发 `daily_pipeline` Skill，并显示任务卡。
+4. 用户说“帮我比较两只持仓哪个更该减仓”时，先读取持仓和最近风险，如果需要深度分析再建议触发 Skill。
 
 ### 验收标准
 
@@ -372,17 +406,26 @@ WebSocket 端点：
 
 ---
 
-## 7. Phase 4 — 自动化 + 学习闭环（后续）
+## 7. Phase 4 — ChatAgent + 自动化 + 学习闭环（当前重点）
 
-### Week 13: PositionAdvisor 持仓建议
+### Week 13: Free ChatAgent
 
 | 项 | 说明 |
 |----|------|
-| Skill | 新增 `tradingagents/skills/position_advisor/` — 注入持仓上下文（成本价/浮盈/持有时长）到 Agent 管道 |
-| Orchestrator | 新增意图路由「卖出/加仓/减仓/止损」→ PositionAdvisor |
+| ChatAgent | 新增 `tradingagents/core/chat_agent.py`，输出 `chat_answer/tool_answer/skill_run/clarify` |
+| Tool Registry | 新增轻量工具：持仓摘要、Artifact 搜索、最近 runs、MCP 因子快照、策略经验 |
+| WS /chat | 非 Skill 回复直接返回 `chat_reply`；Skill run 继续创建 run 并流式展示 |
+| 前端 | MessageList 支持普通 assistant 回复、工具引用卡、Skill 任务卡三种展示 |
+
+### Week 14: PositionAdvisor 持仓建议
+
+| 项 | 说明 |
+|----|------|
+| Skill | 新增 `tradingagents/skills/position_advisor/`；复用 StockAnalysis 持仓上下文（成本价/浮盈/仓位占比/备注） |
+| Orchestrator / ChatAgent | 「卖出/加仓/减仓/止损」可由 ChatAgent 判断是轻量回答还是触发 PositionAdvisor |
 | MCP 集成 | 可选调用 `generate_trading_plan` 获取 Flight Plan（吊灯止损价/跳空过滤区间） |
 
-### Week 14: 回测 + 复盘
+### Week 15: 回测 + 复盘
 
 | 项 | 说明 |
 |----|------|
@@ -390,18 +433,19 @@ WebSocket 端点：
 | DecisionAudit Skill | 月末复盘：系统推荐 vs 实际操作 vs 实际收益，归因分析 |
 | MCP 集成 | `run_backtest` / `purged_cv_sharpe` / `analyze_execution_slippage` |
 
-### Week 15: 记忆增强 + 财务预警
+### Week 16: 记忆增强 + 财务预警
 
 | 项 | 说明 |
 |----|------|
-| 增强记忆系统 | 跨标的模式提取（「当前市场环境下低估值+高ROE+北向流入的标的历史胜率 X%」） |
+| 增强记忆系统 | 已有 reflection cases / strategy lessons 初版；后续做跨标的模式提取（例如“高估值+资金流缺失的样本胜率下降”） |
 | 财务风险预警 | MCP `get_financial_metrics`（ROE/利润增速恶化）+ `get_risk_announcements`（问询函/违规） |
 
 ### 验收标准
 
-1. 对持仓中的任意股票可说「XX 要不要卖」，系统输出含止损价和卖出原因的建议
-2. 月末可自动生成复盘报告：本月系统推荐胜率 vs 实际操作胜率
-3. 历史决策可回溯：某次推荐 Buy 的标的，N 天后实际涨跌幅
+1. 普通聊天不再强行触发 Skill；可解释历史报告、候选标签、策略反思和持仓摘要。
+2. 对持仓中的任意股票可说「XX 要不要卖」，系统输出含止损价和卖出原因的建议。
+3. 月末可自动生成复盘报告：本月系统推荐胜率 vs 实际操作胜率。
+4. 历史决策可回溯：某次推荐 Buy 的标的，N 天后实际涨跌幅。
 
 ---
 
@@ -421,9 +465,10 @@ WebSocket 端点：
 
 ### 9.1 架构偏差（功能性缺口）
 
-- **LLM 意图路由尚未接入**: 当前 Orchestrator 使用离线规则路由，覆盖验收用例和常见技能触发。后续可加入 LLM fallback，但不作为当前正确性的依赖。
+- **自由 ChatAgent 尚未接入**: 当前 Chat 主要是 Skill 触发入口；普通问题不会自动调用 LLM/MCP/Library 形成自然回复。下一步需要引入 `chat_answer/tool_answer/skill_run/clarify` 分层。
+- **LLM Router 仅用于路由增强**: 当前 Orchestrator 有规则路由和可选 LLM Router，但它只决定是否触发 Skill，不承担自由聊天和工具增强问答。
 - **LLM 快筛依赖统一 Backbone 配置**: DailyPipeline 已有 LLM Reviewer 链路，但真实运行需要 `llm_provider/quick_think_llm/backend_url/API_KEY` 配好；未配置时结果会显式标记 `review_meta.available=false` 并降级为 `quant_only`。
-- **Market Scanner 数据深度仍有限**: A 股候选池已切到 StockManager MCP 成分股；`get_factor_snapshot` 只提供快照，不是选股策略。收益稳定性取决于 MCP `rank_factor_candidates` 的因子覆盖、行业分散、资金流/估值有效性和回测验证。
+- **Market Scanner 数据深度仍有限**: A 股候选池已切到 StockManager MCP 成分股；收益稳定性取决于 MCP `rank_factor_candidates` 的因子覆盖、行业分散、资金流/估值有效性和回测验证。
 - **Phase 1/2 已收尾**: `RunManager` 已集成 SQLite 持久化，报告入库已使用真实 `run_id`，WebSocket 已统一终态事件，Chat 可自然语言触发技能。
 
 ### 9.2 StockManager MCP 依赖
@@ -434,27 +479,49 @@ WebSocket 端点：
 - **长任务阻塞**: 回测/因子实验必须使用 `job_id` 异步轮询，避免阻塞 Agent 管道和 WebSocket。
 - **实盘 smoke 暴露的问题**: 2026-07-01 的 `rank_factor_candidates` 曾返回指数成分为空，MCP 侧需要支持成分日期回退；CSI800 同步排名在较大 `candidate_limit` 下耗时偏长，应缓存或转异步 job。
 
+### 9.3 已修复（第一批 P0，2026-07-05）
+
+- ✅ **MCP Client 断连后永不重连**: `_call_tool` 异常/超时分支现标记 `_connected=False`，下次调用触发 `connect()` 重建；`connect()` 开头清理残留 session/transport。(`tradingagents/core/mcp_client.py`)
+- ✅ **Scheduler 时区错误**: `_seconds_until` 改用 `Asia/Shanghai` 时区，Docker/UTC 主机下 daily_pipeline 不再延迟到收盘后。(`tradingagents/core/scheduler.py`)
+- ✅ **非交易日空跑 daily_pipeline/reflection**: 调度任务开头检查 `calendar_state`，周末/节假日跳过，避免浪费 token 和产生永远 pending 的反思 case。(`tradingagents/api/app.py`)
+- ✅ **Orchestrator 无 ticker 静默回退茅台**: `_route_stock_analysis` / `_route_portfolio` 无标的时返回 `confidence=0.0` 走 LLM router/clarify，不再默认 `600519.SH`。(`tradingagents/core/orchestrator.py`)
+- ✅ **Portfolio 数量提取吞入日期**: `_route_portfolio` 提取数字前剥离 `YYYY-MM-DD` 等日期格式，避免 `"2024-01-08 ... 100股 成本2000"` 被解析为 quantity=2024。(`tradingagents/core/orchestrator.py`)
+- ✅ **MCP 初始化无超时挂死启动**: `get_mcp_client` 外包 `asyncio.wait_for(timeout=10s)`，超时降级为 `mcp_client=None` 继续启动。(`tradingagents/api/app.py`)
+
+### 9.4 已修复（第二批 P0/P1，2026-07-05）
+
+- ✅ **SQLite 未启用 WAL**: `_conn` 加 `PRAGMA journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=30s`，并发读写不再互斥或立即抛 `database is locked`。(`tradingagents/core/persistence.py`)
+- ✅ **MCP `_call_lock` 串行所有调用**: 改为 `asyncio.Semaphore(8)`，RiskMonitor 多持仓扫描可并发，单次超时不再阻塞全部调用。(`tradingagents/core/mcp_client.py`)
+- ✅ **反思样本无限累积**: case_id 去掉 `run_id` 改为 `daily_pipeline:{trade_date}:{symbol}`，同日重跑 `INSERT OR REPLACE` 去重；新增 `prune_reflection_cases` 在反思批处理末尾清理 90 天前已反思 case。(`tradingagents/skills/daily_pipeline/skill.py`, `tradingagents/core/persistence.py`, `tradingagents/core/reflection.py`)
+- ✅ **反思 accuracy 虚高**: `evaluate_accuracy` 对 WATCHLIST/HOLD 中性决策返回 `None`；`get_reflection_summary` 将中性决策排除出分母并单独统计 `neutral` 计数。(`tradingagents/core/reflection.py`, `tradingagents/core/persistence.py`)
+- ✅ **A股 reflection 用 yfinance 取价失效**: `_fetch_returns` 对 `cn_a` 市场改用 `load_ohlcv_cn`（AKShare qfq，与分析同源）取股价，benchmark 仍走 yfinance（CN 指数在 Yahoo 更可靠），benchmark 缺失时 alpha=None 不阻塞。(`tradingagents/graph/trading_graph.py`)
+- ✅ **`investment_style` 未注入 13-agent 管道**: 新增 `get_investment_style_instruction(style)`；`create_initial_state` 接收并存储 `investment_style`；`trading_graph` 两处入口从 config 读取并传入；4 个分析师（market/fundamentals/news/sentiment）将风格指令拼入 system_message，短线/长线分析重心与止损/目标价措辞真正差异化。(`tradingagents/agents/utils/agent_utils.py`, `tradingagents/graph/propagation.py`, `tradingagents/agents/analysts/*.py`, `tradingagents/graph/trading_graph.py`)
+- ✅ **`astream_propagate` 绕过 checkpointer**: Skill 主入口现镜像 `propagate()` 的 checkpointer 逻辑——`checkpoint_enabled` 时注入 `SqliteSaver` + `thread_id`，`try/finally` 保证 context 清理，成功完成时 `clear_checkpoint` 清除残留。(`tradingagents/graph/trading_graph.py`)
+
+
 ---
 
 ## 10. 下一步建议
 
-### 10.1 Phase 3 优先推进
+### 10.1 下一阶段优先推进
 
-1. 修 MCP `rank_factor_candidates`：成分日期 fallback、flow/valuation 覆盖率、行业分散、CSI800 缓存/异步 job
-2. 为 DailyPipeline 增加 Top 5 深度 StockAnalysisSkill 串联，并把候选明细结构化入库供 Watchlist 展示
-3. 将 RiskMonitor 结果沉淀为结构化风险事件，补 Portfolio 风险仪表盘（绿/黄/橙/红）
-4. 建立更严格的 MCP contract tests：schema 固化、错误信封、timeout、非法返回、job_id 幂等
-5. 实现 PositionAdvisor：结合持仓成本、风险事件、交易计划输出卖出/加仓建议
-6. 实现 StrategyBacktest：封装 MCP `run_backtest` + `get_job_status` / `get_job_result`
+1. 实现 Free ChatAgent：意图四分类、轻量工具注册表、自由回复、工具引用卡、Skill Dispatcher。
+2. 完善 Chat 上下文读取：Library artifact search、最近 runs、持仓摘要、策略反思摘要、MCP factor snapshot。
+3. 将 RiskMonitor 结果沉淀为结构化风险事件，补 Portfolio 风险仪表盘（绿/黄/橙/红）。
+4. 为 DailyPipeline 增加可选 Top N 深度 StockAnalysisSkill 串联，并把深度结论回写 candidate payload。
+5. 建立更严格的 MCP contract tests：schema 固化、错误信封、timeout、非法返回、job_id 幂等。
+6. 实现 PositionAdvisor：结合持仓成本、风险事件、交易计划输出卖出/加仓建议。
+7. 实现 StrategyBacktest：封装 MCP `run_backtest` + `get_job_status` / `get_job_result`。
 
 ### 10.2 代码质量
 
 1. 补充前端测试（vitest）— 覆盖 store 状态流转、WebSocket 重连
 2. 增加浏览器 E2E 自动化 — 覆盖 Dashboard 创建运行、Chat 自然语言路由、Analysis 实时更新、Reports 详情查看
 3. MCP Client 单元测试 — 覆盖连接失败降级、数据格式适配
+4. ChatAgent 单元测试 — 覆盖 chat/tool/skill/clarify 四类意图和工具失败降级
 
 ### 10.3 后续规划
 
-1. Phase 4: PositionAdvisor + 回测 + 记忆增强
+1. Phase 4: Free ChatAgent + PositionAdvisor + 回测 + 记忆增强
 2. Phase 5: Tauri 桌面打包
-3. 继续增强 Orchestrator：加入 LLM fallback、更多中文股票别名、参数澄清
+3. 继续增强 Orchestrator/ChatAgent：更多中文股票别名、参数澄清、多轮上下文

@@ -11,17 +11,29 @@ from typing import Any, AsyncIterator, Literal
 
 from pydantic import BaseModel, Field
 
+from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.core.candidate_enrichment import CandidateContext, enrich_candidates
+from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.llm_candidate_review import CandidateLLMReview, build_candidate_reviewer
 from tradingagents.core.mcp_client import get_mcp_client
 from tradingagents.core.persistence import Database
+from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_evidence_markdown
+from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows, payload_warnings
+from tradingagents.skills._shared import (
+    FACTOR_DATA_SOURCE,
+    board_for_symbol,
+    candidate_rationale,
+    default_filters,
+    demo_candidates,
+    factor_profile_for_style,
+    mcp_board_filter,
+)
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
 logger = logging.getLogger(__name__)
 
-FACTOR_DATA_SOURCE = "stockmanager_mcp"
 BOARD_FILTER_VALUES = {"all", "main_board", "dual_growth_only"}
 
 
@@ -70,18 +82,35 @@ class DailyPipelineSkill(BaseSkill):
 
     async def execute(self, params: BaseModel, config: dict[str, Any]) -> AsyncIterator[SkillEvent]:
         input_params: DailyPipelineInput = params
-        input_params = _apply_runtime_defaults(input_params, config)
+        raw_trade_date = input_params.trade_date
+        current_temporal_context = get_temporal_context(config, market="cn_a")
+        is_current_default = raw_trade_date in {
+            date.today().isoformat(),
+            current_temporal_context.now[:10],
+        }
+        temporal_context = (
+            current_temporal_context
+            if is_current_default
+            else get_temporal_context(config, market="cn_a", requested_date=raw_trade_date)
+        )
+        input_params = _apply_runtime_defaults(input_params, config, temporal_context)
         db = config.get("db") or Database()
         profile = db.get_user_profile()
+        strategy_lessons = _load_strategy_lessons(db)
 
         yield SkillEvent(
             event_type="skill_start",
             data={
                 "skill_id": self.metadata.id,
                 "trade_date": input_params.trade_date,
+                "market_asof_date": temporal_context.market_asof_date,
+                "decision_target_date": temporal_context.decision_target_date,
+                "info_cutoff": temporal_context.info_cutoff,
+                "temporal_context": temporal_context.to_dict(),
                 "universe_index": input_params.universe_index,
                 "board_filter": input_params.board_filter,
                 "exclude_boards": input_params.exclude_boards,
+                "temporal_context": temporal_context.to_dict(),
             },
         )
         yield skill_progress(
@@ -140,7 +169,13 @@ class DailyPipelineSkill(BaseSkill):
             agent="LLM Reviewer",
             progress_pct=60,
         )
-        review_warnings, review_meta = await _apply_llm_reviews(input_params, config, profile, candidates)
+        review_warnings, review_meta = await _apply_llm_reviews(
+            input_params,
+            config,
+            profile,
+            candidates,
+            strategy_lessons=strategy_lessons,
+        )
         yield skill_progress(
             stage_id="llm_review",
             stage_label="LLM 候选复核",
@@ -178,7 +213,7 @@ class DailyPipelineSkill(BaseSkill):
                 ],
             },
         )
-        report = _render_report(input_params, candidates, profile, mcp_used, warnings)
+        report = _render_report(input_params, candidates, profile, mcp_used, warnings, temporal_context)
         yield SkillEvent(
             event_type="agent_status",
             data={"agent": "Report Writer", "status": "正在生成每日选股早报"},
@@ -192,18 +227,25 @@ class DailyPipelineSkill(BaseSkill):
             progress_pct=88,
         )
         signal_result = _save_candidate_signals(db, str(config.get("run_id", "")), input_params.trade_date, candidates)
-        try:
-            db.save_report(
-                report_id=str(uuid.uuid4()),
-                run_id=str(config.get("run_id", "")),
-                ticker="DAILY_PIPELINE",
-                ticker_name="每日选股",
-                rating="Watchlist",
-                content=report,
-                path=None,
-            )
-        except Exception as exc:
-            logger.warning("Failed to save daily pipeline report to DB: %s", exc)
+        _save_daily_pipeline_artifacts(
+            config,
+            input_params=input_params,
+            report=report,
+            candidates=candidates,
+            quant_candidates=quant_candidates,
+            reviewed_candidates=reviewed_candidates,
+            decision_pack=decision_pack,
+            warnings=warnings,
+            quant_meta=quant_meta,
+            signal_result=signal_result,
+            temporal_context=temporal_context.to_dict(),
+        )
+        case_result = _save_reflection_cases(
+            db,
+            str(config.get("run_id", "")),
+            input_params.trade_date,
+            candidates,
+        )
 
         yield SkillEvent(
             event_type="report_chunk",
@@ -221,11 +263,17 @@ class DailyPipelineSkill(BaseSkill):
             agent="Report Writer",
             progress_pct=100,
         )
+        # Persist decisions to memory log for future reflection
+        _store_decisions_to_memory(candidates, input_params.trade_date, config)
         yield SkillEvent(
             event_type="skill_complete",
             data={
                 "status": "success",
                 "trade_date": input_params.trade_date,
+                "market_asof_date": temporal_context.market_asof_date,
+                "decision_target_date": temporal_context.decision_target_date,
+                "info_cutoff": temporal_context.info_cutoff,
+                "temporal_context": temporal_context.to_dict(),
                 "candidates": candidates,
                 "profile": profile,
                 "mcp_used": mcp_used,
@@ -236,6 +284,7 @@ class DailyPipelineSkill(BaseSkill):
                 "reviewed_candidates": reviewed_candidates,
                 "decision_pack": decision_pack,
                 "signal_persistence": signal_result,
+                "reflection_cases": case_result,
             },
         )
 
@@ -243,8 +292,15 @@ class DailyPipelineSkill(BaseSkill):
         return None
 
 
-def _apply_runtime_defaults(input_params: DailyPipelineInput, config: dict[str, Any]) -> DailyPipelineInput:
+def _apply_runtime_defaults(
+    input_params: DailyPipelineInput,
+    config: dict[str, Any],
+    temporal_context=None,
+) -> DailyPipelineInput:
     updates: dict[str, Any] = {}
+    temporal_context = temporal_context or get_temporal_context(config, market="cn_a")
+    if input_params.trade_date != temporal_context.market_asof_date:
+        updates["trade_date"] = temporal_context.market_asof_date
     configured_filter = str(config.get("daily_pipeline_board_filter") or "").strip()
     if input_params.board_filter == "all" and configured_filter in BOARD_FILTER_VALUES:
         updates["board_filter"] = configured_filter
@@ -261,7 +317,7 @@ async def _rank_candidates(
     client = await get_mcp_client(config)
     if client is None:
         if config.get("daily_pipeline_demo_fallback", False):
-            return _demo_candidates(input_params.limit, profile["investment_style"]), False, [
+            return demo_candidates(input_params.limit, profile["investment_style"], include_board=True), False, [
                 "StockManager MCP unavailable; using explicit demo fallback."
             ], {"source": "demo_fallback"}
         return [], False, ["StockManager MCP unavailable; quant ranking not available."], {"source": "unavailable"}
@@ -273,12 +329,16 @@ async def _rank_candidates(
         style=profile["investment_style"],
         limit=mcp_limit,
         candidate_limit=input_params.candidate_limit,
-        factor_profile=_factor_profile_for_style(profile["investment_style"]),
-        filters=_default_filters(input_params, config),
+        factor_profile=factor_profile_for_style(profile["investment_style"]),
+        filters=default_filters(
+            board_filter=input_params.board_filter,
+            exclude_boards=input_params.exclude_boards,
+            config=config,
+        ),
         sector_prefs=profile.get("sector_prefs") or [],
         return_factor_snapshot=True,
         enable_decision=True,
-        max_per_industry=config.get("daily_pipeline_max_per_industry", 3),
+        max_per_industry=config.get("daily_pipeline_max_per_industry", 2),
         decision_config=config.get("daily_pipeline_decision_config"),
     )
     warnings = payload_warnings(payload)
@@ -302,17 +362,21 @@ async def _rank_candidates(
 
     rows, board_warnings = _filter_rows_by_board(rows, input_params)
     warnings.extend(board_warnings)
+    rows, industry_warnings = _limit_rows_by_industry(rows, input_params, config)
+    warnings.extend(industry_warnings)
 
     candidates = []
     for row in rows[: input_params.limit]:
         candidate = normalize_quant_candidate(row)
-        candidate["board"] = _board_for_symbol(candidate.get("symbol") or candidate.get("ts_code"))
+        candidate["board"] = board_for_symbol(candidate.get("symbol") or candidate.get("ts_code"))
         _attach_payload_meta(candidate, payload)
+        candidates.append(candidate)
+    await _fill_latest_prices(client, candidates, input_params.trade_date, warnings, config)
+    for candidate in candidates:
         fusion = fuse_candidate_signal(candidate, profile["investment_style"])
         candidate.update(fusion)
         candidate["quant_evidence"] = quant_evidence_markdown(candidate)
-        candidate["rationale"] = _candidate_rationale(candidate)
-        candidates.append(candidate)
+        candidate["rationale"] = candidate_rationale(candidate, include_llm=True)
     return candidates, True, warnings, _quant_meta(payload, input_params, profile)
 
 
@@ -331,12 +395,16 @@ async def _rank_candidates_with_previous_universe(
             style=profile["investment_style"],
             limit=_mcp_fetch_limit(input_params),
             candidate_limit=input_params.candidate_limit,
-            factor_profile=_factor_profile_for_style(profile["investment_style"]),
-            filters=_default_filters(input_params, config),
+            factor_profile=factor_profile_for_style(profile["investment_style"]),
+            filters=default_filters(
+                board_filter=input_params.board_filter,
+                exclude_boards=input_params.exclude_boards,
+                config=config,
+            ),
             sector_prefs=profile.get("sector_prefs") or [],
             return_factor_snapshot=True,
             enable_decision=True,
-            max_per_industry=config.get("daily_pipeline_max_per_industry", 3),
+            max_per_industry=config.get("daily_pipeline_max_per_industry", 2),
             decision_config=config.get("daily_pipeline_decision_config"),
         )
         if payload_rows(payload):
@@ -379,24 +447,13 @@ def _fallback_universe_dates(trade_date: str) -> list[str]:
     return result
 
 
-def _previous_calendar_dates(value: str, *, days: int) -> list[str]:  # pragma: no cover – legacy, unused
-    """Legacy: return previous calendar dates. Prefer _fallback_universe_dates."""
-    try:
-        current = datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError:
-        return []
-    return [(current - timedelta(days=offset)).isoformat() for offset in range(1, days + 1)]
-
-
 def _is_universe_empty(message: Any) -> bool:
     text = str(message)
     return "UNIVERSE_EMPTY" in text or "成分股为空" in text
 
 
 def _mcp_fetch_limit(input_params: DailyPipelineInput) -> int:
-    """Fetch a wider pool so local board filters can still fill the final limit."""
-    if input_params.board_filter == "all" and not input_params.exclude_boards:
-        return input_params.limit
+    """Fetch a wider pool so local board/industry filters can still fill the final limit."""
     return min(input_params.candidate_limit, max(input_params.limit * 8, input_params.limit + 20))
 
 
@@ -412,7 +469,7 @@ def _filter_rows_by_board(
     filtered: list[dict[str, Any]] = []
     removed: dict[str, int] = {}
     for row in rows:
-        board = _board_for_symbol(row.get("ts_code") or row.get("symbol"))
+        board = board_for_symbol(row.get("ts_code") or row.get("symbol"))
         if (allowed is not None and board not in allowed) or board in excluded:
             removed[board] = removed.get(board, 0) + 1
             continue
@@ -435,56 +492,169 @@ def _filter_rows_by_board(
     return filtered, warnings
 
 
+def _limit_rows_by_industry(
+    rows: list[dict[str, Any]],
+    input_params: DailyPipelineInput,
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    max_per_industry = int(config.get("daily_pipeline_max_per_industry", 2) or 0)
+    if max_per_industry <= 0:
+        return rows, []
+    selected: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    skipped: dict[str, int] = {}
+    for row in rows:
+        group = _industry_group(row.get("industry") or row.get("theme") or "")
+        if counts.get(group, 0) >= max_per_industry:
+            skipped[group] = skipped.get(group, 0) + 1
+            continue
+        counts[group] = counts.get(group, 0) + 1
+        selected.append(row)
+        if len(selected) >= input_params.limit:
+            break
+    warnings: list[str] = []
+    if skipped:
+        skipped_text = ", ".join(f"{key}:{value}" for key, value in sorted(skipped.items()))
+        warnings.append(
+            f"Industry slot cap applied; max_per_industry={max_per_industry}; skipped {skipped_text}."
+        )
+    if len(selected) < input_params.limit and len(rows) >= input_params.limit:
+        warnings.append(
+            f"Industry cap left only {len(selected)} candidates for requested limit {input_params.limit}; "
+            "increase candidate_limit or relax daily_pipeline_max_per_industry."
+        )
+    return selected, warnings
+
+
+def _industry_group(value: Any) -> str:
+    text = str(value or "综合").strip()
+    if not text:
+        return "综合"
+    groups = {
+        "有色": "有色金属",
+        "黄金": "有色金属",
+        "铜": "有色金属",
+        "铝": "有色金属",
+        "白酒": "食品饮料",
+        "食品": "食品饮料",
+        "饮料": "食品饮料",
+        "电子": "电子",
+        "半导体": "电子",
+        "通信": "通信",
+        "新能源": "新能源",
+        "电池": "新能源",
+        "银行": "银行",
+        "保险": "非银金融",
+        "证券": "非银金融",
+    }
+    for needle, group in groups.items():
+        if needle in text:
+            return group
+    return text.split()[0].split("/")[0].split("-")[0]
+
+
+async def _fill_latest_prices(
+    client: Any,
+    candidates: list[dict[str, Any]],
+    trade_date: str,
+    warnings: list[str],
+    config: dict[str, Any],
+) -> None:
+    missing = [c for c in candidates if _candidate_price(c) is None]
+    if not missing:
+        return
+    symbols = [str(c.get("symbol") or c.get("ts_code")) for c in missing if c.get("symbol") or c.get("ts_code")]
+    if not symbols:
+        return
+    payload = None
+    if hasattr(client, "get_stock_daily"):
+        try:
+            end_dt = datetime.strptime(trade_date, "%Y-%m-%d").date()
+            start_dt = end_dt - timedelta(days=30)
+            for start, end in (
+                (start_dt.strftime("%Y%m%d"), end_dt.strftime("%Y%m%d")),
+                (start_dt.isoformat(), end_dt.isoformat()),
+            ):
+                payload = await client.get_stock_daily(symbols, start, end)
+                if payload_rows(payload):
+                    break
+        except Exception as exc:
+            warnings.append(f"Latest close enrichment failed: {exc}")
+    else:
+        warnings.append("Latest close enrichment skipped: MCP client does not expose get_stock_daily.")
+    rows = payload_rows(payload)
+    latest_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get("ts_code") or row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        previous = latest_by_symbol.get(symbol)
+        row_date = str(row.get("trade_date") or row.get("date") or "")
+        prev_date = str((previous or {}).get("trade_date") or (previous or {}).get("date") or "")
+        if previous is None or row_date >= prev_date:
+            latest_by_symbol[symbol] = row
+    for candidate in missing:
+        symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "").upper()
+        row = latest_by_symbol.get(symbol)
+        if not row:
+            continue
+        close = _first_float(row, "close", "Close", "收盘")
+        if close is None:
+            continue
+        candidate["latest_price"] = close
+        candidate["close"] = close
+        candidate["price_source"] = "stock_daily"
+        candidate["price_trade_date"] = str(row.get("trade_date") or row.get("date") or trade_date)
+    remaining = [c for c in candidates if _candidate_price(c) is None]
+    if remaining and config.get("daily_pipeline_local_price_fallback_enabled", True):
+        for candidate in remaining:
+            symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "").upper()
+            if not symbol:
+                continue
+            try:
+                quote = await latest_close(symbol, config)
+            except Exception as exc:
+                warnings.append(f"Local latest close fallback failed for {symbol}: {exc}")
+                continue
+            if quote is None:
+                continue
+            candidate["latest_price"] = quote.get("close")
+            candidate["close"] = quote.get("close")
+            candidate["price_source"] = quote.get("source") or "latest_close_fallback"
+            candidate["price_trade_date"] = quote.get("trade_date") or trade_date
+
+
+def _candidate_price(candidate: dict[str, Any]) -> float | None:
+    for container in (
+        candidate,
+        candidate.get("key_metrics") or {},
+        candidate.get("factor_snapshot") or {},
+    ):
+        if isinstance(container, dict):
+            price = _first_float(container, "latest_price", "current_price", "close", "Close", "收盘")
+            if price is not None:
+                return price
+    return None
+
+
+def _first_float(row: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _allowed_boards(input_params: DailyPipelineInput) -> set[str] | None:
     if input_params.board_filter == "main_board":
         return {"main"}
     if input_params.board_filter == "dual_growth_only":
         return {"chinext", "star"}
     return None
-
-
-def _board_for_symbol(value: Any) -> str:
-    symbol = str(value or "").upper()
-    code = symbol.split(".")[0]
-    if code.startswith(("300", "301", "302")):
-        return "chinext"
-    if code.startswith(("688", "689")):
-        return "star"
-    if code.startswith(("83", "87", "43", "920")):
-        return "beijing"
-    return "main"
-
-
-def _demo_candidates(limit: int, style: str) -> list[dict[str, Any]]:
-    rows = [
-        {
-            "ts_code": "600519.SH", "name": "贵州茅台", "industry": "消费 白酒",
-            "quant_score": 82.0, "factor_scores": {"momentum": 72, "liquidity": 92, "quality": 96, "risk_control": 85},
-            "tradability": {"is_tradable": True, "st_flag": False, "limit_status": "normal"},
-            "risk_flags": [], "score_explain": ["demo quality strong", "demo liquidity strong"],
-        },
-        {
-            "ts_code": "300750.SZ", "name": "宁德时代", "industry": "新能源 电池",
-            "quant_score": 76.5, "factor_scores": {"momentum": 78, "liquidity": 91, "quality": 82, "risk_control": 71},
-            "tradability": {"is_tradable": True, "st_flag": False, "limit_status": "normal"},
-            "risk_flags": [], "score_explain": ["demo momentum strong"],
-        },
-        {
-            "ts_code": "601899.SH", "name": "紫金矿业", "industry": "有色 黄金 铜",
-            "quant_score": 71.0, "factor_scores": {"momentum": 74, "liquidity": 88, "quality": 73, "risk_control": 68},
-            "tradability": {"is_tradable": True, "st_flag": False, "limit_status": "normal"},
-            "risk_flags": [], "score_explain": ["demo trend above average"],
-        },
-    ]
-    candidates = []
-    for row in rows[:limit]:
-        candidate = normalize_quant_candidate(row)
-        candidate["board"] = _board_for_symbol(candidate.get("symbol") or candidate.get("ts_code"))
-        candidate.update(fuse_candidate_signal(candidate, style))
-        candidate["quant_evidence"] = quant_evidence_markdown(candidate)
-        candidate["rationale"] = _candidate_rationale(candidate)
-        candidates.append(candidate)
-    return candidates
 
 
 def _save_candidate_signals(db: Database, run_id: str, trade_date: str, candidates: list[dict[str, Any]]) -> dict[str, int]:
@@ -512,11 +682,211 @@ def _save_candidate_signals(db: Database, run_id: str, trade_date: str, candidat
     return {"total": len(candidates), "failed": failed}
 
 
+def _save_reflection_cases(
+    db: Database,
+    run_id: str,
+    trade_date: str,
+    candidates: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Create layered reflection cases from daily pipeline candidates."""
+    created = 0
+    failed = 0
+    for candidate in candidates:
+        try:
+            symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "").strip().upper()
+            if not symbol:
+                continue
+            final_decision = str(candidate.get("final_decision") or candidate.get("signal") or "").upper()
+            if final_decision == "BUY":
+                scope = "decision_grade"
+                eligible = True
+            elif final_decision in {"WATCHLIST", "MONITOR", "HOLD_REVIEW"}:
+                scope = "candidate_pool"
+                eligible = False
+            else:
+                scope = "exploratory"
+                eligible = False
+            snapshot = _reflection_snapshot(candidate)
+            # case_id excludes run_id so that re-running daily_pipeline on the
+            # same (trade_date, symbol) — e.g. a manual trigger plus the 08:30
+            # scheduled one — replaces the prior case (INSERT OR REPLACE) instead
+            # of creating duplicates that double-count in reflection stats.
+            case_id = f"daily_pipeline:{trade_date}:{symbol}" if trade_date and symbol else str(uuid.uuid4())
+            db.save_reflection_case(
+                case_id=case_id,
+                source_type="system_signal",
+                reflection_scope=scope,
+                eligible_for_strategy_learning=eligible,
+                symbol=symbol,
+                name=str(candidate.get("name") or ""),
+                signal_date=trade_date,
+                horizon_days=5,
+                source_run_id=run_id,
+                snapshot_payload=snapshot,
+                status="pending",
+            )
+            created += 1
+        except Exception as exc:
+            logger.warning("Failed to save reflection case for %s: %s", candidate.get("symbol"), exc)
+            failed += 1
+    return {"created": created, "failed": failed}
+
+
+def _reflection_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Capture the evidence visible at signal time for later causal reflection."""
+    keys = [
+        "symbol",
+        "name",
+        "industry",
+        "board",
+        "rank",
+        "quant_score",
+        "quant_decision",
+        "quant_decision_reason",
+        "factor_scores",
+        "key_metrics",
+        "data_coverage",
+        "quant_gate_reasons",
+        "gate_reasons",
+        "llm_review",
+        "llm_view",
+        "catalyst_strength",
+        "risk_assessment",
+        "key_catalysts",
+        "key_risks",
+        "risk_flags",
+        "final_decision",
+        "signal",
+        "decision_stage",
+        "display_score",
+        "action_plan",
+        "position_pct",
+        "rationale",
+        "strategy_lesson_hits",
+        "lesson_adjustment_reason",
+    ]
+    snapshot = {key: candidate.get(key) for key in keys if key in candidate}
+    snapshot["candidate"] = {key: value for key, value in candidate.items() if key not in {"raw_payload"}}
+    return snapshot
+
+
+def _save_daily_pipeline_artifacts(
+    config: dict[str, Any],
+    *,
+    input_params: DailyPipelineInput,
+    report: str,
+    candidates: list[dict[str, Any]],
+    quant_candidates: list[dict[str, Any]],
+    reviewed_candidates: list[dict[str, Any]],
+    decision_pack: list[dict[str, Any]],
+    warnings: list[str],
+    quant_meta: dict[str, Any],
+    signal_result: dict[str, int],
+    temporal_context: dict[str, Any] | None = None,
+) -> None:
+    counts = _decision_counts(candidates)
+    title = f"每日选股 {input_params.trade_date}"
+    subtitle = f"{input_params.universe_index} · {input_params.board_filter} · Top {len(candidates)}"
+    summary = (
+        f"输出 {len(candidates)} 个候选，BUY {counts.get('BUY', 0)} 个，"
+        f"WATCHLIST {counts.get('WATCHLIST', 0)} 个，SKIP {counts.get('SKIP', 0)} 个"
+    )
+    base_payload = {
+        "trade_date": input_params.trade_date,
+        "market_asof_date": (temporal_context or {}).get("market_asof_date") or input_params.trade_date,
+        "decision_target_date": (temporal_context or {}).get("decision_target_date"),
+        "info_cutoff": (temporal_context or {}).get("info_cutoff"),
+        "temporal_context": temporal_context or {},
+        "universe_index": input_params.universe_index,
+        "board_filter": input_params.board_filter,
+        "exclude_boards": input_params.exclude_boards,
+        "warnings": warnings,
+        "quant_meta": quant_meta,
+        "signal_result": signal_result,
+    }
+    tags = ["daily_pipeline", input_params.universe_index, input_params.board_filter]
+    save_skill_artifact(
+        config,
+        skill_id="daily_pipeline",
+        artifact_type="screening_report",
+        title=title,
+        subtitle=subtitle,
+        subject_type="market",
+        subject_id="cn_a",
+        subject_name="A股",
+        summary=summary,
+        content_markdown=report,
+        payload={**base_payload, "candidates": candidates},
+        tags=tags,
+    )
+    save_skill_artifact(
+        config,
+        skill_id="daily_pipeline",
+        artifact_type="signal_pack",
+        title=f"{title} 信号包",
+        subtitle=subtitle,
+        subject_type="market",
+        subject_id="cn_a",
+        subject_name="A股",
+        summary=summary,
+        payload={**base_payload, "quant_candidates": quant_candidates, "reviewed_candidates": reviewed_candidates},
+        tags=[*tags, "signal_pack"],
+    )
+    save_skill_artifact(
+        config,
+        skill_id="daily_pipeline",
+        artifact_type="decision_pack",
+        title=f"{title} 决策包",
+        subtitle=subtitle,
+        subject_type="market",
+        subject_id="cn_a",
+        subject_name="A股",
+        summary=summary,
+        payload={**base_payload, "decision_pack": decision_pack or candidates},
+        tags=[*tags, "decision_pack"],
+    )
+
+
+def _decision_counts(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in candidates:
+        decision = str(item.get("final_decision") or item.get("signal") or item.get("quant_decision") or "UNKNOWN").upper()
+        counts[decision] = counts.get(decision, 0) + 1
+    return counts
+
+
+def _store_decisions_to_memory(
+    candidates: list[dict[str, Any]],
+    trade_date: str,
+    config: dict[str, Any],
+) -> None:
+    """Persist each candidate decision to TradingMemoryLog for future reflection."""
+    try:
+        memory = TradingMemoryLog(config)
+        for c in candidates:
+            symbol = str(c.get("symbol") or c.get("ts_code") or "")
+            if not symbol:
+                continue
+            decision = c.get("final_decision") or c.get("signal") or "WATCHLIST"
+            score = c.get("display_score") or c.get("final_score") or c.get("quant_score") or ""
+            rationale = c.get("rationale") or ""
+            memory.store_decision(
+                ticker=symbol,
+                trade_date=trade_date,
+                final_trade_decision=(
+                    f"DailyPipeline: {decision} (score={score}) | {rationale}"
+                ),
+            )
+    except Exception as exc:
+        logger.warning("Failed to store daily pipeline decisions to memory: %s", exc)
+
+
 async def _apply_llm_reviews(
     input_params: DailyPipelineInput,
     config: dict[str, Any],
     profile: dict[str, Any],
     candidates: list[dict[str, Any]],
+    strategy_lessons: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     if not candidates:
         return [], {"enabled": bool(config.get("daily_pipeline_llm_review_enabled", True)), "reviewed": 0}
@@ -531,6 +901,7 @@ async def _apply_llm_reviews(
             config,
             style=str(profile.get("investment_style") or "medium_term"),
             trade_date=input_params.trade_date,
+            strategy_lessons=strategy_lessons or [],
         )
     if reviewer is None:
         for candidate in candidates:
@@ -585,9 +956,13 @@ async def _apply_llm_reviews(
             warnings.append(f"LLM review failed for {symbol}; kept quant-only signal.")
             continue
         review = _coerce_llm_review(raw_review)
+        lesson_hits = _candidate_lesson_hits(candidate, strategy_lessons or [])
         candidate["llm_review"] = review.model_dump()
         candidate["key_catalysts"] = review.key_catalysts
         candidate["key_risks"] = review.key_risks
+        candidate["strategy_lesson_hits"] = lesson_hits
+        if lesson_hits:
+            candidate["lesson_adjustment_reason"] = "LLM review considered recent strategy reflection lessons."
         candidate.update(
             fuse_candidate_signal(
                 candidate,
@@ -595,7 +970,7 @@ async def _apply_llm_reviews(
                 review.as_fusion_payload(),
             )
         )
-        candidate["rationale"] = _candidate_rationale(candidate)
+        candidate["rationale"] = candidate_rationale(candidate, include_llm=True)
         reviewed += 1
 
     for candidate in candidates[review_limit:]:
@@ -661,6 +1036,8 @@ def _candidate_cards(candidates: list[dict[str, Any]], *, include_llm: bool) -> 
                     "gate_reasons": item.get("gate_reasons") or [],
                     "action_plan": item.get("action_plan") or {},
                     "position_pct": item.get("position_pct", 0.0),
+                    "strategy_lesson_hits": item.get("strategy_lesson_hits") or [],
+                    "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
                 }
             )
         cards.append(card)
@@ -679,9 +1056,54 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "gate_reasons": item.get("gate_reasons") or [],
             "action_plan": item.get("action_plan") or {},
             "position_pct": item.get("position_pct", 0.0),
+            "strategy_lesson_hits": item.get("strategy_lesson_hits") or [],
+            "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
         }
         for item in candidates
     ]
+
+
+def _load_strategy_lessons(db: Database) -> list[dict[str, Any]]:
+    try:
+        return db.list_strategy_lessons(limit=20, active_only=True)
+    except Exception as exc:
+        logger.warning("Failed to load strategy lessons for daily pipeline: %s", exc)
+        return []
+
+
+def _candidate_lesson_hits(candidate: dict[str, Any], lessons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not lessons:
+        return []
+    symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
+    industry = str(candidate.get("industry") or "")
+    board = str(candidate.get("board") or "")
+    data_coverage = candidate.get("data_coverage") or {}
+    missing_keys = {
+        key for key, value in data_coverage.items()
+        if str(value).lower() == "missing"
+    } if isinstance(data_coverage, dict) else set()
+    hits: list[dict[str, Any]] = []
+    for lesson in lessons:
+        scope = str(lesson.get("scope") or "global")
+        target = str(lesson.get("target") or "")
+        matched = scope == "global"
+        matched = matched or (scope == "symbol" and target == symbol)
+        matched = matched or (scope == "industry" and target and target == industry)
+        matched = matched or (scope == "board" and target and target == board)
+        matched = matched or (scope == "factor" and target in missing_keys)
+        if matched:
+            hits.append(
+                {
+                    "id": lesson.get("id"),
+                    "lesson_type": lesson.get("lesson_type"),
+                    "scope": scope,
+                    "target": target,
+                    "finding": lesson.get("finding"),
+                    "suggested_adjustment": lesson.get("suggested_adjustment"),
+                    "confidence": lesson.get("confidence"),
+                }
+            )
+    return hits[:5]
 
 
 def _quant_meta(payload: dict[str, Any] | None, input_params: DailyPipelineInput, profile: dict[str, Any]) -> dict[str, Any]:
@@ -691,62 +1113,13 @@ def _quant_meta(payload: dict[str, Any] | None, input_params: DailyPipelineInput
         "status": payload.get("status"),
         "method": payload.get("method"),
         "as_of_date": payload.get("as_of_date") or input_params.trade_date,
-        "factor_profile": payload.get("factor_profile") or _factor_profile_for_style(profile["investment_style"]),
+        "factor_profile": payload.get("factor_profile") or factor_profile_for_style(profile["investment_style"]),
         "universe": payload.get("universe") or {},
         "strategy_meta": payload.get("strategy_meta") or {},
         "strategy_meta_available": bool(payload.get("strategy_meta")),
         "selection_meta": payload.get("selection_meta") or {},
         "concentration_meta": payload.get("concentration_meta") or {},
     }
-
-
-def _candidate_rationale(candidate: dict[str, Any]) -> str:
-    llm_review = candidate.get("llm_review") if isinstance(candidate.get("llm_review"), dict) else {}
-    llm_reasoning = llm_review.get("reasoning") if llm_review else candidate.get("reasoning")
-    explains = candidate.get("score_explain") or []
-    parts: list[str] = []
-    if explains:
-        parts.append("; ".join(str(item) for item in explains))
-    if llm_reasoning:
-        parts.append(f"LLM: {llm_reasoning}")
-    if parts:
-        return " | ".join(parts)
-    fs = candidate.get("factor_scores") if isinstance(candidate.get("factor_scores"), dict) else {}
-    if fs:
-        return ", ".join(f"{key} {value}" for key, value in fs.items())
-    return "StockManager quant ranking candidate."
-
-
-def _factor_profile_for_style(style: str) -> str:
-    if style == "short_term":
-        return "short_term_momentum"
-    if style == "long_term":
-        return "long_term_quality"
-    return "medium_term_balanced"
-
-
-def _default_filters(input_params: DailyPipelineInput | None = None, config: dict[str, Any] | None = None) -> dict[str, Any]:
-    filters: dict[str, Any] = {
-        "exclude_st": True,
-        "exclude_suspended": True,
-        "exclude_one_price_limit": True,
-        "min_amount_20d": 0,
-    }
-    if input_params is not None:
-        if input_params.board_filter != "all":
-            filters["board_filter"] = _mcp_board_filter(input_params.board_filter)
-        if input_params.exclude_boards:
-            filters["exclude_boards"] = input_params.exclude_boards
-    extra = (config or {}).get("daily_pipeline_filters")
-    if isinstance(extra, dict):
-        filters.update(extra)
-    return filters
-
-
-def _mcp_board_filter(value: str) -> str:
-    if value == "dual_growth_only":
-        return "chinext_star"
-    return value
 
 
 def _optional_float(value: Any) -> float | None:
@@ -764,11 +1137,14 @@ def _render_report(
     profile: dict[str, Any],
     mcp_used: bool,
     warnings: list[str],
+    temporal_context,
 ) -> str:
     lines = [
         "## Daily A-share Research Queue",
         "",
-        f"- Trade date: **{input_params.trade_date}**",
+        f"- Market as-of date T: **{temporal_context.market_asof_date}**",
+        f"- Decision target date T+1: **{temporal_context.decision_target_date}**",
+        f"- Information cutoff: **{temporal_context.info_cutoff}**",
         f"- Universe: **{input_params.universe_index}**",
         f"- Board filter: **{input_params.board_filter}**",
         f"- Investment style: **{profile['investment_style']}**",

@@ -7,7 +7,7 @@ historical data without re-running analyses.
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -76,12 +76,93 @@ CREATE TABLE IF NOT EXISTS signals (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    skill_id TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    subtitle TEXT,
+    subject_type TEXT,
+    subject_id TEXT,
+    subject_name TEXT,
+    status TEXT NOT NULL DEFAULT 'success',
+    summary TEXT,
+    content_markdown TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_skill ON runs(skill_id);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_reports_ticker ON reports(ticker);
 CREATE INDEX IF NOT EXISTS idx_reports_run ON reports(run_id);
 CREATE INDEX IF NOT EXISTS idx_signals_trade_date ON signals(trade_date);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(run_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_skill ON artifacts(skill_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(artifact_type);
+CREATE INDEX IF NOT EXISTS idx_artifacts_subject ON artifacts(subject_type, subject_id);
+
+CREATE TABLE IF NOT EXISTS reflections (
+    id TEXT PRIMARY KEY,
+    run_id TEXT,
+    ticker TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    original_decision TEXT NOT NULL,
+    actual_return REAL,
+    was_correct BOOLEAN,
+    reflection_text TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reflections_ticker ON reflections(ticker);
+CREATE INDEX IF NOT EXISTS idx_reflections_trade_date ON reflections(trade_date);
+
+CREATE TABLE IF NOT EXISTS reflection_cases (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    reflection_scope TEXT NOT NULL,
+    eligible_for_strategy_learning INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    symbol TEXT NOT NULL,
+    name TEXT,
+    signal_date TEXT NOT NULL,
+    horizon_days INTEGER NOT NULL DEFAULT 5,
+    source_run_id TEXT NOT NULL DEFAULT '',
+    source_artifact_id TEXT NOT NULL DEFAULT '',
+    snapshot_payload TEXT NOT NULL DEFAULT '{}',
+    outcome_payload TEXT NOT NULL DEFAULT '{}',
+    post_signal_evidence_payload TEXT NOT NULL DEFAULT '{}',
+    attribution_payload TEXT NOT NULL DEFAULT '{}',
+    lesson_payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reflection_cases_symbol ON reflection_cases(symbol);
+CREATE INDEX IF NOT EXISTS idx_reflection_cases_status ON reflection_cases(status);
+CREATE INDEX IF NOT EXISTS idx_reflection_cases_scope ON reflection_cases(reflection_scope);
+CREATE INDEX IF NOT EXISTS idx_reflection_cases_signal_date ON reflection_cases(signal_date);
+
+CREATE TABLE IF NOT EXISTS strategy_lessons (
+    id TEXT PRIMARY KEY,
+    lesson_type TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'global',
+    target TEXT NOT NULL DEFAULT '',
+    finding TEXT NOT NULL,
+    suggested_adjustment TEXT NOT NULL DEFAULT '',
+    evidence_count INTEGER NOT NULL DEFAULT 1,
+    confidence TEXT NOT NULL DEFAULT 'low',
+    active INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_lessons_active ON strategy_lessons(active);
+CREATE INDEX IF NOT EXISTS idx_strategy_lessons_type ON strategy_lessons(lesson_type);
+CREATE INDEX IF NOT EXISTS idx_strategy_lessons_scope ON strategy_lessons(scope, target);
 """
 
 
@@ -101,16 +182,67 @@ class Database:
                 conn.execute("SELECT ticker_name FROM reports LIMIT 0")
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE reports ADD COLUMN ticker_name TEXT")
+            self._backfill_report_artifacts(conn)
 
     @contextmanager
     def _conn(self):
-        conn = sqlite3.connect(str(self.db_path))
+        # WAL + busy_timeout so concurrent readers don't block the writer and
+        # short-lived lock contention waits instead of raising "database is
+        # locked" immediately. PRAGMAs are cheap and idempotent.
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=30000")
             yield conn
             conn.commit()
         finally:
             conn.close()
+
+    def _backfill_report_artifacts(self, conn: sqlite3.Connection) -> None:
+        """Create stock_report artifacts for reports saved before Library existed."""
+        rows = conn.execute(
+            """
+            SELECT r.* FROM reports r
+            LEFT JOIN artifacts a ON a.id = r.id
+            WHERE a.id IS NULL
+            """
+        ).fetchall()
+        now = datetime.now(timezone.utc).isoformat()
+        for row in rows:
+            item = dict(row)
+            ticker = item.get("ticker") or ""
+            ticker_name = item.get("ticker_name") or ticker
+            created_at = item.get("created_at") or now
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, run_id, skill_id, artifact_type, title, subtitle,
+                    subject_type, subject_id, subject_name, status, summary,
+                    content_markdown, payload_json, tags_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["id"],
+                    item.get("run_id") or "",
+                    "stock_analysis",
+                    "stock_report",
+                    f"{ticker_name} 投资报告",
+                    item.get("rating"),
+                    "ticker",
+                    ticker,
+                    ticker_name,
+                    "success",
+                    item.get("rating"),
+                    item.get("content") or "",
+                    json.dumps({"report_path": item.get("report_path"), "rating": item.get("rating")}, ensure_ascii=False),
+                    json.dumps(["stock_report", ticker], ensure_ascii=False),
+                    created_at,
+                    now,
+                ),
+            )
 
     def save_run(self, run_id: str, skill_id: str, params: dict, status: str) -> None:
         """Insert a new run record."""
@@ -144,11 +276,29 @@ class Database:
         ticker_name: str | None = None,
     ) -> None:
         """Save a completed report."""
+        created_at = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO reports (id, run_id, ticker, ticker_name, rating, content, report_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (report_id, run_id, ticker, ticker_name, rating, content, path, datetime.now(timezone.utc).isoformat()),
+                (report_id, run_id, ticker, ticker_name, rating, content, path, created_at),
             )
+        self.save_artifact(
+            artifact_id=report_id,
+            run_id=run_id,
+            skill_id="stock_analysis",
+            artifact_type="stock_report",
+            title=f"{ticker_name or ticker} 投资报告",
+            subtitle=rating,
+            subject_type="ticker",
+            subject_id=ticker,
+            subject_name=ticker_name or ticker,
+            status="success",
+            summary=rating,
+            content_markdown=content,
+            payload={"report_path": path, "rating": rating},
+            tags=["stock_report", ticker],
+            created_at=created_at,
+        )
 
     def list_reports(self, limit: int = 50, ticker: str | None = None) -> list[dict]:
         """List reports, optionally filtered by ticker."""
@@ -182,6 +332,124 @@ class Database:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
             return dict(row) if row else None
+
+    def save_artifact(
+        self,
+        artifact_id: str,
+        run_id: str,
+        skill_id: str,
+        artifact_type: str,
+        title: str,
+        subtitle: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        subject_name: str | None = None,
+        status: str = "success",
+        summary: str | None = None,
+        content_markdown: str | None = None,
+        payload: dict | None = None,
+        tags: list[str] | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        """Save a cross-skill artifact for the Library view."""
+        now = datetime.now(timezone.utc).isoformat()
+        created = created_at or now
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, run_id, skill_id, artifact_type, title, subtitle,
+                    subject_type, subject_id, subject_name, status, summary,
+                    content_markdown, payload_json, tags_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    run_id or "",
+                    skill_id,
+                    artifact_type,
+                    title,
+                    subtitle,
+                    subject_type,
+                    subject_id,
+                    subject_name,
+                    status,
+                    summary,
+                    content_markdown,
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    json.dumps(tags or [], ensure_ascii=False),
+                    created,
+                    now,
+                ),
+            )
+
+    def list_artifacts(
+        self,
+        limit: int = 50,
+        skill_id: str | None = None,
+        artifact_type: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        run_id: str | None = None,
+        q: str | None = None,
+    ) -> list[dict]:
+        """List Library artifacts with optional filters."""
+        query = "SELECT * FROM artifacts"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if skill_id:
+            clauses.append("skill_id = ?")
+            params.append(skill_id)
+        if artifact_type:
+            clauses.append("artifact_type = ?")
+            params.append(artifact_type)
+        if subject_type:
+            clauses.append("subject_type = ?")
+            params.append(subject_type)
+        if subject_id:
+            clauses.append("subject_id = ?")
+            params.append(subject_id)
+        if run_id:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if q:
+            like = f"%{q}%"
+            clauses.append("(title LIKE ? OR summary LIKE ? OR subject_id LIKE ? OR subject_name LIKE ?)")
+            params.extend([like, like, like, like])
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._decode_artifact(dict(row)) for row in rows]
+
+    def get_artifact(self, artifact_id: str) -> dict | None:
+        """Get a single Library artifact."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        return self._decode_artifact(dict(row)) if row else None
+
+    def list_artifacts_for_run(self, run_id: str) -> list[dict]:
+        """List all artifacts associated with a run."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at DESC",
+                (run_id,),
+            ).fetchall()
+        return [self._decode_artifact(dict(row)) for row in rows]
+
+    def _decode_artifact(self, row: dict) -> dict:
+        try:
+            row["payload"] = json.loads(row.pop("payload_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            row["payload"] = {}
+        try:
+            row["tags"] = json.loads(row.pop("tags_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            row["tags"] = []
+        return row
 
     def save_signal(
         self,
@@ -241,6 +509,246 @@ class Database:
             try:
                 item["payload"] = json.loads(item.get("payload") or "{}")
             except json.JSONDecodeError:
+                item["payload"] = {}
+            result.append(item)
+        return result
+
+    # ------------------------------------------------------------------
+    # Reflection cases and strategy lessons
+    # ------------------------------------------------------------------
+
+    def save_reflection_case(
+        self,
+        case_id: str,
+        source_type: str,
+        reflection_scope: str,
+        eligible_for_strategy_learning: bool,
+        symbol: str,
+        signal_date: str,
+        horizon_days: int = 5,
+        source_run_id: str = "",
+        source_artifact_id: str = "",
+        name: str | None = None,
+        snapshot_payload: dict | None = None,
+        outcome_payload: dict | None = None,
+        post_signal_evidence_payload: dict | None = None,
+        attribution_payload: dict | None = None,
+        lesson_payload: dict | None = None,
+        status: str = "pending",
+    ) -> None:
+        """Save or replace a reflection case with full signal-time context."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO reflection_cases (
+                    id, source_type, reflection_scope, eligible_for_strategy_learning,
+                    status, symbol, name, signal_date, horizon_days, source_run_id,
+                    source_artifact_id, snapshot_payload, outcome_payload,
+                    post_signal_evidence_payload, attribution_payload, lesson_payload,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case_id,
+                    source_type,
+                    reflection_scope,
+                    1 if eligible_for_strategy_learning else 0,
+                    status,
+                    symbol.strip().upper(),
+                    name,
+                    signal_date,
+                    horizon_days,
+                    source_run_id or "",
+                    source_artifact_id or "",
+                    json.dumps(snapshot_payload or {}, ensure_ascii=False),
+                    json.dumps(outcome_payload or {}, ensure_ascii=False),
+                    json.dumps(post_signal_evidence_payload or {}, ensure_ascii=False),
+                    json.dumps(attribution_payload or {}, ensure_ascii=False),
+                    json.dumps(lesson_payload or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+
+    def update_reflection_case(
+        self,
+        case_id: str,
+        *,
+        status: str | None = None,
+        outcome_payload: dict | None = None,
+        post_signal_evidence_payload: dict | None = None,
+        attribution_payload: dict | None = None,
+        lesson_payload: dict | None = None,
+        eligible_for_strategy_learning: bool | None = None,
+    ) -> None:
+        """Update mutable reflection case fields after outcome/attribution."""
+        sets: list[str] = ["updated_at = ?"]
+        values: list[Any] = [datetime.now(timezone.utc).isoformat()]
+        if status is not None:
+            sets.append("status = ?")
+            values.append(status)
+        if outcome_payload is not None:
+            sets.append("outcome_payload = ?")
+            values.append(json.dumps(outcome_payload, ensure_ascii=False))
+        if post_signal_evidence_payload is not None:
+            sets.append("post_signal_evidence_payload = ?")
+            values.append(json.dumps(post_signal_evidence_payload, ensure_ascii=False))
+        if attribution_payload is not None:
+            sets.append("attribution_payload = ?")
+            values.append(json.dumps(attribution_payload, ensure_ascii=False))
+        if lesson_payload is not None:
+            sets.append("lesson_payload = ?")
+            values.append(json.dumps(lesson_payload, ensure_ascii=False))
+        if eligible_for_strategy_learning is not None:
+            sets.append("eligible_for_strategy_learning = ?")
+            values.append(1 if eligible_for_strategy_learning else 0)
+        values.append(case_id)
+        with self._conn() as conn:
+            conn.execute(f"UPDATE reflection_cases SET {', '.join(sets)} WHERE id = ?", values)
+
+    def list_reflection_cases(
+        self,
+        limit: int = 50,
+        status: str | None = None,
+        symbol: str | None = None,
+        reflection_scope: str | None = None,
+        eligible_only: bool = False,
+    ) -> list[dict]:
+        """List reflection cases with decoded JSON payloads."""
+        query = "SELECT * FROM reflection_cases"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol.strip().upper())
+        if reflection_scope:
+            clauses.append("reflection_scope = ?")
+            params.append(reflection_scope)
+        if eligible_only:
+            clauses.append("eligible_for_strategy_learning = 1")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY signal_date DESC, created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._decode_reflection_case(dict(row)) for row in rows]
+
+    def prune_reflection_cases(
+        self,
+        older_than_days: int = 90,
+        status: str = "reflected",
+    ) -> int:
+        """Delete reflected (or other terminal-status) cases older than the cutoff.
+
+        Prevents unbounded growth of the reflection_cases table — daily_pipeline
+        creates up to ``candidate_limit`` pending cases per run while the
+        reflection job only resolves ``max_per_run`` per day, so without pruning
+        the table grows without bound. Returns the number of rows deleted.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM reflection_cases WHERE status = ? AND updated_at < ?",
+                (status, cutoff),
+            )
+            return int(cur.rowcount or 0)
+
+    def get_reflection_case(self, case_id: str) -> dict | None:
+        with self._conn() as conn:            row = conn.execute("SELECT * FROM reflection_cases WHERE id = ?", (case_id,)).fetchone()
+        return self._decode_reflection_case(dict(row)) if row else None
+
+    def _decode_reflection_case(self, row: dict) -> dict:
+        row["eligible_for_strategy_learning"] = bool(row.get("eligible_for_strategy_learning"))
+        for key in (
+            "snapshot_payload",
+            "outcome_payload",
+            "post_signal_evidence_payload",
+            "attribution_payload",
+            "lesson_payload",
+        ):
+            try:
+                row[key] = json.loads(row.get(key) or "{}")
+            except (json.JSONDecodeError, TypeError):
+                row[key] = {}
+        return row
+
+    def save_strategy_lesson(
+        self,
+        lesson_id: str,
+        lesson_type: str,
+        scope: str,
+        finding: str,
+        suggested_adjustment: str = "",
+        target: str = "",
+        evidence_count: int = 1,
+        confidence: str = "low",
+        active: bool = True,
+        expires_at: str | None = None,
+        payload: dict | None = None,
+    ) -> None:
+        """Persist a reusable strategy lesson."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO strategy_lessons (
+                    id, lesson_type, scope, target, finding, suggested_adjustment,
+                    evidence_count, confidence, active, expires_at, payload_json,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lesson_id,
+                    lesson_type,
+                    scope,
+                    target or "",
+                    finding,
+                    suggested_adjustment,
+                    int(evidence_count),
+                    confidence,
+                    1 if active else 0,
+                    expires_at,
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+
+    def list_strategy_lessons(
+        self,
+        limit: int = 20,
+        active_only: bool = True,
+        lesson_type: str | None = None,
+    ) -> list[dict]:
+        """List reusable strategy lessons."""
+        query = "SELECT * FROM strategy_lessons"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if active_only:
+            clauses.append("active = 1")
+        if lesson_type:
+            clauses.append("lesson_type = ?")
+            params.append(lesson_type)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["active"] = bool(item.get("active"))
+            try:
+                item["payload"] = json.loads(item.pop("payload_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
                 item["payload"] = {}
             result.append(item)
         return result
@@ -575,3 +1083,76 @@ class Database:
                 continue
 
         return imported
+
+    # ------------------------------------------------------------------
+    # Reflections
+    # ------------------------------------------------------------------
+
+    def save_reflection(self, entry: dict) -> None:
+        """Save a reflection record."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO reflections "
+                "(id, run_id, ticker, trade_date, original_decision, actual_return, was_correct, reflection_text, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry["id"],
+                    entry.get("run_id") or "",
+                    entry["ticker"],
+                    entry["trade_date"],
+                    entry["original_decision"],
+                    entry.get("actual_return"),
+                    entry.get("was_correct"),
+                    entry.get("reflection_text") or "",
+                    entry.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def list_reflections(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
+        """List reflections, optionally filtered by ticker."""
+        query = "SELECT * FROM reflections"
+        params: list[Any] = []
+        if ticker:
+            query += " WHERE ticker = ?"
+            params.append(ticker)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_reflection_summary(self, lookback_days: int = 30) -> dict:
+        """Get aggregated reflection statistics.
+
+        Neutral decisions (``was_correct IS NULL``, e.g. WATCHLIST/HOLD) are
+        excluded from the accuracy denominator and reported separately so they
+        no longer inflate the accuracy figure.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+        with self._conn() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM reflections WHERE created_at >= ?", (cutoff,)
+            ).fetchone()[0]
+            neutral = conn.execute(
+                "SELECT COUNT(*) FROM reflections WHERE created_at >= ? AND was_correct IS NULL",
+                (cutoff,),
+            ).fetchone()[0]
+            correct = conn.execute(
+                "SELECT COUNT(*) FROM reflections WHERE created_at >= ? AND was_correct = 1", (cutoff,)
+            ).fetchone()[0]
+            recent = conn.execute(
+                "SELECT * FROM reflections WHERE created_at >= ? ORDER BY created_at DESC LIMIT 5", (cutoff,)
+            ).fetchall()
+        # Denominator excludes neutral decisions (BUY/SELL only).
+        scored = total - neutral
+        incorrect = scored - correct
+        accuracy = (correct / scored) if scored > 0 else 0.0
+        return {
+            "total": total,
+            "neutral": neutral,
+            "correct": correct,
+            "incorrect": incorrect,
+            "accuracy": round(accuracy, 4),
+            "lookback_days": lookback_days,
+            "recent": [dict(row) for row in recent],
+        }

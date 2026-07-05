@@ -14,12 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from tradingagents.core.mcp_client import get_mcp_client, get_mcp_status, shutdown_mcp_client
 from tradingagents.core.orchestrator import Orchestrator
 from tradingagents.core.persistence import Database
+from tradingagents.core.reflection import ReflectionEngine
 from tradingagents.core.run_manager import RunManager
 from tradingagents.core.scheduler import Scheduler
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.skills.registry import SkillRegistry
 
-from .routes import config, health, portfolio, profile, reports, runs, skills
+from .routes import artifacts, config, health, portfolio, profile, reflections, reports, runs, skills, trading_time
 from .ws import stream
 
 
@@ -57,12 +58,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.config = config
     app.state.db = db
     app.state.run_manager = RunManager(db=db)
-    app.state.orchestrator = Orchestrator(registry, config)
+
+    # Conditionally enable LLM-based intent routing
+    llm_router = None
+    if config.get("llm_routing_enabled", False):
+        from tradingagents.core.llm_router import LLMRouter
+
+        llm_router = LLMRouter(registry, config, db=db)
+
+    app.state.orchestrator = Orchestrator(registry, config, db=db, llm_router=llm_router)
     app.state.scheduler = Scheduler()
     if config.get("scheduler_enabled", True):
         daily_skill = registry.get("daily_pipeline")
         if daily_skill is not None:
             async def run_daily_pipeline() -> None:
+                # Skip on non-trading days (weekends/holidays) to avoid wasting
+                # LLM tokens and producing signals dated to a non-trading day.
+                from tradingagents.core.trading_time import get_temporal_context
+
+                ctx = get_temporal_context(app.state.config, market="cn_a")
+                if ctx.calendar_state != "trading_day":
+                    logging.getLogger(__name__).info(
+                        "Skipping daily_pipeline: non-trading day (%s)",
+                        ctx.market_asof_date,
+                    )
+                    return
                 await app.state.run_manager.create_run(
                     daily_skill,
                     {"limit": 5, "candidate_limit": 80},
@@ -70,8 +90,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
 
             app.state.scheduler.register_daily("daily_pipeline", time(8, 30), run_daily_pipeline)
-            app.state.scheduler.start()
-    app.state.mcp_client = await get_mcp_client(config)
+
+        # Reflection job — runs daily after market close
+        async def run_reflection_pipeline() -> None:
+            # Skip on non-trading days: there is no new close to reflect on, and
+            # fetch_outcome would return None, leaving cases pending forever.
+            from tradingagents.core.trading_time import get_temporal_context
+
+            ctx = get_temporal_context(app.state.config, market="cn_a")
+            if ctx.calendar_state != "trading_day":
+                logging.getLogger(__name__).info(
+                    "Skipping reflection_job: non-trading day (%s)",
+                    ctx.market_asof_date,
+                )
+                return
+            from tradingagents.agents.utils.memory import TradingMemoryLog
+
+            memory_log = TradingMemoryLog(app.state.config)
+            engine = ReflectionEngine(
+                db=app.state.db,
+                config=app.state.config,
+                memory_log=memory_log,
+            )
+            result = await engine.run_reflection_batch()
+            logging.getLogger(__name__).info("Reflection batch completed: %s", result)
+
+        app.state.scheduler.register_daily("reflection_job", time(16, 30), run_reflection_pipeline)
+        app.state.scheduler.start()
+    # MCP init is wrapped in a timeout so a hung StockManager probe cannot block
+    # FastAPI startup for the full tool_timeout (default 120s). On timeout we
+    # continue in degraded mode (no MCP); the singleton will retry on next use.
+    try:
+        app.state.mcp_client = await asyncio.wait_for(
+            get_mcp_client(config), timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        logging.getLogger(__name__).warning(
+            "MCP client init timed out after 10s; continuing without MCP (degraded mode)"
+        )
+        app.state.mcp_client = None
     app.state.mcp_status = (
         app.state.mcp_client.status
         if app.state.mcp_client is not None
@@ -111,10 +168,13 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api/v1", tags=["health"])
     app.include_router(skills.router, prefix="/api/v1", tags=["skills"])
     app.include_router(runs.router, prefix="/api/v1", tags=["runs"])
+    app.include_router(artifacts.router, prefix="/api/v1", tags=["artifacts"])
     app.include_router(reports.router, prefix="/api/v1", tags=["reports"])
     app.include_router(config.router, prefix="/api/v1", tags=["config"])
     app.include_router(profile.router, prefix="/api/v1", tags=["profile"])
     app.include_router(portfolio.router, prefix="/api/v1", tags=["portfolio"])
+    app.include_router(reflections.router, prefix="/api/v1", tags=["reflections"])
+    app.include_router(trading_time.router, prefix="/api/v1", tags=["trading-time"])
 
     # Register WebSocket routes
     app.include_router(stream.router)

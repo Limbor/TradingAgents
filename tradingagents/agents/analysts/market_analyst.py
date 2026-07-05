@@ -3,6 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
     get_indicators,
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
     get_market_structure_snapshot,
     get_stock_data,
@@ -17,6 +18,7 @@ def create_market_analyst(llm):
         current_date = state["trade_date"]
         market = state.get("market")
         instrument_context = get_instrument_context_from_state(state)
+        style_instruction = get_investment_style_instruction(state.get("investment_style"))
 
         tools = [
             get_stock_data,
@@ -60,6 +62,7 @@ For China A-shares, also call get_market_structure_snapshot and get_theme_heat b
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction(market)
+            + style_instruction
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -72,8 +75,9 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
                     " will help where you left off. Execute what you can to make progress."
                     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
                     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. {instrument_context}",
+                    " You have access to the following tools: {tool_names}."
+                    " Today's date is {current_date}; treat it as 'now' for all analysis and tool-call date ranges. {instrument_context}\n"
+                    "{system_message}",
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]
