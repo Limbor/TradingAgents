@@ -64,32 +64,51 @@ def _download_ak_ohlcv(code: str, start: str, end: str) -> pd.DataFrame:
 def load_ohlcv_cn(symbol: str, curr_date: str) -> pd.DataFrame:
     """A-share counterpart of :func:`stockstats_utils.load_ohlcv`.
 
-    Caches a 5-year window per symbol to avoid repeated downloads, then
-    filters to ``curr_date`` to prevent look-ahead bias.
+    Caches a 5-year window per symbol in a single file (keyed by code only, not
+    by date) to avoid cache fragmentation and repeated 5-year re-downloads on
+    each new analysis date. When the cached data does not yet cover ``curr_date``,
+    only the gap is fetched and appended; the result is trimmed to the last 5
+    years and filtered to ``curr_date`` to prevent look-ahead bias.
     """
     code = normalize_for_akshare(symbol)
     config = get_config()
     curr_date_dt = pd.to_datetime(curr_date)
 
-    start_date = curr_date_dt - pd.DateOffset(years=5)
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = curr_date_dt.strftime("%Y-%m-%d")
-
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    data_file = os.path.join(
-        config["data_cache_dir"],
-        f"{code}-AKShare-data-{start_str}-{end_str}.csv",
-    )
+    # Single file per code (no dates in the name) — previously the file was
+    # named with start_str/end_str, so every new curr_date produced a new file
+    # and the cache directory grew without bound.
+    data_file = os.path.join(config["data_cache_dir"], f"{code}-AKShare-data.csv")
 
     if os.path.exists(data_file):
         data = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
-    else:
-        data = _download_ak_ohlcv(code, start_str, end_str)
-        data.to_csv(data_file, index=False, encoding="utf-8")
+        data = _clean_dataframe(data)
+        if not data.empty:
+            max_date = pd.to_datetime(data["Date"]).max()
+            if max_date >= curr_date_dt:
+                # Cache already covers curr_date — reuse as-is.
+                five_yr_ago = curr_date_dt - pd.DateOffset(years=5)
+                data = data[data["Date"] >= five_yr_ago]
+                return data[data["Date"] <= curr_date_dt]
+            # Cache is stale: fetch only the gap and append.
+            gap_start = (max_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            gap_end = curr_date_dt.strftime("%Y-%m-%d")
+            gap = _download_ak_ohlcv(code, gap_start, gap_end)
+            if not gap.empty:
+                data = pd.concat([data, gap], ignore_index=True)
+                data = data.drop_duplicates(subset=["Date"]).sort_values("Date")
+                data.to_csv(data_file, index=False, encoding="utf-8")
+            five_yr_ago = curr_date_dt - pd.DateOffset(years=5)
+            data = data[data["Date"] >= five_yr_ago]
+            return data[data["Date"] <= curr_date_dt]
 
+    # No cache yet: download the full 5-year window.
+    start_str = (curr_date_dt - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
+    end_str = curr_date_dt.strftime("%Y-%m-%d")
+    data = _download_ak_ohlcv(code, start_str, end_str)
+    data.to_csv(data_file, index=False, encoding="utf-8")
     data = _clean_dataframe(data)
-    data = data[data["Date"] <= curr_date_dt]
-    return data
+    return data[data["Date"] <= curr_date_dt]
 
 
 def get_stock(

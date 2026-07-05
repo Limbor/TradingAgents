@@ -69,31 +69,47 @@ def _download_ts_ohlcv(code_ts: str, start: str, end: str) -> pd.DataFrame:
 def load_ohlcv_ts(symbol: str, curr_date: str) -> pd.DataFrame:
     """A-share OHLCV via TuShare with local cache (5-year window).
 
+    Caches a single file per code (no dates in the name) to avoid the
+    fragmentation where every new ``curr_date`` produced a new cache file and
+    the directory grew without bound. When the cache does not cover
+    ``curr_date``, only the gap is fetched and appended; the result is trimmed
+    to the last 5 years and filtered to ``curr_date``.
+
     Falls back when AKShare's eastmoney API is unavailable.
     """
     code_ts = normalize_for_tushare(symbol)
     config = get_config()
     curr_date_dt = pd.to_datetime(curr_date)
 
-    start_date = curr_date_dt - pd.DateOffset(years=5)
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = curr_date_dt.strftime("%Y-%m-%d")
-
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    data_file = os.path.join(
-        config["data_cache_dir"],
-        f"{code_ts}-TS-data-{start_str}-{end_str}.csv",
-    )
+    data_file = os.path.join(config["data_cache_dir"], f"{code_ts}-TS-data.csv")
 
     if os.path.exists(data_file):
         data = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
-    else:
-        data = _download_ts_ohlcv(code_ts, start_str, end_str)
-        data.to_csv(data_file, index=False, encoding="utf-8")
+        data = _clean_dataframe(data)
+        if not data.empty:
+            max_date = pd.to_datetime(data["Date"]).max()
+            if max_date >= curr_date_dt:
+                five_yr_ago = curr_date_dt - pd.DateOffset(years=5)
+                data = data[data["Date"] >= five_yr_ago]
+                return data[data["Date"] <= curr_date_dt]
+            gap_start = (max_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            gap_end = curr_date_dt.strftime("%Y-%m-%d")
+            gap = _download_ts_ohlcv(code_ts, gap_start, gap_end)
+            if not gap.empty:
+                data = pd.concat([data, gap], ignore_index=True)
+                data = data.drop_duplicates(subset=["Date"]).sort_values("Date")
+                data.to_csv(data_file, index=False, encoding="utf-8")
+            five_yr_ago = curr_date_dt - pd.DateOffset(years=5)
+            data = data[data["Date"] >= five_yr_ago]
+            return data[data["Date"] <= curr_date_dt]
 
+    start_str = (curr_date_dt - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
+    end_str = curr_date_dt.strftime("%Y-%m-%d")
+    data = _download_ts_ohlcv(code_ts, start_str, end_str)
+    data.to_csv(data_file, index=False, encoding="utf-8")
     data = _clean_dataframe(data)
-    data = data[data["Date"] <= curr_date_dt]
-    return data
+    return data[data["Date"] <= curr_date_dt]
 
 
 def get_stock(

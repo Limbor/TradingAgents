@@ -151,9 +151,29 @@ class RunManager:
         await self._broadcast(run_id, event)
 
     async def _broadcast(self, run_id: str, event: SkillEvent) -> None:
-        """Broadcast an event to all subscribers of a run."""
+        """Broadcast an event to all subscribers of a run.
+
+        Uses ``put_nowait`` with drop-oldest semantics so a slow subscriber
+        cannot unboundedly grow memory: if a per-run queue is full, the oldest
+        queued event is discarded to make room for the newer one. Terminal
+        events (run_complete / run_cancelled / error) always force their way in
+        so clients reliably see the final state.
+        """
         for queue in self._subscribers.get(run_id, []):
-            await queue.put(event)
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                # Drop the oldest event to make room for the newer one.
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    # Still full (concurrent producer); drop this event rather
+                    # than block the run loop.
+                    pass
 
     def _save_run(self, run: Run) -> None:
         """Save a run record if persistence is configured."""
@@ -175,8 +195,12 @@ class RunManager:
         )
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
-        """Subscribe to a run's event stream."""
-        queue: asyncio.Queue = asyncio.Queue()
+        """Subscribe to a run's event stream.
+
+        The queue is bounded so a slow client cannot grow memory unboundedly;
+        ``_broadcast`` drops the oldest event when full.
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=256)
         self._subscribers.setdefault(run_id, []).append(queue)
         return queue
 
@@ -224,12 +248,28 @@ class RunManager:
         return False
 
     async def cancel_all(self) -> None:
-        """Cancel all running tasks (used on app shutdown)."""
+        """Cancel all running tasks (used on app shutdown).
+
+        Waits for the cancelled tasks to actually finish (with a short timeout)
+        so in-flight DB/file writes complete or raise CancelledError cleanly,
+        instead of being hard-killed mid-write which can leave half-written
+        SQLite rows or report files.
+        """
+        tasks: list[asyncio.Task] = []
         for run in self._runs.values():
             if run._task and not run._task.done():
                 if run._skill is not None:
-                    await run._skill.cancel()
+                    try:
+                        await run._skill.cancel()
+                    except Exception:
+                        pass
                 run._task.cancel()
+                tasks.append(run._task)
+        if tasks:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=5.0,
+            )
 
     def _run_from_record(self, record: dict[str, Any]) -> Run:
         """Convert a persisted SQLite row into a Run object."""

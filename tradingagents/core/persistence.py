@@ -803,6 +803,23 @@ class Database:
             ).fetchone()
             return dict(row) if row else None
 
+    def update_holding_price(self, symbol: str, current_price: float) -> bool:
+        """Update only ``current_price`` for a holding.
+
+        Unlike :meth:`upsert_holding` (which rewrites quantity/avg_cost/notes
+        and is therefore a read-modify-write race when the price refresher runs
+        concurrently with a user edit), this touches only the price column and
+        ``updated_at``. Returns True if a row was updated.
+        """
+        normalized = symbol.strip().upper()
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE holdings SET current_price = ?, updated_at = ? WHERE symbol = ?",
+                (current_price, now, normalized),
+            )
+            return cursor.rowcount > 0
+
     def list_holdings(self) -> list[dict]:
         """List all holdings."""
         with self._conn() as conn:

@@ -498,6 +498,14 @@ WebSocket 端点：
 - ✅ **`investment_style` 未注入 13-agent 管道**: 新增 `get_investment_style_instruction(style)`；`create_initial_state` 接收并存储 `investment_style`；`trading_graph` 两处入口从 config 读取并传入；4 个分析师（market/fundamentals/news/sentiment）将风格指令拼入 system_message，短线/长线分析重心与止损/目标价措辞真正差异化。(`tradingagents/agents/utils/agent_utils.py`, `tradingagents/graph/propagation.py`, `tradingagents/agents/analysts/*.py`, `tradingagents/graph/trading_graph.py`)
 - ✅ **`astream_propagate` 绕过 checkpointer**: Skill 主入口现镜像 `propagate()` 的 checkpointer 逻辑——`checkpoint_enabled` 时注入 `SqliteSaver` + `thread_id`，`try/finally` 保证 context 清理，成功完成时 `clear_checkpoint` 清除残留。(`tradingagents/graph/trading_graph.py`)
 
+### 9.5 已修复（第三批 P1/P2，2026-07-05）
+
+- ✅ **WebSocket 队列无背压**: `subscribe()` 的 `asyncio.Queue` 加 `maxsize=256`；`_broadcast` 改用 `put_nowait` + drop-oldest 语义，慢客户端不再无限堆积内存。(`tradingagents/core/run_manager.py`)
+- ✅ **`cancel_all()` 不 await 被取消任务**: 改为 `asyncio.gather(..., return_exceptions=True)` + 5s 超时，确保关闭时正在写 DB/文件的 skill 干净退出而非被强杀留半写数据。(`tradingagents/core/run_manager.py`)
+- ✅ **持仓价格刷新读-改-写竞态**: 新增 `update_holding_price(symbol, price)` 只更新 `current_price` + `updated_at`；`refresh-prices` 路由改用它，不再 `upsert_holding` 全字段回写，避免覆盖并发的用户仓位/成本修改。(`tradingagents/core/persistence.py`, `tradingagents/api/routes/portfolio.py`)
+- ✅ **OHLCV 缓存键含 curr_date 致碎片化**: AKShare/TuShare 缓存文件名去掉日期改为每 code 单文件（`{code}-AKShare-data.csv`）；缓存已覆盖 `curr_date` 时直接复用，否则只拉缺口 `[max_date+1, curr_date]` 增量追加，并按 5 年滚动窗口裁剪。磁盘不再随每次运行增长，同日多次分析命中缓存。(`tradingagents/dataflows/akshare_stock.py`, `tradingagents/dataflows/tushare_stock.py`)
+- ✅ **RiskMonitor 风险分级过粗**: 从纯计数（<3=orange, ≥3=red）改为关键词严重度分级——`立案/违规/处罚/退市` 直接 red，`问询/减持/质押/业绩预亏/商誉减值` orange，无映射关键词时回退计数；并对相同标题公告去重，避免 routine 减持公告误报 red。(`tradingagents/skills/risk_monitor/skill.py`)
+
 
 ---
 
