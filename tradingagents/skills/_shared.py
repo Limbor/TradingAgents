@@ -116,6 +116,8 @@ def default_filters(
 
     Args:
         board_filter: One of 'all', 'main_board', 'dual_growth_only'.
+            Empty/None strings are normalized to 'all' so the FilterPanel
+            default (``""``) does not produce an invalid MCP filter.
         exclude_boards: Optional list of boards to exclude.
         config: App config dict; if present, merges daily_pipeline_filters.
     """
@@ -125,14 +127,57 @@ def default_filters(
         "exclude_one_price_limit": True,
         "min_amount_20d": 0,
     }
-    if board_filter != "all":
-        filters["board_filter"] = mcp_board_filter(board_filter)
+    bf = (board_filter or "").strip() or "all"
+    if bf != "all":
+        filters["board_filter"] = mcp_board_filter(bf)
     if exclude_boards:
         filters["exclude_boards"] = exclude_boards
     extra = (config or {}).get("daily_pipeline_filters")
     if isinstance(extra, dict):
+        # Normalize any board_filter coming from the persisted FilterPanel too.
+        if "board_filter" in extra:
+            extra_bf = (str(extra.get("board_filter") or "").strip()) or "all"
+            extra = {**extra, "board_filter": extra_bf}
         filters.update(extra)
     return filters
+
+
+# Acceptable board_filter values (used by resolve_board_filter).
+BOARD_FILTER_VALUES = {"all", "main_board", "dual_growth_only"}
+
+
+def resolve_board_filter(
+    input_filter: str | None,
+    config: dict[str, Any] | None,
+) -> str:
+    """Resolve the effective board_filter with a single priority chain.
+
+    Priority (highest first):
+    1. ``input_filter`` — an explicit value from the user message / API call
+       (anything other than ``"all"`` / empty wins).
+    2. ``config["daily_pipeline_filters"]["board_filter"]`` — the value saved
+       by the Dashboard FilterPanel (the global "workbench" setting).
+    3. ``config["daily_pipeline_board_filter"]`` — the top-level env override
+       (``TRADINGAGENTS_DAILY_PIPELINE_BOARD_FILTER``), kept as a fallback.
+    4. ``"all"``.
+
+    This makes the Dashboard FilterPanel the single source of truth for all
+    selection-style skills (daily_pipeline, daily_review, chat-triggered
+    screening), while still letting a user override it inline in chat.
+    """
+    candidate = (str(input_filter or "").strip()) or "all"
+    if candidate in BOARD_FILTER_VALUES and candidate != "all":
+        return candidate
+    cfg = config or {}
+    fp = cfg.get("daily_pipeline_filters")
+    if isinstance(fp, dict):
+        fp_val = (str(fp.get("board_filter") or "").strip()) or "all"
+        if fp_val in BOARD_FILTER_VALUES and fp_val != "all":
+            return fp_val
+    env_val = (str(cfg.get("daily_pipeline_board_filter") or "").strip()) or "all"
+    if env_val in BOARD_FILTER_VALUES and env_val != "all":
+        return env_val
+    return "all"
 
 
 # ---------------------------------------------------------------------------

@@ -29,12 +29,11 @@ from tradingagents.skills._shared import (
     demo_candidates,
     factor_profile_for_style,
     mcp_board_filter,
+    resolve_board_filter,
 )
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
 logger = logging.getLogger(__name__)
-
-BOARD_FILTER_VALUES = {"all", "main_board", "dual_growth_only"}
 
 
 class DailyPipelineInput(BaseModel):
@@ -301,9 +300,12 @@ def _apply_runtime_defaults(
     temporal_context = temporal_context or get_temporal_context(config, market="cn_a")
     if input_params.trade_date != temporal_context.market_asof_date:
         updates["trade_date"] = temporal_context.market_asof_date
-    configured_filter = str(config.get("daily_pipeline_board_filter") or "").strip()
-    if input_params.board_filter == "all" and configured_filter in BOARD_FILTER_VALUES:
-        updates["board_filter"] = configured_filter
+    # Single source of truth for board_filter: explicit input > FilterPanel
+    # (daily_pipeline_filters.board_filter) > env (daily_pipeline_board_filter)
+    # > "all". See _shared.resolve_board_filter for the full priority chain.
+    resolved_filter = resolve_board_filter(input_params.board_filter, config)
+    if resolved_filter != input_params.board_filter:
+        updates["board_filter"] = resolved_filter
     if not updates:
         return input_params
     return input_params.model_copy(update=updates)
@@ -711,7 +713,11 @@ def _save_reflection_cases(
             # same (trade_date, symbol) — e.g. a manual trigger plus the 08:30
             # scheduled one — replaces the prior case (INSERT OR REPLACE) instead
             # of creating duplicates that double-count in reflection stats.
-            case_id = f"daily_pipeline:{trade_date}:{symbol}" if trade_date and symbol else str(uuid.uuid4())
+            # Always derive a stable id from (trade_date, symbol); never fall
+            # back to uuid, which would defeat dedup entirely.
+            td = trade_date or "undated"
+            sym = symbol or "unknown"
+            case_id = f"daily_pipeline:{td}:{sym}"
             db.save_reflection_case(
                 case_id=case_id,
                 source_type="system_signal",

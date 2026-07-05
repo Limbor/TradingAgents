@@ -15,6 +15,7 @@ from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.reflection import ReflectionEngine
 from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
+from tradingagents.skills._shared import resolve_board_filter
 from tradingagents.skills.daily_pipeline.skill import DailyPipelineInput, skill as daily_pipeline_skill
 from tradingagents.skills.risk_monitor.skill import RiskMonitorInput, skill as risk_monitor_skill
 
@@ -137,11 +138,16 @@ class DailyReviewSkill(BaseSkill):
             progress_pct=65,
         )
 
+        # Resolve the effective board_filter the same way daily_pipeline does
+        # (explicit input > Dashboard FilterPanel > env > "all") so daily_review
+        # honors the global filter setting, then pass it through to daily_pipeline.
+        effective_board_filter = resolve_board_filter(input_params.board_filter, config)
+
         yield skill_progress(
             stage_id="daily_pipeline",
             stage_label="生成次日选股候选",
             status="running",
-            detail=f"Top {input_params.daily_limit} · {input_params.board_filter}",
+            detail=f"Top {input_params.daily_limit} · {effective_board_filter}",
             progress_pct=75,
         )
         daily_result: dict[str, Any] = {}
@@ -150,7 +156,7 @@ class DailyReviewSkill(BaseSkill):
                 trade_date=input_params.trade_date,
                 limit=input_params.daily_limit,
                 candidate_limit=input_params.candidate_limit,
-                board_filter=_coerce_board_filter(input_params.board_filter),
+                board_filter=effective_board_filter,
             ),
             config,
         ):
@@ -340,12 +346,6 @@ def _render_daily_review_report(plan: dict[str, Any]) -> str:
     for decision, count in (plan.get("candidate_counts") or {}).items():
         lines.append(f"- {decision}: {count}")
     return "\n".join(lines)
-
-
-def _coerce_board_filter(value: str) -> str:
-    if value in {"main_board", "dual_growth_only"}:
-        return value
-    return "all"
 
 
 skill = DailyReviewSkill()

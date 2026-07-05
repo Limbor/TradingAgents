@@ -5,11 +5,14 @@ historical data without re-running analyses.
 """
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 DB_PATH = Path.home() / ".tradingagents" / "app.db"
@@ -232,6 +235,56 @@ class Database:
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE reports ADD COLUMN ticker_name TEXT")
             self._backfill_report_artifacts(conn)
+            # One-time dedup of historical reflection_cases created before the
+            # case_id scheme was stabilized (old ids embedded run_id, so the
+            # same (source_type, symbol, signal_date) accumulated multiple rows).
+            self._dedup_reflection_cases(conn)
+
+    def _dedup_reflection_cases(self, conn: sqlite3.Connection) -> None:
+        """Delete duplicate reflection cases, keeping the newest per group.
+
+        Groups by (source_type, symbol, signal_date) and keeps the row with the
+        latest ``updated_at`` (ties broken by latest ``created_at``). Idempotent:
+        a clean table has no duplicates and the DELETE matches nothing.
+        """
+        try:
+            conn.execute(
+                """
+                DELETE FROM reflection_cases
+                WHERE id NOT IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY source_type, symbol, signal_date
+                                   ORDER BY updated_at DESC, created_at DESC
+                               ) AS rn
+                        FROM reflection_cases
+                    ) WHERE rn = 1
+                )
+                """,
+            )
+        except sqlite3.OperationalError as exc:
+            # Older SQLite lacks window functions; fall back to a NOT EXISTS
+            # self-join that keeps the newest row per group.
+            try:
+                conn.execute(
+                    """
+                    DELETE FROM reflection_cases
+                    WHERE EXISTS (
+                        SELECT 1 FROM reflection_cases AS r2
+                        WHERE r2.source_type = reflection_cases.source_type
+                          AND r2.symbol = reflection_cases.symbol
+                          AND r2.signal_date = reflection_cases.signal_date
+                          AND (
+                              r2.updated_at > reflection_cases.updated_at
+                              OR (r2.updated_at = reflection_cases.updated_at
+                                  AND r2.created_at > reflection_cases.created_at)
+                          )
+                    )
+                    """,
+                )
+            except sqlite3.OperationalError:
+                logger.debug("reflection_cases dedup skipped: %s", exc)
 
     @contextmanager
     def _conn(self):

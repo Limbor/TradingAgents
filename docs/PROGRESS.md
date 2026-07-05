@@ -120,6 +120,8 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | StockAnalysis 持仓上下文 | ✅ 完成 | 命中持仓标的时注入成本、盈亏、仓位占比和持仓备注 |
 | Free ChatAgent | ✅ 初版完成 | 四分类意图(chat_answer/tool_answer/skill_run/clarify) + 轻量工具注册表(5 工具) + 前端 tool/clarify 消息渲染 + react-markdown |
 | Cross-Symbol Pattern Mining | ✅ 初版完成 | 反思 case 跨标的统计挖掘 + 显著性过滤 + 模板/LLM 解释 + 维度去重 + 陈旧 lesson 自动停用 + 回注 daily_pipeline |
+| 反思 case 去重 | ✅ 完成 | case_id 始终基于 (source_type, trade_date, symbol) 杜绝 uuid；历史重复启动时自动清理；新 case INSERT OR REPLACE 去重 |
+| 选股过滤统一 | ✅ 完成 | board_filter 统一优先级链（显式输入 > Dashboard FilterPanel > env > all）；daily_review 也遵守 FilterPanel 设置；空字符串规范化 |
 | PositionAdvisor 持仓建议 | ◐ 部分具备 | StockAnalysis 已能注入持仓上下文；独立卖出/加仓建议 Skill 待建 |
 | StrategyBacktest 回测 Skill | ❌ 待建 | 委托 MCP `run_backtest()` |
 | DecisionAudit 决策复盘 | ❌ 待建 | 历史决策 vs 实际收益追踪 |
