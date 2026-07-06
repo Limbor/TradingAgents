@@ -350,42 +350,19 @@ class TradingAgentsGraph:
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
 
-        Fetches returns for each same-ticker pending entry, generates reflections,
-        then writes all updates in a single atomic batch write to avoid redundant I/O.
-        Skips entries whose price data is not yet available (too recent or delisted).
-
-        Trade-off: only same-ticker entries are resolved per run.  Entries for
-        other tickers accumulate until that ticker is run again.
+        DEPRECATED — intentionally a no-op. Reflection is now owned by
+        ``core/reflection.py::ReflectionEngine.run_reflection_batch`` (daily
+        16:30 scheduler / daily_review trigger), which produces the deep
+        attribution + strategy lesson + DB record. Previously this method
+        ran a shallow synchronous reflection on the same memory_log pending
+        entries, which flipped the ``| pending]`` tag first and caused the
+        core batch to skip the entry — so the decision never got attribution
+        or a DB ``reflections`` row. New pending entries are still written by
+        ``store_decision``; they stay pending until the core batch resolves
+        them. ``get_past_context`` will return the raw decision (no reflection)
+        until then, which is the intended behavior.
         """
-        pending = [e for e in self.memory_log.get_pending_entries() if e["ticker"] == ticker]
-        if not pending:
-            return
-
-        benchmark = self._resolve_benchmark(ticker)
-        updates = []
-        for entry in pending:
-            raw, alpha, days = self._fetch_returns(
-                ticker, entry["date"], benchmark=benchmark,
-            )
-            if raw is None:
-                continue  # price not available yet — try again next run
-            reflection = self.reflector.reflect_on_final_decision(
-                final_decision=entry.get("decision", ""),
-                raw_return=raw,
-                alpha_return=alpha,
-                benchmark_name=benchmark,
-            )
-            updates.append({
-                "ticker": ticker,
-                "trade_date": entry["date"],
-                "raw_return": raw,
-                "alpha_return": alpha,
-                "holding_days": days,
-                "reflection": reflection,
-            })
-
-        if updates:
-            self.memory_log.batch_update_with_outcomes(updates)
+        return
 
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
         """Resolve ticker identity once and return the full instrument context.
