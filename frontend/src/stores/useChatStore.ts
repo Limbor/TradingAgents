@@ -24,7 +24,14 @@ export interface ChatMessage {
   result?: string;
   timestamp: string;
   toolCall?: { tool: string; args: Record<string, unknown>; result: unknown; display: string };
-  citations?: Array<{ tool: string; args: Record<string, unknown>; summary: string }>;
+  citations?: Array<{
+    tool: string;
+    args: Record<string, unknown>;
+    summary: string;
+    as_of_date?: string;
+    source?: string;
+    warnings?: string[];
+  }>;
   clarifyOptions?: string[];
 }
 

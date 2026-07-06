@@ -1,6 +1,8 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
+    get_market_risk_instruction,
 )
 
 
@@ -26,16 +28,18 @@ def create_conservative_debator(llm):
 
 {trader_decision}
 
+For China A-shares, your conservative case must foreground: ST/退市 risk, 限售解禁 overhang, 停牌 illiquidity, 融资融券 forced-liquidation risk, T+1 exit failure under 涨停/跌停, theme退潮, and 换手率/成交额 crowding. Quantify downside in ATR and -% terms where possible.
+
 Your task is to actively counter the arguments of the Aggressive and Neutral Analysts, highlighting where their views may overlook potential threats or fail to prioritize sustainability. Respond directly to their points, drawing from the following data sources to build a convincing case for a low-risk approach adjustment to the trader's decision:
 
 {instrument_context}
 Market Research Report: {market_research_report}
-Social Media Sentiment Report: {sentiment_report}
+Sentiment Report: {sentiment_report}
 Latest World Affairs Report: {news_report}
 Company Fundamentals Report: {fundamentals_report}
 Here is the current conversation history: {history} Here is the last response from the aggressive analyst: {current_aggressive_response} Here is the last response from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints yet, present your own argument based on the available data.
 
-Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction(market)
+Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting.""" + get_market_risk_instruction(market) + get_investment_style_instruction(state.get("investment_style")) + get_language_instruction(market)
 
         response = llm.invoke(prompt)
 

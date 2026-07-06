@@ -35,6 +35,7 @@ import {
   X,
 } from "lucide-react";
 import type { ArtifactInfo } from "../../api/client";
+import { authHeaders } from "../../api/auth";
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -87,7 +88,7 @@ export default function Dashboard() {
   const reflectionQuery = useQuery({
     queryKey: ["reflections-summary"],
     queryFn: async () => {
-      const res = await fetch("/api/v1/reflections/summary?lookback_days=30");
+      const res = await fetch("/api/v1/reflections/summary?lookback_days=30", { headers: authHeaders() });
       if (!res.ok) return null;
       return res.json();
     },
@@ -531,7 +532,7 @@ function StrategyLessonsCard({ lessons }: { lessons: Array<{ id: string; finding
 function ReflectionSummaryCard({ data }: { data: { total: number; correct: number; accuracy: number } | null | undefined }) {
   const triggerReflection = async () => {
     try {
-      await fetch("/api/v1/reflections/trigger", { method: "POST" });
+      await fetch("/api/v1/reflections/trigger", { method: "POST", headers: authHeaders() });
     } catch {
       // silently ignore
     }

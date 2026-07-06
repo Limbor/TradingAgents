@@ -180,23 +180,47 @@ export function useChatWebSocket() {
           label: "技能执行完成",
           status: "completed",
         });
-        setRunning(false);
-        setCurrentRunId(null);
+        // Guard: only clear running state if this is still the active run.
+        // skill_complete and run_complete are emitted back-to-back; without
+        // this guard, a late terminal event from an old run can clobber a
+        // newly-started run's running state.
+        if (useChatStore.getState().currentRunId === message.run_id) {
+          setRunning(false);
+          setCurrentRunId(null);
+        }
         finishTask(message.run_id, "completed");
       } else if (message.type === "run_complete") {
-        setRunning(false);
-        setCurrentRunId(null);
+        if (useChatStore.getState().currentRunId === message.run_id) {
+          setRunning(false);
+          setCurrentRunId(null);
+        }
         finishTask(message.run_id, "completed");
         // A run just finished — refresh the Dashboard's runs/artifacts/holdings
         // views on demand instead of waiting for their polling intervals.
         queryClient.invalidateQueries({ queryKey: ["runs"] });
         queryClient.invalidateQueries({ queryKey: ["dashboard-artifacts"] });
         queryClient.invalidateQueries({ queryKey: ["holdings"] });
+      } else if (message.type === "run_cancelled") {
+        // Terminal event: the run was cancelled (via Analysis page, scheduler,
+        // or server restart). Without this branch the event fell into the
+        // generic fallback, leaving running=true forever and the input locked.
+        if (useChatStore.getState().currentRunId === message.run_id) {
+          setRunning(false);
+          setCurrentRunId(null);
+        }
+        finishTask(message.run_id, "failed", "任务已取消");
+        queryClient.invalidateQueries({ queryKey: ["runs"] });
       } else if (message.type === "error") {
-        setRunning(false);
-        setCurrentRunId(null);
+        if (useChatStore.getState().currentRunId === message.run_id) {
+          setRunning(false);
+          setCurrentRunId(null);
+        }
         finishTask(message.run_id, "failed", String(message.payload.message ?? "Run failed"));
         queryClient.invalidateQueries({ queryKey: ["runs"] });
+      } else if (message.type === "run_cancellation_ack") {
+        // Acknowledgement of a cancel action — no UI state change needed; the
+        // subsequent run_cancelled event will clear running state.
+        return;
       } else if (message.type === "heartbeat") {
         return;
       } else if (message.run_id) {

@@ -255,8 +255,14 @@ class TradingAgentsGraph:
         explicit = self.config.get("benchmark_ticker")
         if explicit:
             return explicit
-        benchmark_map = self.config.get("benchmark_map", {})
+        # A-share defaults: Shanghai Composite for .SH, Shenzhen Component for
+        # .SZ. The config-supplied benchmark_map can still override per-suffix.
+        default_map = {".SH": "000001.SH", ".SZ": "399001.SZ", ".BJ": "000001.SH"}
         ticker_upper = ticker.upper()
+        for suffix, bench in default_map.items():
+            if ticker_upper.endswith(suffix):
+                return bench
+        benchmark_map = self.config.get("benchmark_map", {})
         for suffix, benchmark in benchmark_map.items():
             if suffix and ticker_upper.endswith(suffix.upper()):
                 return benchmark
@@ -264,7 +270,7 @@ class TradingAgentsGraph:
 
     def _fetch_returns(
         self, ticker: str, trade_date: str, holding_days: int = 5,
-        benchmark: str = "SPY",
+        benchmark: str = "000001.SH",
     ) -> tuple[float | None, float | None, int | None]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
 

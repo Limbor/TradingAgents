@@ -278,7 +278,11 @@ async def ws_chat(websocket: WebSocket):
                             },
                         })
                     elif chat_response.intent == "skill_run":
-                        # ChatAgent decided to run a skill — create a run
+                        # ChatAgent decided to run a skill — create a run.
+                        # Mirror orchestrator._with_selection_context so a
+                        # selection_context carried by the message (e.g. user
+                        # clicked "分析" on a candidate) is not lost when the
+                        # request goes through ChatAgent instead of regex.
                         skill = websocket.app.state.registry.get(chat_response.skill_id)
                         if skill is None:
                             await _send({
@@ -288,7 +292,11 @@ async def ws_chat(websocket: WebSocket):
                                 "payload": {"content": f"抱歉，找不到 '{chat_response.skill_id}' 这个功能。"},
                             })
                             continue
-                        route = _RouteResultStub(skill, chat_response.skill_params, 0.85, "ChatAgent skill_run")
+                        skill_params = dict(chat_response.skill_params or {})
+                        msg_ctx = message.get("context") if isinstance(message.get("context"), dict) else None
+                        if msg_ctx and msg_ctx.get("selection_context"):
+                            skill_params.setdefault("selection_context", msg_ctx["selection_context"])
+                        route = _RouteResultStub(skill, skill_params, 0.85, "ChatAgent skill_run")
                     else:
                         await _send({
                             "type": "chat_answer",

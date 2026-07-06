@@ -1,3 +1,5 @@
+import { withTokenQuery } from "./auth";
+
 export interface WSMessage {
   type: string;
   run_id: string;
@@ -51,7 +53,7 @@ class WebSocketManager {
   }
 
   private _connect(runId: string): void {
-    const url = `${wsBaseUrl()}/ws/run/${runId}`;
+    const url = withTokenQuery(`${wsBaseUrl()}/ws/run/${runId}`);
 
     this.ws = new WebSocket(url);
 
@@ -125,7 +127,7 @@ class ChatWebSocketManager {
       return;
     }
     this.manuallyClosed = false;
-    this.ws = new WebSocket(`${wsBaseUrl()}/ws/chat`);
+    this.ws = new WebSocket(withTokenQuery(`${wsBaseUrl()}/ws/chat`));
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;

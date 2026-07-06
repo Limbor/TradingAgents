@@ -1,6 +1,8 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
+    get_market_risk_instruction,
 )
 
 
@@ -35,17 +37,19 @@ Key points to focus on:
 - Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
 - Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
 
+For China A-shares, your bear case must explicitly address: ST/退市 risk (if applicable), 限售解禁 overhang, 停牌 history, 融资融券 balance buildup, T+1 exit constraints, and theme退潮 risk for momentum names.
+
 Resources available:
 
 {instrument_context}
 Market research report: {market_research_report}
-Social media sentiment report: {sentiment_report}
+Sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}
 {fundamentals_label}: {fundamentals_report}
 Conversation history of the debate: {history}
 Last bull argument: {current_response}
 Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the {target_label}.
-    """ + get_language_instruction(market)
+    """ + get_market_risk_instruction(market) + get_investment_style_instruction(state.get("investment_style")) + get_language_instruction(market)
 
         response = llm.invoke(prompt)
 

@@ -26,6 +26,7 @@ export const SKILL_TITLES: Record<string, string> = {
   market_scanner: "市场机会扫描",
   portfolio_management: "持仓管理",
   daily_pipeline: "每日选股管线",
+  daily_review: "收盘复盘",
   risk_monitor: "持仓风险监控",
 };
 

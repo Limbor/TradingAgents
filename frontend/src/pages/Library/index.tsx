@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Boxes, FileText, Search } from "lucide-react";
-import { getArtifact, listArtifacts, type ArtifactInfo } from "@/api/client";
+import { getArtifact, listArtifacts, listArtifactVersions, type ArtifactInfo, type ArtifactVersion } from "@/api/client";
 import { formatRelativeTime } from "@/lib/utils";
 import {
   CandidateTable,
@@ -228,6 +228,63 @@ function ArtifactDetail({ artifact, onAnalyze }: { artifact: ArtifactInfo; onAna
       {artifact.content_markdown && (
         <div className="prose prose-invert mt-5 max-w-none">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content_markdown}</ReactMarkdown>
+        </div>
+      )}
+
+      <ArtifactVersions artifactId={artifact.id} />
+    </div>
+  );
+}
+
+function ArtifactVersions({ artifactId }: { artifactId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const versionsQuery = useQuery({
+    queryKey: ["artifact-versions", artifactId],
+    queryFn: () => listArtifactVersions(artifactId),
+    enabled: expanded,
+  });
+
+  return (
+    <div className="mt-6 border-t border-stone-800 pt-4">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-sm text-stone-400 hover:text-stone-200"
+      >
+        <FileText className="h-3.5 w-3.5" />
+        历史版本
+        {versionsQuery.data && versionsQuery.data.length > 0 && (
+          <span className="rounded-full bg-stone-800 px-1.5 text-xs text-stone-400">
+            {versionsQuery.data.length}
+          </span>
+        )}
+      </button>
+      {expanded && versionsQuery.isLoading && (
+        <p className="mt-2 text-xs text-stone-500">加载中...</p>
+      )}
+      {expanded && versionsQuery.data && versionsQuery.data.length === 0 && (
+        <p className="mt-2 text-xs text-stone-500">暂无历史版本（当前为首次生成）。</p>
+      )}
+      {expanded && versionsQuery.data && versionsQuery.data.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {versionsQuery.data.map((v: ArtifactVersion) => (
+            <div key={v.id} className="rounded border border-stone-800 bg-stone-950 p-2.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-stone-300">v{v.version}</span>
+                <span className="text-stone-500">{formatRelativeTime(v.saved_at)}</span>
+              </div>
+              {v.title && <p className="mt-1 text-stone-400">{v.title}</p>}
+              {v.summary && <p className="mt-1 text-stone-500">{v.summary}</p>}
+              {v.content_markdown && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-stone-500 hover:text-stone-300">查看内容</summary>
+                  <div className="prose prose-invert mt-1 max-w-none">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{v.content_markdown}</ReactMarkdown>
+                  </div>
+                </details>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

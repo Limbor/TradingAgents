@@ -167,20 +167,37 @@ function ToolCardBody({ result }: { result: Record<string, unknown> }) {
 function Citations({
   citations,
 }: {
-  citations: Array<{ tool: string; args: Record<string, unknown>; summary: string }>;
+  citations: Array<{
+    tool: string;
+    args: Record<string, unknown>;
+    summary: string;
+    as_of_date?: string;
+    source?: string;
+    warnings?: string[];
+  }>;
 }) {
   return (
-    <div className="mt-2 pt-2 border-t border-indigo-500/15">
+    <div className="mt-2 pt-2 border-t border-indigo-500/15 space-y-1">
       <div className="text-xs text-stone-400">
         数据来源：
         {citations.map((c, i) => (
           <span key={i} className="ml-1 text-indigo-400/70">
-            {c.tool}
+            {c.source || c.tool}
+            {c.as_of_date ? ` · 基准日 ${c.as_of_date}` : ""}
             {c.summary ? ` (${c.summary})` : ""}
             {i < citations.length - 1 ? "," : ""}
           </span>
         ))}
       </div>
+      {citations.some((c) => c.warnings && c.warnings.length > 0) && (
+        <div className="text-xs text-amber-300/80">
+          {citations
+            .flatMap((c) => c.warnings || [])
+            .map((w, i) => (
+              <span key={i} className="mr-2">⚠ {w}</span>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,3 +1,5 @@
+import { authHeaders } from "./auth";
+
 const API_BASE = "/api/v1";
 
 export interface SkillInfo {
@@ -210,7 +212,8 @@ export interface RefreshHoldingPricesResponse {
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, options);
+  const headers = { ...authHeaders(), ...(options?.headers ?? {}) };
+  const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(error.detail || res.statusText);
@@ -233,8 +236,8 @@ export async function createRun(
   });
 }
 
-export async function listRuns(limit = 50): Promise<RunResponse[]> {
-  return fetchJson(`${API_BASE}/runs?limit=${limit}`);
+export async function listRuns(limit = 50, offset = 0): Promise<RunResponse[]> {
+  return fetchJson(`${API_BASE}/runs?limit=${limit}&offset=${offset}`);
 }
 
 export async function getRun(runId: string): Promise<RunResponse> {
@@ -242,7 +245,7 @@ export async function getRun(runId: string): Promise<RunResponse> {
 }
 
 export async function cancelRun(runId: string): Promise<void> {
-  await fetch(`${API_BASE}/runs/${runId}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/runs/${runId}`, { method: "DELETE", headers: authHeaders() });
 }
 
 export async function listReports(
@@ -260,6 +263,7 @@ export async function getReport(reportId: string): Promise<ReportDetail> {
 
 export async function listArtifacts(params: {
   limit?: number;
+  offset?: number;
   skill_id?: string;
   artifact_type?: string;
   subject_type?: string;
@@ -267,12 +271,32 @@ export async function listArtifacts(params: {
   run_id?: string;
   q?: string;
 } = {}): Promise<ArtifactInfo[]> {
-  const search = new URLSearchParams({ limit: String(params.limit ?? 50) });
+  const search = new URLSearchParams({
+    limit: String(params.limit ?? 50),
+    offset: String(params.offset ?? 0),
+  });
   for (const key of ["skill_id", "artifact_type", "subject_type", "subject_id", "run_id", "q"] as const) {
     const value = params[key];
     if (value) search.set(key, value);
   }
   return fetchJson(`${API_BASE}/artifacts?${search}`);
+}
+
+export interface ArtifactVersion {
+  id: number;
+  artifact_id: string;
+  version: number;
+  title: string | null;
+  subtitle: string | null;
+  status: string | null;
+  summary: string | null;
+  content_markdown: string | null;
+  payload: Record<string, unknown>;
+  saved_at: string;
+}
+
+export async function listArtifactVersions(artifactId: string): Promise<ArtifactVersion[]> {
+  return fetchJson(`${API_BASE}/artifacts/${encodeURIComponent(artifactId)}/versions`);
 }
 
 export async function getArtifact(artifactId: string): Promise<ArtifactInfo> {
@@ -445,7 +469,7 @@ export async function upsertHolding(holding: Omit<Holding, "updated_at">): Promi
 }
 
 export async function deleteHolding(symbol: string): Promise<void> {
-  await fetch(`${API_BASE}/holdings/${encodeURIComponent(symbol)}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/holdings/${encodeURIComponent(symbol)}`, { method: "DELETE", headers: authHeaders() });
 }
 
 export async function refreshHoldingPrices(): Promise<RefreshHoldingPricesResponse> {

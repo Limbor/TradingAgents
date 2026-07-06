@@ -9,6 +9,7 @@ import {
   updateProfile,
   type UserProfile,
 } from "../../api/client";
+import { getAuthToken, setAuthToken } from "../../api/auth";
 
 const LANGUAGES = [
   { label: "English", value: "English" },
@@ -34,8 +35,13 @@ export default function Settings() {
   const [customQuick, setCustomQuick] = useState("");
   const [customDeep, setCustomDeep] = useState("");
   const [customUrl, setCustomUrl] = useState("");
+  const [authToken, setAuthTokenState] = useState("");
 
   // Sync fetched config to local state
+  useEffect(() => {
+    setAuthTokenState(getAuthToken());
+  }, []);
+
   useEffect(() => {
     if (configQuery.data && !config) {
       setConfig(configQuery.data);
@@ -141,6 +147,33 @@ export default function Settings() {
           <span className="text-sm text-stone-400">Saving...</span>
         )}
       </div>
+
+      {/* API Access Token */}
+      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+        <h3 className="mb-2 text-lg font-semibold">API 访问令牌</h3>
+        <p className="mb-3 text-sm text-stone-400">
+          当后端设置 <code className="text-stone-300">TRADINGAGENTS_API_AUTH_TOKEN</code> 后，所有 REST/WebSocket
+          请求需携带此令牌。本地默认不设可留空。
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="password"
+            value={authToken}
+            onChange={(e) => setAuthTokenState(e.target.value)}
+            placeholder="留空则不启用认证"
+            className="flex-1 rounded border border-stone-600 bg-stone-900 px-3 py-1.5 text-sm text-stone-100"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setAuthToken(authToken);
+            }}
+            className="rounded bg-teal-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-500"
+          >
+            保存
+          </button>
+        </div>
+      </section>
 
       {/* API Key Status */}
       <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">

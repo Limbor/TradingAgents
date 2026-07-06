@@ -21,20 +21,33 @@ def create_news_analyst(llm):
         instrument_context = get_instrument_context_from_state(state)
         style_instruction = get_investment_style_instruction(state.get("investment_style"))
 
-        tools = [
-            get_news,
-            get_global_news,
-            get_macro_indicators,
-            get_macro_calendar,
-            get_prediction_markets,
-        ]
+        # For A-shares, drop US-only tools (FRED macro indicators, Polymarket
+        # prediction markets) — they are rarely material for A-share names and
+        # can mislead the LLM into producing irrelevant US context.
+        if market == "cn_a":
+            tools = [get_news, get_global_news, get_macro_calendar]
+        else:
+            tools = [get_news, get_global_news, get_macro_indicators, get_macro_calendar, get_prediction_markets]
 
-        system_message = (
-            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for {asset_label}-specific or targeted news searches, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground US macro commentary in FRED data, get_macro_calendar(curr_date, look_back_days) to ground China A-share macro commentary in CPI/PPI/PMI/M2/LPR/SHIBOR data, and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + get_language_instruction(market)
-            + style_instruction
-        )
+        if market == "cn_a":
+            system_message = (
+                f"You are a news researcher analyzing recent news and trends over the past week for an A-share {asset_label}. "
+                "Lead with 政策面 (policy)、监管动态 (regulation)、行业政策 (industry policy), and ground macro commentary "
+                "in get_macro_calendar (CPI/PPI/PMI/M2/LPR/SHIBOR). Use get_news for {asset_label}-specific or targeted searches, "
+                "get_global_news for broader macro context. Down-weight US macro (FRED) and prediction markets — they are rarely "
+                "material for A-share names. Cover: 业绩预告/快报、重组/增减持/回购、问询函/监管函、限售解禁、北向资金动向、"
+                "板块轮动. Provide specific, actionable insights with supporting evidence."
+                + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+                + get_language_instruction(market)
+                + style_instruction
+            )
+        else:
+            system_message = (
+                f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for {asset_label}-specific or targeted news searches, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground US macro commentary in FRED data, get_macro_calendar(curr_date, look_back_days) to ground China A-share macro commentary in CPI/PPI/PMI/M2/LPR/SHIBOR data, and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+                + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+                + get_language_instruction(market)
+                + style_instruction
+            )
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -44,8 +57,8 @@ def create_news_analyst(llm):
                     " Use the provided tools to progress towards answering the question."
                     " If you are unable to fully answer, that's OK; another assistant with different tools"
                     " will help where you left off. Execute what you can to make progress."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
+                    " Your job is to produce a thorough analysis report, not a transaction proposal —"
+                    " downstream agents (researcher, trader, portfolio manager) will decide the trade."
                     " You have access to the following tools: {tool_names}."
                     " Today's date is {current_date}; treat it as 'now' for all analysis and tool-call date ranges. {instrument_context}\n"
                     "{system_message}",
