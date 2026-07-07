@@ -236,6 +236,17 @@ def _build_prompt(
 
 {evidence}{context_section}{lesson_section}
 
+## 决策门控（你的输出将被映射到下游决策，请据此校准）
+- BUY：催化剂 confirmed/likely + 风险 low/moderate + 量化信号未被否定
+- WATCHLIST：催化剂 likely/speculative + 风险 moderate + 信号成立但需观察
+- MONITOR：催化剂 speculative + 风险 moderate/high + 信号弱但未否定
+- HOLD_REVIEW：已持仓且风险上升或催化剂消退
+- SKIP：风险 critical 或 invalidates_quant=true 或 risk_override=true
+
+## A 股复核维度（逐项评估并写入 key_catalysts/key_risks/risk_flags）
+- 催化剂：业绩预告/快报、重组/增持/回购、政策利好、行业景气拐点、北向资金持续净买入、龙虎榜机构席位、板块轮动接力
+- 风险：问询函/关注函/监管函、退市预警/ST/*ST、业绩暴雷/商誉减值、限售解禁（日期/比例）、北向资金大幅净卖出、一字涨跌停（流动性枯竭）、停牌风险、估值历史分位过高（PE/PB > 80%分位）、换手率异常（> 15% 或 < 1%）、数据缺失严重
+
 请输出严格 JSON，字段如下：
 {{
   "llm_view": "strong_positive|positive|neutral|negative|strong_negative",
@@ -246,7 +257,7 @@ def _build_prompt(
   "key_catalysts": ["..."],
   "key_risks": ["..."],
   "risk_flags": ["..."],
-  "reasoning": "一句话说明为什么该量化信号仍成立、需要观察或应被否定",
+  "reasoning": "一句话（≤60字）说明量化信号仍成立/需观察/应被否定，及对应决策门控倾向",
   "llm_confidence": 0-100,
   "catalyst_score": 0-100
 }}
@@ -256,9 +267,11 @@ def _build_prompt(
 - 如果量化高分主要来自单一动量且风险控制/波动/回撤偏弱，降低 llm_confidence。
 - 如果 ST、停牌、一字涨跌停、重大风险标记、因子缺失严重，设置 risk_override 或 invalidates_quant。
 - 没有明确催化剂时不要为了迎合买入而给高置信度。
-- 如果有重大利空公告（退市预警、业绩暴雷、违规处罚），应设置 risk_override=true。
+- 如果有重大利空公告（退市预警、业绩暴雷、违规处罚、问询函），应设置 risk_override=true。
 - 如果有明确利好催化（重组、增持、业绩超预期），可上调 catalyst_score 和 llm_confidence。
-- 北向资金大幅净卖出时应降低信心。
+- 估值分位 > 80% 且无强催化 → risk_assessment 至少 high。
+- 北向资金大幅净卖出 → 降低 llm_confidence 至少 15 分。
+- reasoning 必须为一句话，不得展开 CoT。
 """
 
 

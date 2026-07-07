@@ -144,7 +144,7 @@ class TestLightweightToolHandlers:
     async def test_get_mcp_factor_snapshot_no_ts_code(self):
         from tradingagents.core.lightweight_tools import make_get_mcp_factor_snapshot
 
-        handler = make_get_mcp_factor_snapshot(None, {})
+        handler = make_get_mcp_factor_snapshot({})
         result = await handler(ts_code="")
         assert "error" in result
         assert "ts_code" in result["error"]
@@ -153,7 +153,8 @@ class TestLightweightToolHandlers:
     async def test_get_mcp_factor_snapshot_mcp_unavailable(self):
         from tradingagents.core.lightweight_tools import make_get_mcp_factor_snapshot
 
-        handler = make_get_mcp_factor_snapshot(None, {})
+        # MCP disabled → get_mcp_client returns None → "not connected" path.
+        handler = make_get_mcp_factor_snapshot({"stockmanager_mcp_enabled": False})
         result = await handler(ts_code="600519.SH")
         assert "error" in result
         assert "not connected" in result["error"]

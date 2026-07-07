@@ -57,7 +57,7 @@ Volume-Based Indicators:
 
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
 
-For China A-shares, also call get_market_structure_snapshot and get_theme_heat before the final report. Explicitly discuss涨停/跌停状态, ST/退市风险, T+1 constraints, turnover/成交额 crowding, and whether the ticker is a theme leader, follower, or speculative heat trade.
+For China A-shares, also call get_market_structure_snapshot and get_theme_heat before the final report. Explicitly discuss涨停/跌停状态, ST/退市风险, T+1 constraints, turnover/成交额 crowding, and whether the ticker is a theme leader, follower, or speculative heat trade. Note: (a) price data must be 前复权 (forward-adjusted) to avoid false signals from 除权除息; (b) opening call auction (集合竞价 9:15-9:25) and closing call (14:57-15:00) produce reference prices that differ from continuous trading; (c) daily limit tiers differ by board — 主板 ±10%, 创业板/科创板 ±20%, 北交所 ±30%, ST ±5%.
 
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""

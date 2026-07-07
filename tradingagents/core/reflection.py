@@ -338,15 +338,14 @@ class ReflectionEngine:
             )
             llm = client.get_llm()
             prompt = (
-                f"You are a trading reflection assistant. Given this past decision and its outcome, "
-                f"write 2-3 sentences of actionable reflection.\n\n"
-                f"Decision: {signal.get('original_decision', 'Unknown')}\n"
-                f"Ticker: {signal.get('ticker', '?')}\n"
-                f"Date: {signal.get('trade_date', '?')}\n"
-                f"Actual return: {outcome.get('actual_return', 0):.2%} over {outcome.get('horizon_days', 5)} days\n"
-                f"Was correct: {outcome.get('was_correct', '?')}\n"
-                f"{f'Context: {evidence}' if evidence else ''}\n\n"
-                f"Reflection (2-3 sentences):"
+                f"你是 A 股交易系统的复盘助手。基于以下历史决策与结果，写 2-3 句可执行的中文反思。\n\n"
+                f"决策: {signal.get('original_decision', 'Unknown')}\n"
+                f"标的: {signal.get('ticker', '?')}\n"
+                f"日期: {signal.get('trade_date', '?')}\n"
+                f"实际收益: {outcome.get('actual_return', 0):.2%}（{outcome.get('horizon_days', 5)} 天）\n"
+                f"方向是否正确: {outcome.get('was_correct', '?')}\n"
+                f"{f'上下文: {evidence}' if evidence else ''}\n\n"
+                f"反思（2-3 句中文，聚焦可执行的经验，不展开 CoT）:"
             )
             response = await llm.ainvoke(prompt)
             return str(response.content).strip()
@@ -588,23 +587,38 @@ def _build_attribution_prompt(
     post_signal_evidence: dict[str, Any],
 ) -> str:
     snapshot = case.get("snapshot_payload") or {}
-    return f"""你是交易系统的因果反思 Agent。请判断本次结果是否应该更新未来策略。
+    benchmark = outcome.get("benchmark") or "000001.SH"
+    return f"""你是 A 股交易系统的因果反思 Agent。请判断本次结果是否应该更新未来策略。
 
 核心原则：
-- 只有信号时点已经存在、且模型本应看到或处理的信息，才属于 ex_ante_miss。
-- 信号后才出现的新公告、新政策、新利空，属于 ex_post_shock，不应惩罚原选股逻辑。
-- 大盘或行业系统性变化属于 market_regime_shift。
+- 只有【信号时点已经存在、且模型本应看到或处理的信息】才属于 ex_ante_miss。
+- 信号后才出现的新公告/新政策/新利空，属于 ex_post_shock，不应惩罚原选股逻辑。
+- 大盘或行业系统性变化属于 market_regime_shift（参照 benchmark {benchmark} 同期涨跌）。
+
+【关键边界】下方 "Signal-time snapshot" 是信号时点模型可见的全部信息。
+- 凡 snapshot 中已存在的风险标签/数据缺失/gate_reasons/risk_flags 未被处理 → ex_ante_miss
+- 凡仅出现在 "Post-signal evidence" 中的公告/事件 → ex_post_shock
+- 不要用自己的世界知识补充 snapshot 外的信息。
+
+A 股典型判定示例：
+- ex_ante_miss：信号日 snapshot 已有 data_coverage.flow=missing + risk_flags 含"问询函"，但 final_decision=BUY 且未降级
+- ex_post_shock：信号后新增「业绩预亏/立案调查/减持公告/停牌/ST 处理」
+- market_regime_shift：benchmark {benchmark} 同期跌幅 > 个股跌幅，且无个股级利空
+
+【T+1/涨跌停注意】A 股 T+1 且涨跌停限制下，理论收益≠实际可成交收益：
+- 若信号日一字涨停（开盘即涨停且全天未开板），实际无法买入，不应归因于选股逻辑
+- 若持仓日跌停无法卖出，实际收益劣于理论收益，属流动性冲击
 
 Reflection case:
 {json.dumps({k: case.get(k) for k in ['symbol', 'signal_date', 'reflection_scope', 'eligible_for_strategy_learning']}, ensure_ascii=False)}
 
-Signal-time snapshot:
+Signal-time snapshot（信号时点已知信息，边界严格）:
 {json.dumps(snapshot, ensure_ascii=False)[:5000]}
 
-Outcome:
+Outcome（理论收益，含 benchmark 与涨跌停标志）:
 {json.dumps(outcome, ensure_ascii=False)}
 
-Post-signal evidence:
+Post-signal evidence（信号后新增信息，仅用于 ex_post_shock 判定）:
 {json.dumps(post_signal_evidence, ensure_ascii=False)[:3000]}
 
 请输出严格 JSON：
@@ -616,7 +630,7 @@ Post-signal evidence:
   "new_information": ["..."],
   "strategy_lesson": "...",
   "risk_monitor_lesson": "...",
-  "suggested_adjustment": "..."
+  "suggested_adjustment": "可执行规则，如：quant_score<70 且 data_coverage.flow=missing 时降级为 WATCHLIST"
 }}
 """
 

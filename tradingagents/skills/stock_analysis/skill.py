@@ -416,7 +416,7 @@ class StockAnalysisSkill(BaseSkill):
         return save_skill_artifact(
             config,
             skill_id="stock_analysis",
-            artifact_type="analysis_report",
+            artifact_type="stock_report",
             title=f"{ticker} 个股分析",
             subtitle=f"{rating} · {analysis_date}".strip(" ·"),
             subject_type="ticker",

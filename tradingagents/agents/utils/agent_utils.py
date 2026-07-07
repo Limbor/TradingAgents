@@ -235,7 +235,10 @@ def build_instrument_context(
     context = (
         f"The {instrument_label} to analyze is `{ticker}`. "
         "Use this exact ticker in every tool call, report, and recommendation, "
-        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`, `-USD`)."
+        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`, `-USD`, "
+        "or A-share `.SH` / `.SZ` / `.BJ`). For China A-shares, use the 6-digit "
+        "code with the correct exchange suffix (`.SH` Shanghai, `.SZ` Shenzhen, "
+        "`.BJ` Beijing) consistently across all tool calls."
     )
 
     details = []

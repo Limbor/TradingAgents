@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Handler factories — each returns an async handler with the right signature
-# for ToolRegistry.  Closures capture db / mcp_client / config at startup.
+# for ToolRegistry. Closures capture db / config at startup; the MCP client is
+# fetched at call time via get_mcp_client(config) so URL changes take effect.
 # ---------------------------------------------------------------------------
 
 
@@ -145,8 +146,12 @@ def make_get_recent_runs(db: Any):
     return _handler
 
 
-def make_get_mcp_factor_snapshot(mcp_client: Any, config: dict[str, Any]):
+def make_get_mcp_factor_snapshot(config: dict[str, Any]):
     """Build handler: get_mcp_factor_snapshot — MCP factor snapshot for a symbol.
+
+    The MCP client is fetched at call time via ``get_mcp_client(config)``
+    rather than captured at startup, so a Settings MCP-URL change (which
+    resets the singleton) is picked up without restarting the app.
 
     Args:
         ts_code (str): Trading symbol code, e.g. ``000967.SZ``.
@@ -160,6 +165,10 @@ def make_get_mcp_factor_snapshot(mcp_client: Any, config: dict[str, Any]):
         if not ts_code:
             return {"error": "ts_code is required", "warnings": []}
 
+        # Fetch the current MCP client on each call so URL changes take effect.
+        from tradingagents.core.mcp_client import get_mcp_client
+
+        mcp_client = await get_mcp_client(config)
         if mcp_client is None:
             return {
                 "error": "StockManager MCP is not connected",
@@ -343,7 +352,7 @@ def build_all_tools(
                 },
                 "required": ["ts_code"],
             },
-            "handler": make_get_mcp_factor_snapshot(mcp_client, config),
+            "handler": make_get_mcp_factor_snapshot(config),
             "display": "card",
         },
         {

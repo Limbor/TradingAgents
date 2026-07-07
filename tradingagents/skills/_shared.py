@@ -89,12 +89,19 @@ def candidate_rationale(candidate: dict[str, Any], *, include_llm: bool = False)
         parts.append("; ".join(str(item) for item in explains))
     if llm_reasoning:
         parts.append(f"LLM: {llm_reasoning}")
+    as_of = (
+        candidate.get("price_trade_date")
+        or candidate.get("as_of_date")
+        or candidate.get("trade_date")
+        or ""
+    )
+    as_of_suffix = f"（基准日 {as_of}）" if as_of else ""
     if parts:
-        return " | ".join(parts)
+        return " | ".join(parts) + as_of_suffix
     fs = candidate.get("factor_scores") if isinstance(candidate.get("factor_scores"), dict) else {}
     if fs:
-        return ", ".join(f"{key} {value}" for key, value in fs.items())
-    return "StockManager quant ranking candidate."
+        return ", ".join(f"{key} {value}" for key, value in fs.items()) + as_of_suffix
+    return f"StockManager 量化排名候选{as_of_suffix}"
 
 
 def factor_profile_for_style(style: str) -> str:

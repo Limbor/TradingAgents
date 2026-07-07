@@ -473,18 +473,17 @@ class CrossSymbolPatternMiner:
             llm = client.get_llm()
 
         prompt = (
-            "You are a quantitative strategy analyst. Given the following "
-            "statistical pattern found across multiple stocks, write:\n"
-            "1. A concise **finding** (1-2 sentences explaining the likely "
-            "causal mechanism in Chinese).\n"
-            "2. A **suggested_adjustment** (1-2 sentences, actionable, in Chinese).\n\n"
-            f"Pattern: {bucket.dimension}\n"
-            f"Sample size: {bucket.n} (scored: {bucket.scored_n})\n"
-            f"Win rate: {bucket.win_rate:.1%}\n"
-            f"Baseline win rate (all cases): {bucket.baseline_win_rate:.1%}\n"
-            f"Lift: {bucket.lift:+.1%}\n"
-            f"Average return: {bucket.avg_return:+.2%}\n\n"
-            "Respond in JSON: {\"finding\": \"...\", \"suggested_adjustment\": \"...\"}"
+            "你是 A 股量化策略分析师。下方是统计发现的跨标的显著模式，请仅基于统计量解释，不要发明新模式。\n\n"
+            "请输出：\n"
+            "1. finding（1-2 句中文，解释可能因果，用资金流/换手/板块轮动/估值分位/数据质量等 A 股因子语义）\n"
+            "2. suggested_adjustment（1-2 句中文，必须可执行，如'该类候选 quant_score 上调/下调 X 分'或'要求额外验证 Y'，不要泛泛说'注意风险'）\n\n"
+            f"模式维度: {bucket.dimension}\n"
+            f"样本数: {bucket.n}（可评分: {bucket.scored_n}）\n"
+            f"胜率: {bucket.win_rate:.1%}\n"
+            f"基准胜率: {bucket.baseline_win_rate:.1%}\n"
+            f"偏离: {bucket.lift:+.1%}\n"
+            f"平均收益: {bucket.avg_return:+.2%}\n\n"
+            "严格 JSON 输出: {\"finding\": \"...\", \"suggested_adjustment\": \"...\"}"
         )
 
         from langchain_core.messages import HumanMessage

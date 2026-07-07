@@ -135,6 +135,19 @@ class TraderProposal(BaseModel):
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
+    entry_zone: list[float] | None = Field(
+        default=None,
+        description="Optional entry price zone [low, high]. For A-shares, use "
+        "集合竞价 reference ± band rather than a single price.",
+    )
+    targets: list[float] | None = Field(
+        default=None,
+        description="Optional ordered profit-target prices.",
+    )
+    time_horizon: str | None = Field(
+        default=None,
+        description="Optional holding horizon, e.g. '3-10 trading days'.",
+    )
 
 
 def render_trader_proposal(proposal: TraderProposal) -> str:
@@ -151,10 +164,16 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
     ]
     if proposal.entry_price is not None:
         parts.extend(["", f"**Entry Price**: {proposal.entry_price}"])
+    if proposal.entry_zone and len(proposal.entry_zone) >= 2:
+        parts.extend(["", f"**Entry Zone**: {proposal.entry_zone[0]} – {proposal.entry_zone[1]}"])
     if proposal.stop_loss is not None:
         parts.extend(["", f"**Stop Loss**: {proposal.stop_loss}"])
+    if proposal.targets:
+        parts.extend(["", f"**Targets**: {', '.join(str(t) for t in proposal.targets)}"])
     if proposal.position_sizing:
         parts.extend(["", f"**Position Sizing**: {proposal.position_sizing}"])
+    if proposal.time_horizon:
+        parts.extend(["", f"**Time Horizon**: {proposal.time_horizon}"])
     parts.extend([
         "",
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
