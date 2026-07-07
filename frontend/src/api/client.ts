@@ -116,6 +116,8 @@ export interface Plan {
   updated_at: string;
   triggered_at: string | null;
   trigger_reason: string | null;
+  last_checked_trade_date: string | null;
+  last_checked_at: string | null;
 }
 
 export interface ModelOption {

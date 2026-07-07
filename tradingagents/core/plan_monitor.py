@@ -3,7 +3,9 @@
 Called by the daily scheduler job (16:45 Asia/Shanghai, after the reflection
 job) and by the manual "advance trading day" endpoint. Triggered plans are
 marked ``status='triggered'`` and a ``plan_alert`` artifact is saved so the
-reminder surfaces in Library / Dashboard.
+reminder surfaces in Library / Dashboard. Every checked plan is also stamped
+with ``last_checked_at`` / ``last_checked_trade_date`` so the user can confirm
+the daily job actually ran.
 """
 
 from __future__ import annotations
@@ -35,20 +37,35 @@ async def evaluate_active_plans(
     active = db.list_plans(status="active", limit=200)
     alerts: list[dict[str, Any]] = []
     for plan in active:
+        now = datetime.now(timezone.utc).isoformat()
         try:
             result = await evaluate_plan(plan, config=config, data=data)
         except Exception as exc:
             logger.warning("plan evaluation failed for %s: %s", plan.get("id"), exc)
+            # Record that the monitor attempted this plan even when the quote
+            # fetch fails, so the user can see the daily job actually ran.
+            try:
+                db.update_plan(plan["id"], last_checked_at=now)
+            except Exception:
+                logger.warning("failed to stamp last_checked_at for %s", plan.get("id"))
             continue
+        # Stamp every checked plan (triggered or not) with the trade date the
+        # check was based on, so the user can confirm the daily job ran and see
+        # how stale any plan's last evaluation is. A missing trade_date (quote
+        # unavailable) leaves the previous good date intact.
+        update_fields: dict[str, Any] = {"last_checked_at": now}
+        trade_date = result.get("trade_date")
+        if trade_date is not None:
+            update_fields["last_checked_trade_date"] = trade_date
+        if result.get("triggered"):
+            update_fields.update(
+                status="triggered",
+                triggered_at=now,
+                trigger_reason=str(result.get("reason", "")),
+            )
+        db.update_plan(plan["id"], **update_fields)
         if not result.get("triggered"):
             continue
-        now = datetime.now(timezone.utc).isoformat()
-        db.update_plan(
-            plan["id"],
-            status="triggered",
-            triggered_at=now,
-            trigger_reason=str(result.get("reason", "")),
-        )
         alert = {
             "plan_id": plan["id"],
             "symbol": plan.get("symbol"),

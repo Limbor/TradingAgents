@@ -107,8 +107,16 @@ def test_evaluate_active_plans_updates_and_alerts():
     alerts = asyncio.run(evaluate_active_plans(db, {}, data=provider))
     assert len(alerts) == 1
     assert alerts[0]["symbol"] == "600519.SH"
-    assert db.get_plan("p-stop")["status"] == "triggered"
-    assert db.get_plan("p-safe")["status"] == "active"
+    # Both plans record a check stamp (triggered or not) so the user can tell
+    # the daily monitor actually ran, and which trade date it checked up to.
+    stop = db.get_plan("p-stop")
+    safe = db.get_plan("p-safe")
+    assert stop["status"] == "triggered"
+    assert stop["last_checked_trade_date"] == "2026-07-07"
+    assert stop["last_checked_at"] is not None
+    assert safe["status"] == "active"
+    assert safe["last_checked_trade_date"] == "2026-07-07"
+    assert safe["last_checked_at"] is not None
 
 
 class _MultiProvider:
@@ -124,6 +132,41 @@ class _MultiProvider:
 
     async def cashflow_positive_recent(self, symbol):
         return False
+
+
+def test_evaluate_active_plans_stamps_last_checked_without_quote():
+    """No-quote and erroring plans still record that the monitor ran today."""
+    db = _db()
+    db.save_plan("p-noquote", symbol="000001.SZ", stop_loss=10.0, targets=[20.0],
+                 status="active", source="analysis", artifact_id="a3")
+    db.save_plan("p-err", symbol="000002.SZ", stop_loss=10.0, targets=[20.0],
+                 status="active", source="analysis", artifact_id="a4")
+
+    class _NoQuoteProvider:
+        async def latest_close(self, symbol):
+            # p-err raises (exception path); p-noquote returns no quote.
+            if symbol == "000002.SZ":
+                raise RuntimeError("boom")
+            return None
+
+        async def ma_cross(self, symbol):
+            return None
+
+        async def cashflow_positive_recent(self, symbol):
+            return False
+
+    alerts = asyncio.run(evaluate_active_plans(db, {}, data=_NoQuoteProvider()))
+    assert alerts == []
+    noquote = db.get_plan("p-noquote")
+    err = db.get_plan("p-err")
+    # Both record that the monitor attempted them today ...
+    assert noquote["last_checked_at"] is not None
+    assert err["last_checked_at"] is not None
+    # ... but neither fetched a trade date nor triggered.
+    assert noquote["last_checked_trade_date"] is None
+    assert noquote["status"] == "active"
+    assert err["last_checked_trade_date"] is None
+    assert err["status"] == "active"
 
 
 def test_advance_trading_days_returns_iso():

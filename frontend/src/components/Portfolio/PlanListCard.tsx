@@ -16,6 +16,14 @@ function conditionLabel(kind?: string): string {
   return kind || "条件";
 }
 
+function lastCheckLabel(plan: Plan): string {
+  // Prefer the trade date the check was based on (what the user asked for);
+  // fall back to the run timestamp when no quote was fetched, else mark unrated.
+  if (plan.last_checked_trade_date) return plan.last_checked_trade_date;
+  if (plan.last_checked_at) return `${plan.last_checked_at.slice(0, 10)}（未取到价）`;
+  return "未检查";
+}
+
 export function PlanListCard() {
   const qc = useQueryClient();
   const { data, refetch } = useQuery({
@@ -101,9 +109,14 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
           ))}
         </div>
       )}
-      <div className="mt-1.5 flex gap-2">
-        <button onClick={onClose} className="rounded border border-stone-600 px-2 py-0.5 text-stone-400 hover:bg-stone-800">关闭</button>
-        <button onClick={onRemove} className="rounded border border-stone-700 px-2 py-0.5 text-stone-500 hover:bg-stone-800">删除</button>
+      <div className="mt-1.5 flex items-center justify-between">
+        <span className="text-[10px] text-stone-500" title={plan.last_checked_at ?? undefined}>
+          上次检查: {lastCheckLabel(plan)}
+        </span>
+        <div className="flex gap-2">
+          <button onClick={onClose} className="rounded border border-stone-600 px-2 py-0.5 text-stone-400 hover:bg-stone-800">关闭</button>
+          <button onClick={onRemove} className="rounded border border-stone-700 px-2 py-0.5 text-stone-500 hover:bg-stone-800">删除</button>
+        </div>
       </div>
     </div>
   );

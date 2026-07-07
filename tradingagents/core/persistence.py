@@ -184,7 +184,9 @@ CREATE TABLE IF NOT EXISTS plans (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     triggered_at TEXT,
-    trigger_reason TEXT
+    trigger_reason TEXT,
+    last_checked_trade_date TEXT,
+    last_checked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_plans_symbol ON plans(symbol);
 CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
@@ -234,6 +236,12 @@ class Database:
                 conn.execute("SELECT ticker_name FROM reports LIMIT 0")
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE reports ADD COLUMN ticker_name TEXT")
+            # Migration: add plan-monitoring check-stamp columns if missing
+            for _col in ("last_checked_trade_date", "last_checked_at"):
+                try:
+                    conn.execute(f"SELECT {_col} FROM plans LIMIT 0")
+                except sqlite3.OperationalError:
+                    conn.execute(f"ALTER TABLE plans ADD COLUMN {_col} TEXT")
             self._backfill_report_artifacts(conn)
             # One-time dedup of historical reflection_cases created before the
             # case_id scheme was stabilized (old ids embedded run_id, so the
@@ -919,9 +927,10 @@ class Database:
                 INSERT OR REPLACE INTO plans (
                     id, symbol, name, entry_zone, stop_loss, targets, position_pct,
                     conditions, rating, status, source, artifact_id, reflection_case_id,
-                    created_at, updated_at, triggered_at, trigger_reason
+                    created_at, updated_at, triggered_at, trigger_reason,
+                    last_checked_trade_date, last_checked_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan_id,
@@ -941,6 +950,8 @@ class Database:
                     now,
                     None,
                     None,
+                    None,
+                    None,
                 ),
             )
 
@@ -952,8 +963,10 @@ class Database:
         triggered_at: str | None = None,
         trigger_reason: str | None = None,
         reflection_case_id: str | None = None,
+        last_checked_at: str | None = None,
+        last_checked_trade_date: str | None = None,
     ) -> None:
-        """Update mutable plan fields (status / trigger / reflection link)."""
+        """Update mutable plan fields (status / trigger / check stamps / link)."""
         sets: list[str] = ["updated_at = ?"]
         values: list[Any] = [datetime.now(timezone.utc).isoformat()]
         if status is not None:
@@ -968,6 +981,12 @@ class Database:
         if reflection_case_id is not None:
             sets.append("reflection_case_id = ?")
             values.append(reflection_case_id)
+        if last_checked_at is not None:
+            sets.append("last_checked_at = ?")
+            values.append(last_checked_at)
+        if last_checked_trade_date is not None:
+            sets.append("last_checked_trade_date = ?")
+            values.append(last_checked_trade_date)
         values.append(plan_id)
         with self._conn() as conn:
             conn.execute(f"UPDATE plans SET {', '.join(sets)} WHERE id = ?", values)
