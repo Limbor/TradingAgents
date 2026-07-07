@@ -20,6 +20,7 @@ from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_evidence_markdown
 from tradingagents.core.trading_time import get_temporal_context
+from tradingagents.llm_clients import create_llm_client
 from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows, payload_warnings
 from tradingagents.skills._shared import (
     FACTOR_DATA_SOURCE,
@@ -212,7 +213,10 @@ class DailyPipelineSkill(BaseSkill):
                 ],
             },
         )
+        briefing = await _render_llm_briefing(candidates, warnings, temporal_context, config)
         report = _render_report(input_params, candidates, profile, mcp_used, warnings, temporal_context)
+        if briefing:
+            report = briefing + "\n" + report
         yield SkillEvent(
             event_type="agent_status",
             data={"agent": "Report Writer", "status": "正在生成每日选股早报"},
@@ -1019,6 +1023,58 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+async def _render_llm_briefing(
+    candidates: list[dict[str, Any]],
+    warnings: list[str],
+    temporal_context,
+    config: dict[str, Any],
+) -> str:
+    """Generate a 3-5 sentence Chinese market briefing via LLM.
+
+    Best-effort: returns "" on any failure (LLM unavailable, parse error) so
+    the report still renders with the template table only. The briefing gives
+    the daily pipeline report a narrative layer (market mood / sector highlights
+    / risk notes) instead of being a bare data table.
+    """
+    if not candidates:
+        return ""
+    try:
+        client = create_llm_client(
+            provider=config.get("llm_provider", "openai"),
+            model=config.get("quick_think_llm", "gpt-5.4-mini"),
+            base_url=config.get("backend_url"),
+        )
+        llm = client.get_llm()
+        # Compact candidate summary to keep the prompt small.
+        cand_lines = []
+        for item in candidates[:10]:
+            cand_lines.append(
+                f"- {item.get('symbol','?')} {item.get('name','?')} | "
+                f"板块:{item.get('board','?')} | 量化:{item.get('quant_decision','?')} | "
+                f"最终:{item.get('final_decision', item.get('signal','?'))} | "
+                f"行业:{item.get('industry','?')} | 评分:{item.get('display_score', item.get('final_score','?'))}"
+            )
+        prompt = (
+            "你是 A 股市场早报撰写助手。基于下方当日选股候选与警告，写 3-5 句中文早报摘要，"
+            "覆盖：整体市场情绪、板块/行业亮点、资金流或催化线索、主要风险提示。"
+            "不要罗列个股，要给交易者一个可快速消化的市场画面。不要暴露思维链。\n\n"
+            f"数据基准日: {temporal_context.market_asof_date}\n"
+            f"候选数: {len(candidates)}\n"
+            f"候选摘要:\n" + "\n".join(cand_lines) + "\n"
+            + (f"警告: {'; '.join(warnings)}\n" if warnings else "")
+            + "\n早报摘要:"
+        )
+        response = await llm.ainvoke(prompt)
+        text = getattr(response, "content", "") or ""
+        text = str(text).strip()
+        if text:
+            return f"## 市场早报摘要\n\n{text}\n"
+        return ""
+    except Exception as exc:
+        logger.warning("LLM briefing generation failed: %s", exc)
+        return ""
 
 
 def _render_report(

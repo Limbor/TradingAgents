@@ -6,6 +6,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { chatWsManager, type WSMessage } from "@/api/ws";
+import { getRun } from "@/api/client";
 import { useChatStore, type ChatMessage } from "@/stores/useChatStore";
 import {
   eventStepLabel,
@@ -35,7 +36,35 @@ export function useChatWebSocket() {
   } = useChatStore();
 
   useEffect(() => {
-    const offOpen = chatWsManager.onOpen(() => setConnected(true));
+    const offOpen = chatWsManager.onOpen(async () => {
+      setConnected(true);
+      // Reconnect recovery: if a run was in-flight when the socket dropped,
+      // it may have finished during the disconnect. The chat WS does not
+      // replay events for an existing run, so poll the run's status via REST
+      // and finalize the task card if it is already terminal.
+      const { currentRunId } = useChatStore.getState();
+      if (!currentRunId) return;
+      try {
+        const run = await getRun(currentRunId);
+        const status = String(run.status || "").toLowerCase();
+        if (status === "completed") {
+          setRunning(false);
+          setCurrentRunId(null);
+          finishTask(currentRunId, "completed");
+          queryClient.invalidateQueries({ queryKey: ["runs"] });
+        } else if (status === "failed" || status === "cancelled") {
+          setRunning(false);
+          setCurrentRunId(null);
+          finishTask(currentRunId, "failed", status === "cancelled" ? "任务已取消" : "任务失败");
+          queryClient.invalidateQueries({ queryKey: ["runs"] });
+        }
+        // If still "running", leave it — the run continues server-side; the
+        // task card stays open but won't get more chat-WS events. The user
+        // can view progress on the Analysis page or Dashboard.
+      } catch {
+        // REST failed (auth/network) — leave state as-is; user can retry.
+      }
+    });
     const offClose = chatWsManager.onClose(() => setConnected(false));
     const offMessage = chatWsManager.onMessage((message: WSMessage) => {
       if (message.type === "chat_reply") {

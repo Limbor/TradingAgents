@@ -64,6 +64,13 @@ class Scheduler:
                 else:
                     item.task = asyncio.create_task(self._run_daily(item))
 
+    def is_running(self) -> bool:
+        """True if the scheduler has live task loops (not stopped)."""
+        return not self._stopped.is_set() and any(
+            item.task is not None and not item.task.done()
+            for item in self._tasks.values()
+        )
+
     async def stop(self) -> None:
         self._stopped.set()
         for item in self._tasks.values():

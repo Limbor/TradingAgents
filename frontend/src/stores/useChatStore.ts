@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 export type ChatRole = "user" | "assistant" | "system";
 export type ChatMessageKind = "text" | "task" | "tool";
@@ -100,7 +101,9 @@ function closeActiveSteps(
   );
 }
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>()(
+  persist(
+    (set) => ({
   messages: [
     {
       id: "welcome",
@@ -286,4 +289,25 @@ export const useChatStore = create<ChatState>((set) => ({
       running: false,
       currentRunId: null,
     }),
-}));
+    }),
+    {
+      name: "tradingagents-chat",
+      // Only persist messages — connected/running/currentRunId are transient
+      // runtime state that must not survive a reload (a run cannot resume on
+      // the frontend after a page refresh).
+      partialize: (state) => ({ messages: state.messages }),
+      // On rehydrate, mark any task that was still "running" when the page was
+      // closed as interrupted, so it doesn't hang forever in the UI.
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        state.messages = state.messages.map((m) =>
+          m.kind === "task" && m.taskStatus === "running"
+            ? { ...m, taskStatus: "failed", steps: [...(m.steps ?? []), newStep("已中断（页面重载）", undefined, "failed")] }
+            : m
+        );
+        state.running = false;
+        state.currentRunId = null;
+      },
+    }
+  )
+);

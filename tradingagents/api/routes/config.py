@@ -40,6 +40,7 @@ class ConfigUpdate(BaseModel):
     stockmanager_mcp_enabled: bool | None = None
     stockmanager_mcp_timeout: float | None = None
     daily_pipeline_filters: dict | None = None
+    scheduler_enabled: bool | None = None
 
 
 class ModelOption(BaseModel):
@@ -147,6 +148,18 @@ async def update_config(request: Request, body: ConfigUpdate):
         request.app.state.mcp_client = None
         request.app.state.mcp_status = await get_mcp_status(config)
         request.app.state.mcp_status_checked_at = time.monotonic()
+
+    # Runtime scheduler toggle: start/stop the background scheduler when the
+    # flag is flipped, so users can enable/disable daily jobs without an env
+    # var + restart.
+    if body.scheduler_enabled is not None:
+        scheduler = getattr(request.app.state, "scheduler", None)
+        if scheduler is not None:
+            if body.scheduler_enabled:
+                if not scheduler.is_running():
+                    scheduler.start()
+            else:
+                await scheduler.stop()
 
     return _build_config_response(config)
 
