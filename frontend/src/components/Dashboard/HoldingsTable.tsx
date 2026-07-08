@@ -1,10 +1,22 @@
 import type { Holding } from "@/api/client";
 import { holdingMarketValue, holdingPnl, formatMoney, formatNumber } from "@/utils/portfolio";
 
+/** Raw holding fields handed off to stock_analysis as holding_context.
+ *  The backend enriches these with derived metrics (P&L, position weight). */
+function holdingContextFields(holding: Holding): Record<string, unknown> {
+  return {
+    symbol: holding.symbol,
+    name: holding.name,
+    quantity: holding.quantity,
+    avg_cost: holding.avg_cost,
+    current_price: holding.current_price,
+  };
+}
+
 interface HoldingsTableProps {
   holdings: Holding[];
   totalValue: number;
-  onAnalyze: (symbol: string) => void;
+  onAnalyze: (symbol: string, context?: Record<string, unknown>) => void;
   onManage: () => void;
 }
 
@@ -85,7 +97,7 @@ export function HoldingsTable({ holdings, totalValue, onAnalyze, onManage }: Hol
                 <td className="px-3 py-2">
                   <div className="flex justify-end gap-1.5">
                     <button
-                      onClick={() => onAnalyze(holding.symbol)}
+                      onClick={() => onAnalyze(holding.symbol, { holding_context: holdingContextFields(holding) })}
                       className="rounded border border-stone-700 px-2 py-1 text-xs text-stone-400 transition hover:border-teal-500/50 hover:text-teal-300"
                     >
                       分析

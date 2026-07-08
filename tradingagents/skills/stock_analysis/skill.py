@@ -158,6 +158,16 @@ class StockAnalysisSkill(BaseSkill):
                 input_params.ticker,
                 config,
             )
+        elif holding_context is not None:
+            # Frontend handed off raw holding fields (e.g. from the portfolio
+            # UI); enrich them with derived metrics so the explicit path
+            # matches the auto-loaded one instead of only carrying raw fields.
+            holding_context = await _load_holding_context(
+                db,
+                input_params.ticker,
+                config,
+                holding=holding_context,
+            )
 
         memory_context = _join_context_blocks(
             _format_holding_context(holding_context),
@@ -612,6 +622,8 @@ async def _load_holding_context(
     db: Any | None,
     ticker: str,
     config: dict[str, Any],
+    *,
+    holding: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if db is None:
         return None
@@ -619,9 +631,15 @@ async def _load_holding_context(
         from tradingagents.core.portfolio_prices import latest_close, resolve_portfolio_name, resolve_portfolio_symbol
 
         symbol = resolve_portfolio_symbol(ticker)
-        holding = db.get_holding(symbol)
+        # When the caller (e.g. the portfolio UI) hands off raw holding fields,
+        # skip the DB fetch and enrich that dict directly so the agent still
+        # gets derived metrics (P&L, position weight) from a single source.
         if holding is None:
-            return None
+            holding = db.get_holding(symbol)
+            if holding is None:
+                return None
+        elif holding.get("symbol"):
+            symbol = str(holding["symbol"])
 
         holdings = db.list_holdings()
         current_price = _optional_float(holding.get("current_price"))
@@ -653,7 +671,7 @@ async def _load_holding_context(
 
         return {
             "symbol": symbol,
-            "name": resolve_portfolio_name(symbol),
+            "name": holding.get("name") or resolve_portfolio_name(symbol),
             "quantity": quantity,
             "avg_cost": avg_cost,
             "current_price": current_price,

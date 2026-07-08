@@ -129,13 +129,13 @@ class Orchestrator:
         ``context`` is an optional side-channel for structured data the text
         itself cannot carry — e.g. the selection plan to hand off to
         ``stock_analysis`` when the user clicks "分析" on a candidate. It is
-        merged into the routed skill's params by :meth:`_with_selection_context`.
+        merged into the routed skill's params by :meth:`_with_analysis_context`.
         """
         regex_result = await self._regex_route(user_message)
 
         # High-confidence regex match — skip LLM
         if regex_result.confidence >= 0.8:
-            return self._with_selection_context(regex_result, context)
+            return self._with_analysis_context(regex_result, context)
 
         # Try LLM router if available
         if self.llm_router is not None:
@@ -145,7 +145,7 @@ class Orchestrator:
                     # Convert LLM RouteResult to orchestrator RouteResult
                     skill = self.registry.get(llm_result.skill_id)
                     if skill is not None:
-                        return self._with_selection_context(
+                        return self._with_analysis_context(
                             RouteResult(
                                 skill=skill,
                                 params=llm_result.params,
@@ -157,20 +157,24 @@ class Orchestrator:
             except Exception as exc:
                 logger.debug("LLM router fallback to regex: %s", exc)
 
-        return self._with_selection_context(regex_result, context)
+        return self._with_analysis_context(regex_result, context)
 
-    def _with_selection_context(
+    def _with_analysis_context(
         self,
         result: RouteResult,
         context: dict[str, Any] | None,
     ) -> RouteResult:
-        """Merge a structured selection plan into stock_analysis params.
+        """Merge selection + holding context into stock_analysis params.
 
-        When the user clicks "分析" on a candidate, the frontend sends the
-        candidate's already-structured plan (entry/stop/targets/conditions/
-        reasoning) as ``context.selection_context``. Injecting it here lets the
-        multi-agent graph see the selection's conclusion instead of re-analyzing
-        from scratch and potentially contradicting it.
+        When the user clicks "分析" on a candidate (selection results) the
+        frontend sends the candidate's already-structured plan (entry/stop/
+        targets/conditions/reasoning) as ``context.selection_context``; when
+        they click "分析" on a holding (portfolio UI) it sends the position's
+        raw fields (quantity/avg_cost/current_price) as
+        ``context.holding_context``. Injecting either here lets the
+        multi-agent graph see the relevant prior conclusion / current
+        position instead of re-analyzing from scratch and potentially
+        contradicting it.
         """
         if not context or result.skill is None:
             return result
@@ -179,6 +183,9 @@ class Orchestrator:
         selection = context.get("selection_context")
         if isinstance(selection, dict) and selection:
             result.params["selection_context"] = selection
+        holding = context.get("holding_context")
+        if isinstance(holding, dict) and holding:
+            result.params["holding_context"] = holding
         return result
 
     async def _regex_route(self, user_message: str) -> RouteResult:

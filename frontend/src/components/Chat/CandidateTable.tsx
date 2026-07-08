@@ -45,7 +45,7 @@ interface CandidateTableProps {
   asOfDate?: string;
   dataWindowNote?: string;
   sessionState?: string;
-  onAnalyze?: (symbol: string, selectionContext?: Record<string, unknown>) => void;
+  onAnalyze?: (symbol: string, context?: Record<string, unknown>) => void;
   onAddWatchlist?: (symbols: string[]) => void;
   actionContext?: {
     runId?: string;
@@ -198,7 +198,7 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                   <div className="flex justify-end gap-1">
                   {onAnalyze && (
                     <button
-                      onClick={() => onAnalyze(row.symbol, rowSelectionContext(row))}
+                      onClick={() => onAnalyze(row.symbol, { selection_context: rowSelectionContext(row) })}
                       className="inline-flex items-center gap-1 rounded border border-teal-500/30 px-2 py-1 text-xs text-teal-300 transition hover:bg-teal-500/10"
                     >
                       <TrendingUp className="h-3 w-3" />
@@ -244,7 +244,7 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
       {onAddWatchlist && candidates.length > 0 && (
         <div className="flex gap-2">
           <button
-            onClick={() => onAnalyze?.(candidates[0]!.symbol, rowSelectionContext(candidates[0]!))}
+            onClick={() => onAnalyze?.(candidates[0]!.symbol, { selection_context: rowSelectionContext(candidates[0]!) })}
             className="inline-flex items-center gap-1.5 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-1.5 text-xs font-medium text-teal-300 transition hover:bg-teal-500/20"
           >
             <ArrowRight className="h-3.5 w-3.5" />

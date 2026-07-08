@@ -31,12 +31,12 @@ export default function Chat() {
 
   // Auto-send from navigation state (e.g. Dashboard quick action)
   useEffect(() => {
-    const state = location.state as { prompt?: string; autoSend?: boolean } | null;
+    const state = location.state as { prompt?: string; autoSend?: boolean; context?: Record<string, unknown> } | null;
     const prompt = state?.prompt?.trim();
     if (!prompt || autoSentRef.current === prompt) return;
     if (state?.autoSend && connected && !running) {
       autoSentRef.current = prompt;
-      sendPrompt(prompt);
+      sendPrompt(prompt, state?.context);
       navigate(location.pathname, { replace: true, state: null });
     } else {
       setInput(prompt);
@@ -61,8 +61,8 @@ export default function Chat() {
     }
   };
 
-  const handleAnalyzeSymbol = (symbol: string, selectionContext?: Record<string, unknown>) => {
-    sendPrompt(`帮我分析 ${symbol}`, selectionContext ? { selection_context: selectionContext } : undefined);
+  const handleAnalyzeSymbol = (symbol: string, context?: Record<string, unknown>) => {
+    sendPrompt(`帮我分析 ${symbol}`, context);
   };
 
   return (

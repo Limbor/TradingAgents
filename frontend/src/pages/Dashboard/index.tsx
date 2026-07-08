@@ -131,8 +131,8 @@ export default function Dashboard() {
   const dailyReviewDone = todayRuns.some((run) => run.skill_id === "daily_review" && run.status === "completed");
   const dailyReviewRunning = todayRuns.some((run) => run.skill_id === "daily_review" && ["pending", "running"].includes(run.status));
 
-  const goChat = (prompt: string) => {
-    navigate("/chat", { state: { prompt, autoSend: true } });
+  const goChat = (prompt: string, context?: Record<string, unknown>) => {
+    navigate("/chat", { state: { prompt, autoSend: true, context } });
   };
 
   const refreshPrices = async () => {
@@ -272,7 +272,7 @@ export default function Dashboard() {
             </button>
           </div>
         ) : (
-          <HoldingsTable holdings={holdings} totalValue={portfolio.value} onAnalyze={(symbol) => goChat(`帮我分析 ${symbol}`)} onManage={() => navigate("/portfolio")} />
+          <HoldingsTable holdings={holdings} totalValue={portfolio.value} onAnalyze={(symbol, context) => goChat(`帮我分析 ${symbol}`, context)} onManage={() => navigate("/portfolio")} />
         )}
       </section>
 

@@ -287,3 +287,39 @@ def test_stock_analysis_loads_and_formats_holding_context(tmp_path):
         assert "核心仓" in rendered
 
     asyncio.run(run())
+
+
+def test_load_holding_context_enriches_explicit_handoff(tmp_path):
+    """Frontend-explicit holding_context is enriched with derived metrics even
+    when the ticker is not in the DB (auto-load would return None for it)."""
+    async def run():
+        db = Database(tmp_path / "explicit-holding.db")
+        db.upsert_holding("601899.SH", quantity=100, avg_cost=18, current_price=20)
+
+        context = await _load_holding_context(
+            db,
+            "600519.SH",
+            {"stock_analysis_refresh_holding_price_context": False},
+            holding={
+                "symbol": "600519.SH",
+                "name": "贵州茅台",
+                "quantity": 10,
+                "avg_cost": 1500,
+                "current_price": 1650,
+            },
+        )
+        assert context is not None
+        assert context["symbol"] == "600519.SH"
+        assert context["name"] == "贵州茅台"
+        assert context["quantity"] == 10
+        assert context["market_value"] == 16500
+        assert context["unrealized_pnl"] == 1500
+        assert context["unrealized_return"] == 0.1
+        assert context["position_weight"] is not None
+
+        rendered = _format_holding_context(context)
+        assert "already held by the user" in rendered
+        assert "unrealized P&L" in rendered
+        assert "贵州茅台" in rendered
+
+    asyncio.run(run())

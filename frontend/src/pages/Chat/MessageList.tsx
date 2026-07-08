@@ -8,7 +8,7 @@ import { ToolCard } from "./ToolCard";
 
 interface MessageListProps {
   messages: ChatMessage[];
-  onAnalyze: (symbol: string, selectionContext?: Record<string, unknown>) => void;
+  onAnalyze: (symbol: string, context?: Record<string, unknown>) => void;
   onSendPrompt: (prompt: string) => void;
 }
 

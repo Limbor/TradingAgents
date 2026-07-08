@@ -296,6 +296,8 @@ async def ws_chat(websocket: WebSocket):
                         msg_ctx = message.get("context") if isinstance(message.get("context"), dict) else None
                         if msg_ctx and msg_ctx.get("selection_context"):
                             skill_params.setdefault("selection_context", msg_ctx["selection_context"])
+                        if msg_ctx and msg_ctx.get("holding_context"):
+                            skill_params.setdefault("holding_context", msg_ctx["holding_context"])
                         route = _RouteResultStub(skill, skill_params, 0.85, "ChatAgent skill_run")
                     else:
                         await _send({

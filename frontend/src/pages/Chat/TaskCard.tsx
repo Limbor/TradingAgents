@@ -14,7 +14,7 @@ import {
 
 interface TaskCardProps {
   message: ChatMessage;
-  onAnalyze: (symbol: string, selectionContext?: Record<string, unknown>) => void;
+  onAnalyze: (symbol: string, context?: Record<string, unknown>) => void;
   onSendPrompt: (prompt: string) => void;
 }
 
@@ -93,7 +93,7 @@ function TaskResult({
   result: string;
   runId?: string;
   skillId?: string;
-  onAnalyze: (symbol: string, selectionContext?: Record<string, unknown>) => void;
+  onAnalyze: (symbol: string, context?: Record<string, unknown>) => void;
   onSendPrompt: (prompt: string) => void;
 }) {
   const structured = tryParseStructured(result);
