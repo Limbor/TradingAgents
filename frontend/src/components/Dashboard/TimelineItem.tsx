@@ -28,6 +28,7 @@ export function TimelineItem({ run, onClick }: TimelineItemProps) {
   });
   const ticker = run.params?.ticker ?? run.params?.symbol;
   const tickerStr = ticker ? String(ticker) : null;
+  const tickerName = typeof run.params?.ticker_name === "string" ? run.params.ticker_name : null;
 
   return (
     <button
@@ -39,7 +40,18 @@ export function TimelineItem({ run, onClick }: TimelineItemProps) {
         <div className="flex items-center gap-2">
           <span className="text-sm text-stone-100 truncate">
             {skillLabels[run.skill_id] ?? run.skill_id}
-            {tickerStr && <span className="ml-1 font-mono text-teal-300">{tickerStr}</span>}
+            {tickerStr && (
+              <span className="ml-1 text-teal-300">
+                {tickerName && tickerName !== tickerStr ? (
+                  <>
+                    {tickerName}
+                    <span className="ml-1 font-mono text-xs text-teal-300/60">{tickerStr}</span>
+                  </>
+                ) : (
+                  <span className="font-mono">{tickerStr}</span>
+                )}
+              </span>
+            )}
           </span>
           <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${statusColors[run.status] ?? "text-stone-400"}`}>
             {run.status}

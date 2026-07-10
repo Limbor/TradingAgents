@@ -530,6 +530,11 @@ class StockAnalysisSkill(BaseSkill):
         # round-trip when the PM used structured output; None on free-text fallback.
         plan = _extract_trade_plan(decision_text)
 
+        try:
+            from tradingagents.core.portfolio_prices import resolve_portfolio_name
+            name = resolve_portfolio_name(ticker)
+        except Exception:
+            name = ticker
         return {
             "rating": rating,
             "target_price": target_price,
@@ -537,6 +542,7 @@ class StockAnalysisSkill(BaseSkill):
             "reasons": reasons,
             "plan": plan,
             "symbol": ticker,
+            "name": name,
         }
 
 

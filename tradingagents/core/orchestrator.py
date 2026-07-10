@@ -239,8 +239,14 @@ class Orchestrator:
                 "Stock analysis intent but no ticker/name found; needs clarification",
             )
         market = detect_market(ticker)
+        try:
+            from tradingagents.core.portfolio_prices import resolve_portfolio_name
+            ticker_name = resolve_portfolio_name(ticker)
+        except Exception:
+            ticker_name = ticker
         params = {
             "ticker": ticker,
+            "ticker_name": ticker_name,
             "analysis_date": _extract_date(text) or get_temporal_context(self.config, market=market).market_asof_date,
         }
         # Inject recent reflection context if DB is available

@@ -61,7 +61,7 @@ export function PlanListCard() {
             <div key={p.id} className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs">
               <div className="flex items-center gap-2 font-medium text-amber-200">
                 <Bell className="h-3.5 w-3.5" />
-                {p.symbol} · 计划触发
+                {p.name && p.name !== p.symbol ? `${p.name} (${p.symbol})` : p.symbol} · 计划触发
               </div>
               <div className="mt-1 text-amber-100/80">{p.trigger_reason}</div>
               <div className="mt-1 flex gap-2">
@@ -91,7 +91,12 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
   return (
     <div className="rounded-lg border border-stone-700 bg-stone-950 p-2.5 text-xs">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-stone-100">{plan.symbol}</span>
+        <div className="min-w-0">
+          <span className="text-stone-100">{plan.name && plan.name !== plan.symbol ? plan.name : plan.symbol}</span>
+          {plan.name && plan.name !== plan.symbol && (
+            <span className="ml-1 font-mono text-xs text-stone-500">{plan.symbol}</span>
+          )}
+        </div>
         <span className="text-stone-500">{plan.rating ?? ""}</span>
       </div>
       <div className="mt-1 grid grid-cols-2 gap-1 text-stone-400 sm:grid-cols-4">

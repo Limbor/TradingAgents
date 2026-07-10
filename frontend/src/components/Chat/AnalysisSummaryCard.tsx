@@ -24,6 +24,7 @@ export interface AnalysisSummary {
   reasons?: string[];
   runId?: string;
   symbol?: string;
+  name?: string;
   plan?: TradePlanShape;
 }
 
@@ -143,7 +144,7 @@ function PlanMetric({ label, value }: { label: string; value?: string }) {
 }
 
 export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddHolding, onAnalyzeMore }: AnalysisSummaryCardProps) {
-  const { rating, target_price, confidence, reasons, runId, symbol, plan } = summary;
+  const { rating, target_price, confidence, reasons, runId, symbol, name, plan } = summary;
   const selectionPlanShape = toPlan(selectionPlan);
   const [feedback, setFeedback] = useState<string | null>(null);
 
@@ -193,6 +194,16 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
       <div className="flex items-center gap-4">
         <RatingIcon rating={rating} />
         <div className="flex-1">
+          {(name || symbol) && (
+            <div className="mb-0.5">
+              {name && <span className="text-sm font-semibold text-stone-100">{name}</span>}
+              {symbol && (
+                <span className={`ml-1 font-mono text-xs ${name ? "text-stone-500" : "text-stone-100 font-semibold"}`}>
+                  {symbol}
+                </span>
+              )}
+            </div>
+          )}
           <div className="flex items-baseline gap-3">
             <span className={`text-lg font-bold ${ratingColor(rating)}`}>{rating ?? "N/A"}</span>
             {target_price && (
@@ -301,6 +312,7 @@ export function parseAnalysisSummaryFromStructured(data: unknown, runId?: string
     confidence: typeof d.confidence === "number" ? d.confidence : undefined,
     reasons: Array.isArray(d.reasons) ? d.reasons.map(String) : undefined,
     symbol: typeof d.symbol === "string" ? d.symbol : undefined,
+    name: typeof d.name === "string" ? d.name : undefined,
     runId,
     plan: toPlan(d.plan),
   };

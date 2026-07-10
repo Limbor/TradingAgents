@@ -497,7 +497,14 @@ function PortfolioArtifact({ payload }: { payload: Record<string, unknown> }) {
             <tbody>
               {holdings.map((row, index) => (
                 <tr key={`${row.symbol}-${index}`} className="border-t border-stone-800">
-                  <td className="px-3 py-2 font-mono text-stone-100">{String(row.symbol ?? "-")}</td>
+                  <td className="px-3 py-2 text-stone-100">
+                    {!!row.name && String(row.name) !== String(row.symbol ?? "")
+                      ? String(row.name)
+                      : String(row.symbol ?? "-")}
+                    {!!row.name && String(row.name) !== String(row.symbol ?? "") && (
+                      <span className="ml-1 font-mono text-xs text-stone-500">{String(row.symbol ?? "")}</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(Number(row.quantity ?? 0))}</td>
                   <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(Number(row.avg_cost ?? 0))}</td>
                   <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(Number(row.current_price ?? row.avg_cost ?? 0))}</td>

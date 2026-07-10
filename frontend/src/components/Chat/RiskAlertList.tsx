@@ -2,6 +2,7 @@ import { AlertTriangle, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
 
 export interface RiskRow {
   symbol: string;
+  name?: string;
   level: string;
   summary: string;
 }
@@ -49,7 +50,12 @@ export function RiskAlertList({ risks, onAnalyze }: RiskAlertListProps) {
             <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${cfg.color}`} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="font-mono text-sm font-medium text-stone-100">{risk.symbol}</span>
+                <span className="text-sm font-medium text-stone-100">
+                  {risk.name && risk.name !== risk.symbol ? risk.name : risk.symbol}
+                  {risk.name && risk.name !== risk.symbol && (
+                    <span className="ml-1 font-mono text-xs text-stone-500">{risk.symbol}</span>
+                  )}
+                </span>
                 <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${cfg.color}`}>
                   {risk.level}
                 </span>
@@ -78,8 +84,10 @@ export function parseRisks(raw: unknown): RiskRow[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
   return raw.slice(0, 10).map((item, i) => {
     const row = item as Record<string, unknown>;
+    const symbol = String(row.symbol ?? row.ts_code ?? `#${i + 1}`);
     return {
-      symbol: String(row.symbol ?? row.ts_code ?? `#${i + 1}`),
+      symbol,
+      name: row.name ? String(row.name) : undefined,
       level: String(row.risk_level ?? row.level ?? "unknown"),
       summary: String(row.summary ?? row.title ?? row.message ?? ""),
     };

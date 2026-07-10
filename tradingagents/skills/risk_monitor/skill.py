@@ -216,6 +216,7 @@ async def _scan_risks(
     client = await get_mcp_client(config)
     end = get_info_cutoff_date(config, market="cn_a")
     start = end - timedelta(days=params.lookback_days)
+    from tradingagents.core.portfolio_prices import resolve_portfolio_name
     risks = []
 
     if client is None:
@@ -223,6 +224,7 @@ async def _scan_risks(
             risks.append(
                 {
                     "symbol": item["symbol"],
+                    "name": resolve_portfolio_name(item["symbol"]),
                     "level": "unknown",
                     "message": "StockManager MCP unavailable; announcement scan skipped.",
                     "announcements": [],
@@ -244,6 +246,7 @@ async def _scan_risks(
             risks.append(
                 {
                     "symbol": symbol,
+                    "name": resolve_portfolio_name(symbol),
                     "level": "unknown",
                     "message": f"Risk scan error: {exc}",
                     "announcements": [],
@@ -259,6 +262,7 @@ async def _scan_risks(
         risks.append(
             {
                 "symbol": symbol,
+                "name": resolve_portfolio_name(symbol),
                 "level": level,
                 "message": message,
                 "announcements": rows,

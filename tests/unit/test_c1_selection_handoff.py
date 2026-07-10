@@ -65,6 +65,7 @@ def test_orchestrator_passes_selection_context_to_stock_analysis():
         assert route.skill.metadata.id == "stock_analysis"
         assert route.params["ticker"] == "600519.SH"
         assert route.params["selection_context"] == SELECTION
+        assert "ticker_name" in route.params and route.params["ticker_name"]
 
     asyncio.run(run())
 
@@ -87,6 +88,7 @@ def test_orchestrator_backward_compatible_without_context():
         route = await Orchestrator(_registry()).route("帮我分析 茅台")
         assert route.skill is not None
         assert route.params["ticker"] == "600519.SH"
+        assert "ticker_name" in route.params and route.params["ticker_name"]
         assert "selection_context" not in route.params
 
     asyncio.run(run())
@@ -101,6 +103,13 @@ def test_format_selection_context_injects_plan_and_reconcile_instruction():
     assert "质量分强且催化明确" in text  # reasoning
     assert "compare your analysis conclusion" in text  # reconcile instruction
     assert _format_selection_context(None) == ""
+
+
+def test_extract_conclusion_includes_stock_name():
+    skill = StockAnalysisSkill()
+    conclusion = skill._extract_conclusion({"final_trade_decision": "评级 Buy"}, "600519.SH")
+    assert conclusion["symbol"] == "600519.SH"
+    assert "name" in conclusion and conclusion["name"]
 
 
 def test_portfolio_decision_trade_plan_render_parse_roundtrip():

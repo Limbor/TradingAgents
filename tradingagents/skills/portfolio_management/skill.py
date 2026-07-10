@@ -272,6 +272,16 @@ def _save_portfolio_artifact(
     summary: dict[str, Any],
     report: str,
 ) -> None:
+    # Holdings rows from db.list_holdings() have no name column; resolve it so
+    # the Library snapshot can show 贵州茅台 alongside 600519.SH.
+    try:
+        from tradingagents.core.portfolio_prices import resolve_portfolio_name
+        holdings_for_payload = [
+            {**h, "name": resolve_portfolio_name(str(h.get("symbol", "")))}
+            for h in holdings
+        ]
+    except Exception:
+        holdings_for_payload = holdings
     save_skill_artifact(
         config,
         skill_id="portfolio_management",
@@ -288,7 +298,7 @@ def _save_portfolio_artifact(
             f"风险等级 {summary.get('risk_level', '-')}"
         ),
         content_markdown=report,
-        payload={"action": input_params.action, "holdings": holdings, "summary": summary},
+        payload={"action": input_params.action, "holdings": holdings_for_payload, "summary": summary},
         tags=["portfolio", input_params.action],
     )
 
