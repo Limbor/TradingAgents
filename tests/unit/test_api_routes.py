@@ -202,6 +202,65 @@ def test_holdings_crud(client):
     assert res.json() == []
 
 
+def test_holdings_adjust_add_recomputes_avg_cost(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+    })
+    # 加仓 5 @ 1800 -> qty 15, avg = (10*1500 + 5*1800)/15 = 1600, price->1800
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "add", "quantity": 5, "price": 1800,
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["action"] == "add"
+    assert body["holding"]["quantity"] == 15
+    assert body["holding"]["avg_cost"] == 1600
+    assert body["holding"]["current_price"] == 1800
+    assert body["realized_pnl"] is None
+    assert body["closed"] is False
+
+
+def test_holdings_adjust_reduce_realizes_pnl(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+    })
+    # 减仓 4 @ 1800 -> qty 6, avg unchanged 1500, realized = 4*(1800-1500)=1200
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 4, "price": 1800,
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["holding"]["quantity"] == 6
+    assert body["holding"]["avg_cost"] == 1500
+    assert body["realized_pnl"] == 1200
+    assert body["closed"] is False
+
+
+def test_holdings_adjust_reduce_full_close_and_oversell(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+    })
+    # 清仓: sell all 10 @ 1700 -> realized = 10*(1700-1500)=2000, holding deleted
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 10, "price": 1700,
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["holding"] is None
+    assert body["closed"] is True
+    assert body["realized_pnl"] == 2000
+    assert client.get("/api/v1/holdings").json() == []
+
+    # oversell rejected (re-seed first)
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+    })
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 11, "price": 1700,
+    })
+    assert res.status_code == 400
+
+
 def test_holdings_include_latest_stock_analysis(client):
     res = client.put(
         "/api/v1/holdings/600519.SH",

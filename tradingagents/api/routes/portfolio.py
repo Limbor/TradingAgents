@@ -22,6 +22,12 @@ class RefreshPricesResponse(BaseModel):
     holdings: list[dict]
 
 
+class AdjustPositionInput(BaseModel):
+    action: str  # "add" (加仓) or "reduce" (减仓)
+    quantity: float = Field(gt=0)
+    price: float = Field(gt=0)
+
+
 @router.get("/holdings")
 async def list_holdings(request: Request):
     db = request.app.state.db
@@ -111,6 +117,66 @@ async def upsert_holding(request: Request, symbol: str, body: HoldingInput):
         notes=body.notes,
     )
     return _with_holding_name(request.app.state.db, holding)
+
+
+@router.post("/holdings/{symbol}/adjust")
+async def adjust_position(request: Request, symbol: str, body: AdjustPositionInput):
+    """加仓 / 减仓: adjust an existing holding by a trade lot.
+
+    add:    quantity increases, avg_cost is weighted-recomputed from the trade
+            price; current_price updates to the trade price.
+    reduce: quantity decreases (avg_cost unchanged); realized P&L is returned.
+            Reducing the full position deletes the holding (清仓).
+    """
+    if body.action not in ("add", "reduce"):
+        raise HTTPException(status_code=400, detail="action must be 'add' or 'reduce'")
+    resolved = await resolve_portfolio_symbol_async(symbol)
+    db = request.app.state.db
+    holding = db.get_holding(resolved)
+    if holding is None:
+        raise HTTPException(status_code=404, detail="Holding not found")
+
+    old_qty = float(holding.get("quantity") or 0.0)
+    old_avg = float(holding.get("avg_cost") or 0.0)
+    notes = holding.get("notes")
+    qty = body.quantity
+    price = body.price
+
+    if body.action == "reduce" and qty > old_qty:
+        raise HTTPException(status_code=400, detail="减仓数量超过当前持仓数量")
+
+    if body.action == "add":
+        new_qty = old_qty + qty
+        new_avg = (old_qty * old_avg + qty * price) / new_qty if new_qty else price
+        updated = db.upsert_holding(resolved, new_qty, new_avg, price, notes)
+        return {
+            "symbol": resolved,
+            "action": "add",
+            "holding": _with_holding_name(db, updated),
+            "realized_pnl": None,
+            "closed": False,
+        }
+
+    # reduce
+    realized_pnl = qty * (price - old_avg)
+    new_qty = old_qty - qty
+    if new_qty <= 0:
+        db.delete_holding(resolved)
+        return {
+            "symbol": resolved,
+            "action": "reduce",
+            "holding": None,
+            "realized_pnl": realized_pnl,
+            "closed": True,
+        }
+    updated = db.upsert_holding(resolved, new_qty, old_avg, price, notes)
+    return {
+        "symbol": resolved,
+        "action": "reduce",
+        "holding": _with_holding_name(db, updated),
+        "realized_pnl": realized_pnl,
+        "closed": False,
+    }
 
 
 @router.delete("/holdings/{symbol}")

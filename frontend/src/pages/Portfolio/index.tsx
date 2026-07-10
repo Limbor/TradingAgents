@@ -11,9 +11,13 @@ import {
   Save,
   ShieldAlert,
   Trash2,
+  TrendingDown,
+  TrendingUp,
 } from "lucide-react";
+import { AdjustPositionDialog } from "@/components/Portfolio/AdjustPositionDialog";
 import { PlanListCard } from "@/components/Portfolio/PlanListCard";
 import {
+  adjustHolding,
   deleteHolding,
   listHoldings,
   advanceTradingDay,
@@ -49,6 +53,10 @@ export default function Portfolio() {
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [adjustTarget, setAdjustTarget] = useState<{ holding: Holding; action: "add" | "reduce" } | null>(null);
+  const [adjusting, setAdjusting] = useState(false);
+  const [adjustError, setAdjustError] = useState<string | null>(null);
 
   const holdings = holdingsQuery.data ?? [];
   const summary = useMemo(() => buildSummary(holdings), [holdings]);
@@ -108,6 +116,31 @@ export default function Portfolio() {
       notes: holding.notes ?? "",
     });
     setError(null);
+  };
+
+  const adjust = async (action: "add" | "reduce", quantity: number, price: number) => {
+    if (!adjustTarget) return;
+    const holding = adjustTarget.holding;
+    setAdjusting(true);
+    setAdjustError(null);
+    setNotice(null);
+    try {
+      const result = await adjustHolding(holding.symbol, { action, quantity, price });
+      await holdingsQuery.refetch();
+      const name = holding.name && holding.name !== holding.symbol ? holding.name : holding.symbol;
+      if (action === "add") {
+        setNotice(`已加仓 ${name} ${quantity} 股 @ ${price}`);
+      } else if (result.closed) {
+        setNotice(`已清仓 ${name}，实现盈亏 ${formatPnl(result.realized_pnl)}`);
+      } else {
+        setNotice(`已减仓 ${name} ${quantity} 股 @ ${price}，实现盈亏 ${formatPnl(result.realized_pnl)}`);
+      }
+      setAdjustTarget(null);
+    } catch (exc) {
+      setAdjustError(exc instanceof Error ? exc.message : "操作失败");
+    } finally {
+      setAdjusting(false);
+    }
   };
 
   const resetForm = () => {
@@ -270,6 +303,12 @@ export default function Portfolio() {
             </div>
           </div>
 
+          {notice && (
+            <div className="mb-3 rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+              {notice}
+            </div>
+          )}
+
           {holdingsQuery.isLoading ? (
             <p className="text-sm text-stone-400">Loading holdings...</p>
           ) : sortedHoldings.length === 0 ? (
@@ -346,6 +385,20 @@ export default function Portfolio() {
                         <td className="px-3 py-2">
                           <div className="flex justify-end gap-1.5">
                             <button
+                              onClick={() => { setNotice(null); setAdjustError(null); setAdjustTarget({ holding: item, action: "add" }); }}
+                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-teal-300"
+                              title="加仓"
+                            >
+                              <TrendingUp className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => { setNotice(null); setAdjustError(null); setAdjustTarget({ holding: item, action: "reduce" }); }}
+                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-amber-300"
+                              title="减仓"
+                            >
+                              <TrendingDown className="h-4 w-4" />
+                            </button>
+                            <button
                               onClick={() => edit(item)}
                               className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-teal-300"
                               title="编辑"
@@ -372,6 +425,17 @@ export default function Portfolio() {
       </div>
 
       <PlanListCard />
+
+      {adjustTarget && (
+        <AdjustPositionDialog
+          holding={adjustTarget.holding}
+          action={adjustTarget.action}
+          submitting={adjusting}
+          error={adjustError}
+          onConfirm={adjust}
+          onClose={() => { setAdjustTarget(null); setAdjustError(null); }}
+        />
+      )}
 
       {sortedHoldings.length > 0 && (
         <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
@@ -442,6 +506,11 @@ function formatMoney(value: number) {
   return new Intl.NumberFormat("zh-CN", {
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+function formatPnl(value: number | null) {
+  if (value == null) return "0";
+  return `${value >= 0 ? "+" : ""}${formatMoney(value)}`;
 }
 
 function formatNumber(value: number) {

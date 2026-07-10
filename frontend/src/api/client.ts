@@ -470,6 +470,25 @@ export async function upsertHolding(holding: Omit<Holding, "updated_at">): Promi
   });
 }
 
+export interface AdjustPositionResult {
+  symbol: string;
+  action: "add" | "reduce";
+  holding: Holding | null;
+  realized_pnl: number | null;
+  closed: boolean;
+}
+
+export async function adjustHolding(
+  symbol: string,
+  body: { action: "add" | "reduce"; quantity: number; price: number },
+): Promise<AdjustPositionResult> {
+  return fetchJson(`${API_BASE}/holdings/${encodeURIComponent(symbol)}/adjust`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function deleteHolding(symbol: string): Promise<void> {
   await fetch(`${API_BASE}/holdings/${encodeURIComponent(symbol)}`, { method: "DELETE", headers: authHeaders() });
 }
