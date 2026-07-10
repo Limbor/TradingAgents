@@ -154,6 +154,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
     try {
       await createPlan({
         symbol,
+        name,
         entry_zone: plan.entry_zone,
         stop_loss: plan.stop_loss ?? undefined,
         targets: plan.targets,
