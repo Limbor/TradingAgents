@@ -12,6 +12,7 @@ from typing import Annotated
 import pandas as pd
 
 from .akshare_common import akshare_call, ak_lazy_import, df_to_csv_report
+from .akshare_cn_specific import _append_hot_rank_fallback
 from .symbol_utils import normalize_for_akshare, normalize_cn_display
 
 
@@ -27,7 +28,9 @@ def get_social_sentiment(
     # Eastmoney hot-stock ranking (pan-market; filter to our ticker)
     try:
         hot = akshare_call(ak.stock_hot_rank_em)
-        if hot is not None and not hot.empty:
+        if hot is None or hot.empty:
+            _append_hot_rank_fallback(sections, code, display, "AKShare wrapper returned no rank data.")
+        else:
             col_code = next((c for c in hot.columns if "代码" in c), None)
             if col_code is not None:
                 row = hot[hot[col_code].astype(str).str.contains(code, na=False)]
@@ -39,7 +42,7 @@ def get_social_sentiment(
                 else:
                     sections.append(f"# {display} not in current eastmoney hot ranking top list.")
     except Exception as exc:
-        sections.append(f"# (eastmoney hot rank unavailable: {exc})")
+        _append_hot_rank_fallback(sections, code, display, f"AKShare wrapper unavailable: {exc}")
 
     # Xueqiu follow tracker
     try:

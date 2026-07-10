@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 import pandas as pd
 
@@ -181,8 +181,10 @@ def get_theme_heat(
         row = _filter_code(hot, code) if hot is not None and not hot.empty else pd.DataFrame()
         if not row.empty:
             sections.append(df_to_csv_report(row, title=f"Retail heat rank for {display}"))
+        else:
+            _append_hot_rank_fallback(sections, code, display, "AKShare wrapper returned no rank data.")
     except Exception as exc:
-        sections.append(f"# Retail heat rank unavailable: {exc}")
+        _append_hot_rank_fallback(sections, code, display, f"AKShare wrapper unavailable: {exc}")
 
     for title, fn_name in (
         ("Top concept boards", "stock_board_concept_name_em"),
@@ -195,13 +197,265 @@ def get_theme_heat(
         try:
             board = akshare_call(fn)
             if board is None or board.empty:
-                sections.append(f"# {title}: no data returned")
+                fallback = _eastmoney_board_heat_fallback(fn_name, top_n)
+                if fallback is not None and not fallback.empty:
+                    sections.append(
+                        df_to_csv_report(
+                            fallback,
+                            title=f"{title} around {curr_date} (Eastmoney direct fallback)",
+                            header_lines=[
+                                "AKShare wrapper returned no data; fetched Eastmoney board rank directly.",
+                                "Network policy: direct connection, system proxy bypassed for this request.",
+                            ],
+                        )
+                    )
+                else:
+                    sections.append(f"# {title}: no data returned")
                 continue
             sections.append(df_to_csv_report(board.head(max(1, min(top_n, 50))), title=f"{title} around {curr_date}"))
         except Exception as exc:
-            sections.append(f"# {title} unavailable: {exc}")
+            fallback = _eastmoney_board_heat_fallback(fn_name, top_n)
+            if fallback is not None and not fallback.empty:
+                sections.append(
+                    df_to_csv_report(
+                        fallback,
+                        title=f"{title} around {curr_date} (Eastmoney direct fallback)",
+                        header_lines=[
+                            f"AKShare wrapper unavailable: {exc}",
+                            "Network policy: direct connection, system proxy bypassed for this request.",
+                        ],
+                    )
+                )
+            else:
+                sections.append(f"# {title} unavailable: {exc}")
 
     return "\n\n".join(sections) if sections else f"No theme heat data available for {display}"
+
+
+def _eastmoney_hot_rank_fallback() -> pd.DataFrame | None:
+    """Fetch the Eastmoney retail popularity rank directly, bypassing proxies.
+
+    AKShare's ``stock_hot_rank_em`` issues plain ``requests`` calls that inherit
+    the OS/environment proxy; when that proxy routes ``emappdata.eastmoney.com``
+    through an overseas node the request is rejected and the whole popularity
+    rank becomes "unavailable". This fallback disables environment proxies for
+    the request, sends a browser UA, and retries.
+
+    The rank endpoint is the mandatory step; the price-enrichment step is best
+    effort and its failure does not discard the rank.
+    """
+    import requests
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        ),
+        "Referer": "https://guba.eastmoney.com/rank/",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    payload = {
+        "appId": "appId01",
+        "globalId": "786e4c21-70dc-435a-93bb-38",
+        "marketType": "",
+        "pageNo": 1,
+        "pageSize": 100,
+    }
+
+    rank_rows: list[dict[str, Any]] | None = None
+    last_error: Exception | None = None
+    for _ in range(3):
+        session = requests.Session()
+        session.trust_env = False
+        try:
+            resp = session.post(
+                "https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
+                json=payload,
+                headers=headers,
+                timeout=8,
+            )
+            resp.raise_for_status()
+            data = (resp.json() or {}).get("data") or []
+            if data:
+                rank_rows = data
+                break
+        except Exception as exc:
+            last_error = exc
+    if not rank_rows:
+        if last_error is not None:
+            logger.info("Eastmoney hot-rank fallback failed: %s", last_error)
+        return None
+
+    rank_df = pd.DataFrame(rank_rows)
+    if "sc" not in rank_df.columns or "rk" not in rank_df.columns:
+        logger.info("Eastmoney hot-rank fallback unexpected schema: %s", list(rank_df.columns))
+        return None
+    result = pd.DataFrame(
+        {
+            "当前排名": pd.to_numeric(rank_df["rk"], errors="coerce"),
+            "代码": rank_df["sc"].astype(str),
+        }
+    )
+
+    # Optional: enrich with name + price via push2. Tolerate failure so the
+    # rank itself is still returned when only the quote endpoint is blocked.
+    try:
+        marks = [
+            ("0." + str(item)[2:]) if "SZ" in str(item) else ("1." + str(item)[2:])
+            for item in rank_df["sc"]
+        ]
+        qsession = requests.Session()
+        qsession.trust_env = False
+        params = {
+            "ut": "f057cbcbce2a86e2866ab8877db1d059",
+            "fltt": "2",
+            "invt": "2",
+            "fields": "f14,f3,f12,f2",
+            "secids": ",".join(marks) + ",?v=08926209912590994",
+        }
+        qresp = qsession.get(
+            "https://push2.eastmoney.com/api/qt/ulist.np/get",
+            params=params,
+            headers=headers,
+            timeout=8,
+        )
+        qresp.raise_for_status()
+        diff = (qresp.json() or {}).get("data", {}).get("diff") or []
+        if diff:
+            quote = pd.DataFrame(diff).rename(
+                columns={"f14": "股票名称", "f3": "涨跌幅", "f12": "_qcode", "f2": "最新价"}
+            )
+            for col in ("股票名称", "最新价", "涨跌幅"):
+                if col in quote.columns:
+                    result[col] = quote[col].values
+            if "最新价" in result.columns and "涨跌幅" in result.columns:
+                result["最新价"] = pd.to_numeric(result["最新价"], errors="coerce")
+                result["涨跌幅"] = pd.to_numeric(result["涨跌幅"], errors="coerce")
+                result["涨跌额"] = result["最新价"] * result["涨跌幅"] / 100
+    except Exception as exc:
+        logger.info("Eastmoney hot-rank price enrichment skipped: %s", exc)
+
+    result["source"] = "eastmoney_direct:hotrank"
+    return result
+
+
+def _append_hot_rank_fallback(
+    sections: list[str], code: str, display: str, reason: str
+) -> None:
+    """Append a direct-connection hot-rank section, or an unavailable note.
+
+    Shared by the empty-data and exception paths of ``get_theme_heat`` (and by
+    ``get_social_sentiment``) so the popularity rank is not silently lost when
+    AKShare inherits a broken/system proxy.
+    """
+    fb = _eastmoney_hot_rank_fallback()
+    if fb is not None and not fb.empty:
+        fb_row = _filter_code(fb, code)
+        if not fb_row.empty:
+            sections.append(
+                df_to_csv_report(
+                    fb_row,
+                    title=f"Retail heat rank for {display} (Eastmoney direct fallback)",
+                    header_lines=[
+                        reason,
+                        "Network policy: direct connection, system proxy bypassed for this request.",
+                    ],
+                )
+            )
+            return
+    sections.append(f"# Retail heat rank unavailable: {reason}")
+
+
+def _eastmoney_board_heat_fallback(fn_name: str, top_n: int) -> pd.DataFrame | None:
+    """Fetch Eastmoney concept/industry board heat directly.
+
+    AKShare's Eastmoney helpers can inherit the macOS/system proxy and fail with
+    ProxyError, or be rejected by Eastmoney without browser-like headers. This
+    fallback intentionally disables environment proxies for this request and
+    uses a compact field set to reduce rejection risk.
+    """
+
+    mapping = {
+        "stock_board_concept_name_em": ("concept", "m:90 t:3 f:!50"),
+        "stock_board_industry_name_em": ("industry", "m:90 t:2 f:!50"),
+    }
+    item = mapping.get(fn_name)
+    if item is None:
+        return None
+    board_type, fs = item
+    try:
+        import requests
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            ),
+            "Referer": "https://quote.eastmoney.com/",
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        params = {
+            "pn": 1,
+            "pz": max(1, min(int(top_n), 50)),
+            "po": 1,
+            "np": 1,
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": 2,
+            "invt": 2,
+            "fid": "f3",
+            "fs": fs,
+            "fields": "f12,f14,f3,f4,f8,f2,f20,f21,f62,f104,f105",
+        }
+        last_error: Exception | None = None
+        for host in ("79.push2.eastmoney.com", "17.push2.eastmoney.com", "push2.eastmoney.com"):
+            session = requests.Session()
+            session.trust_env = False
+            try:
+                response = session.get(
+                    f"https://{host}/api/qt/clist/get",
+                    params=params,
+                    headers=headers,
+                    timeout=8,
+                )
+                response.raise_for_status()
+                payload: dict[str, Any] = response.json()
+                rows = (payload.get("data") or {}).get("diff") or []
+                if not rows:
+                    continue
+                df = pd.DataFrame(rows)
+                return _normalize_eastmoney_board_df(df, board_type, host)
+            except Exception as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            logger.info("Eastmoney %s fallback failed: %s", board_type, last_error)
+    except Exception as exc:
+        logger.info("Eastmoney %s fallback unavailable: %s", board_type, exc)
+    return None
+
+
+def _normalize_eastmoney_board_df(df: pd.DataFrame, board_type: str, host: str) -> pd.DataFrame:
+    columns = {
+        "f12": "板块代码",
+        "f14": "板块名称",
+        "f3": "涨跌幅",
+        "f4": "涨跌额",
+        "f8": "换手率",
+        "f2": "最新价",
+        "f20": "总市值",
+        "f21": "流通市值",
+        "f62": "主力净流入",
+        "f104": "上涨家数",
+        "f105": "下跌家数",
+    }
+    result = df.rename(columns={key: value for key, value in columns.items() if key in df.columns})
+    keep = [value for value in columns.values() if value in result.columns]
+    result = result[keep].copy()
+    result.insert(0, "类型", "概念板块" if board_type == "concept" else "行业板块")
+    result["source"] = f"eastmoney_direct:{host}"
+    return result
 
 
 def get_lhb_detail(

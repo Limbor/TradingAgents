@@ -78,6 +78,48 @@ def test_theme_heat_includes_hot_rank_and_boards(fake_ak):
 
 
 @pytest.mark.unit
+def test_theme_heat_uses_eastmoney_direct_fallback(fake_ak, monkeypatch):
+    fake_ak.stock_hot_rank_em = lambda: (_ for _ in ()).throw(RuntimeError("proxy failed"))
+    fake_ak.stock_board_concept_name_em = lambda: (_ for _ in ()).throw(RuntimeError("akshare wrapper failed"))
+    fake_ak.stock_board_industry_name_em = lambda: pd.DataFrame({"板块名称": ["半导体"], "涨跌幅": [4.2]})
+
+    def fake_hot_fallback():
+        return pd.DataFrame(
+            {
+                "当前排名": [4],
+                "代码": ["SH600667"],
+                "股票名称": ["太极实业"],
+                "source": ["eastmoney_direct:hotrank"],
+            }
+        )
+
+    def fake_board_fallback(fn_name, top_n):
+        if fn_name == "stock_board_concept_name_em":
+            return pd.DataFrame(
+                {
+                    "类型": ["概念板块"],
+                    "板块代码": ["BK1234"],
+                    "板块名称": ["机器人"],
+                    "source": ["eastmoney_direct:test"],
+                }
+            )
+        return None
+
+    monkeypatch.setattr(cn, "_eastmoney_hot_rank_fallback", fake_hot_fallback)
+    monkeypatch.setattr(cn, "_eastmoney_board_heat_fallback", fake_board_fallback)
+
+    out = cn.get_theme_heat("600667", "2026-06-25", top_n=5)
+
+    # Hot rank is now recovered via direct fallback instead of being "unavailable".
+    assert "Retail heat rank" in out
+    assert "Eastmoney direct fallback" in out
+    assert "太极实业" in out
+    assert "Retail heat rank unavailable" not in out
+    assert "机器人" in out
+    assert "半导体" in out
+
+
+@pytest.mark.unit
 def test_lhb_detail_filters_to_lookback(fake_ak):
     fake_ak.stock_lhb_stock_detail_em = lambda symbol: pd.DataFrame(
         {
@@ -92,3 +134,44 @@ def test_lhb_detail_filters_to_lookback(fake_ak):
     assert "Dragon-Tiger List detail" in out
     assert "连续涨幅偏离" in out
     assert "旧数据" not in out
+
+
+@pytest.mark.unit
+def test_eastmoney_hot_rank_fallback_parses_rank(monkeypatch):
+    """The direct fallback must build a filterable DataFrame from the raw
+    Eastmoney rank payload even when the price-enrichment step returns nothing,
+    so the popularity rank itself is never silently lost."""
+    import requests as real_requests
+
+    rank_payload = {"data": [{"sc": "SZ000665", "rk": 1}, {"sc": "SH600667", "rk": 4}]}
+
+    class FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+
+        def post(self, *args, **kwargs):
+            return FakeResp(rank_payload)
+
+        def get(self, *args, **kwargs):
+            # Empty diff simulates the push2 quote step failing/returning nothing.
+            return FakeResp({"data": {"diff": []}})
+
+    monkeypatch.setattr(real_requests, "Session", FakeSession)
+
+    df = cn._eastmoney_hot_rank_fallback()
+
+    assert df is not None
+    assert "代码" in df.columns
+    assert "当前排名" in df.columns
+    assert "SH600667" in df["代码"].tolist()
+    assert df.loc[df["代码"] == "SH600667", "当前排名"].iloc[0] == 4
