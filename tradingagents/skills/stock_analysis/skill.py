@@ -12,11 +12,12 @@ import logging
 import re
 from pydantic import BaseModel, Field
 
-from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.dataflows.symbol_utils import detect_market
 
 logger = logging.getLogger(__name__)
 
+from tradingagents.core.reflection_enroll import enroll_reflection_case
+from tradingagents.skills._shared import optional_float, resolve_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
 
@@ -138,17 +139,9 @@ class StockAnalysisSkill(BaseSkill):
         input_params: StockAnalysisInput = params
         raw_analysis_date = input_params.analysis_date
         market = detect_market(input_params.ticker)
-        current_temporal_context = get_temporal_context(config, market=market)
-        is_current_default = raw_analysis_date in {date.today().isoformat(), current_temporal_context.now[:10]}
-        temporal_context = (
-            current_temporal_context
-            if is_current_default
-            else get_temporal_context(config, market=market, requested_date=input_params.analysis_date)
+        temporal_context, input_params = resolve_temporal_context(
+            config, raw_analysis_date, market=market, date_field="analysis_date", params=input_params
         )
-        if input_params.analysis_date != temporal_context.market_asof_date:
-            input_params = input_params.model_copy(
-                update={"analysis_date": temporal_context.market_asof_date}
-            )
 
         db = config.get("db")
         holding_context = input_params.holding_context
@@ -465,25 +458,15 @@ class StockAnalysisSkill(BaseSkill):
         if db is None:
             return
         try:
-            rating_upper = str(rating or "").lower()
-            if rating_upper in {"buy", "overweight", "sell", "underweight"}:
-                scope = "decision_grade"
-                eligible = True
-            else:
-                scope = "candidate_pool"
-                eligible = False
-            case_id = f"stock_analysis:{analysis_date}:{ticker.upper()}"
-            db.save_reflection_case(
-                case_id=case_id,
+            enroll_reflection_case(
+                db,
                 source_type="stock_analysis",
-                reflection_scope=scope,
-                eligible_for_strategy_learning=eligible,
                 symbol=ticker,
+                name=ticker,
                 signal_date=analysis_date,
-                horizon_days=5,
+                rating_or_decision=rating,
                 source_run_id=str(config.get("run_id", "")),
                 source_artifact_id=str(artifact_id or ""),
-                name=ticker,
                 snapshot_payload={
                     "rating": rating,
                     "plan": structured_conclusion.get("plan"),
@@ -492,7 +475,11 @@ class StockAnalysisSkill(BaseSkill):
                     "reasons": structured_conclusion.get("reasons"),
                     "selection_context": selection_context,
                 },
-                status="pending",
+                # stock_analysis scope: Buy/Overweight/Sell/Underweight ->
+                # decision_grade; Hold/other -> candidate_pool.
+                decision_grade_values=("buy", "overweight", "sell", "underweight"),
+                candidate_pool_values=(),
+                default_scope="candidate_pool",
             )
         except Exception as exc:
             logger.warning("Failed to enroll stock_analysis reflection case for %s: %s", ticker, exc)
@@ -648,21 +635,21 @@ async def _load_holding_context(
             symbol = str(holding["symbol"])
 
         holdings = db.list_holdings()
-        current_price = _optional_float(holding.get("current_price"))
+        current_price = optional_float(holding.get("current_price"))
         price_source = "portfolio_current_price" if current_price is not None else None
         price_trade_date = None
         if current_price is None and config.get("stock_analysis_refresh_holding_price_context", True):
             try:
                 quote = await latest_close(symbol, config)
                 if quote is not None:
-                    current_price = _optional_float(quote.get("close"))
+                    current_price = optional_float(quote.get("close"))
                     price_source = str(quote.get("source") or "latest_close")
                     price_trade_date = quote.get("trade_date")
             except Exception as exc:
                 logger.info("Holding context price refresh failed for %s: %s", symbol, exc)
 
-        quantity = _optional_float(holding.get("quantity")) or 0.0
-        avg_cost = _optional_float(holding.get("avg_cost")) or 0.0
+        quantity = optional_float(holding.get("quantity")) or 0.0
+        avg_cost = optional_float(holding.get("avg_cost")) or 0.0
         cost_value = quantity * avg_cost
         market_value = quantity * current_price if current_price is not None else None
         unrealized_pnl = market_value - cost_value if market_value is not None else None
@@ -670,8 +657,8 @@ async def _load_holding_context(
 
         total_market_value = 0.0
         for item in holdings:
-            item_quantity = _optional_float(item.get("quantity")) or 0.0
-            item_price = _optional_float(item.get("current_price")) or _optional_float(item.get("avg_cost")) or 0.0
+            item_quantity = optional_float(item.get("quantity")) or 0.0
+            item_price = optional_float(item.get("current_price")) or optional_float(item.get("avg_cost")) or 0.0
             total_market_value += item_quantity * item_price
         position_weight = market_value / total_market_value if market_value is not None and total_market_value else None
 
@@ -807,24 +794,15 @@ def _join_context_blocks(*blocks: str) -> str:
     return "\n\n".join(block.strip() for block in blocks if block and block.strip())
 
 
-def _optional_float(value: Any) -> float | None:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _format_number(value: Any) -> str:
-    numeric = _optional_float(value)
+    numeric = optional_float(value)
     if numeric is None:
         return "unknown"
     return f"{numeric:,.2f}"
 
 
 def _format_pct(value: Any) -> str:
-    numeric = _optional_float(value)
+    numeric = optional_float(value)
     if numeric is None:
         return "unknown"
     return f"{numeric:+.2%}"

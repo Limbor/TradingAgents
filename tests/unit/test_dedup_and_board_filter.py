@@ -21,18 +21,26 @@ from tradingagents.skills._shared import (
 
 def test_daily_pipeline_case_id_no_uuid_fallback():
     """case_id must always be derived from (trade_date, symbol), never uuid,
-    so re-runs INSERT OR REPLACE instead of accumulating duplicates."""
+    so re-runs INSERT OR REPLACE instead of accumulating duplicates.
+
+    case_id construction moved to the shared enroll_reflection_case helper
+    during the A4 dedup refactor, so check the helper holds the invariant and
+    daily_pipeline still routes through it."""
     import inspect
     import importlib
+
+    enroll_module = importlib.import_module("tradingagents.core.reflection_enroll")
+    helper_src = inspect.getsource(enroll_module.enroll_reflection_case)
+    # The uuid fallback must be gone.
+    assert "uuid" not in helper_src.lower(), "case_id still falls back to uuid"
+    # A stable id is always built from source + date + symbol.
+    assert "signal_date" in helper_src and "symbol" in helper_src
 
     # importlib.import_module returns the actual submodule from sys.modules,
     # even though the package __init__ shadows the name `skill` with an instance.
     dp_skill_module = importlib.import_module("tradingagents.skills.daily_pipeline.skill")
-    src = inspect.getsource(dp_skill_module._save_reflection_cases)
-    # The uuid fallback must be gone.
-    assert "str(uuid.uuid4())" not in src, "case_id still falls back to uuid"
-    # A stable id is always built from trade_date + symbol.
-    assert "daily_pipeline:" in src
+    dp_src = inspect.getsource(dp_skill_module._save_reflection_cases)
+    assert "enroll_reflection_case" in dp_src, "daily_pipeline no longer uses shared helper"
 
 
 # ---------------------------------------------------------------------------

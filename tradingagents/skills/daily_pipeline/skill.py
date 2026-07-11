@@ -18,6 +18,7 @@ from tradingagents.core.candidate_review_runner import apply_llm_reviews
 from tradingagents.core.mcp_client import get_mcp_client
 from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
+from tradingagents.core.reflection_enroll import enroll_reflection_case
 from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_evidence_markdown
 from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.llm_clients import create_llm_client
@@ -30,7 +31,9 @@ from tradingagents.skills._shared import (
     demo_candidates,
     factor_profile_for_style,
     mcp_board_filter,
+    optional_float,
     resolve_board_filter,
+    resolve_temporal_context,
 )
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
@@ -83,15 +86,8 @@ class DailyPipelineSkill(BaseSkill):
     async def execute(self, params: BaseModel, config: dict[str, Any]) -> AsyncIterator[SkillEvent]:
         input_params: DailyPipelineInput = params
         raw_trade_date = input_params.trade_date
-        current_temporal_context = get_temporal_context(config, market="cn_a")
-        is_current_default = raw_trade_date in {
-            date.today().isoformat(),
-            current_temporal_context.now[:10],
-        }
-        temporal_context = (
-            current_temporal_context
-            if is_current_default
-            else get_temporal_context(config, market="cn_a", requested_date=raw_trade_date)
+        temporal_context, _ = resolve_temporal_context(
+            config, raw_trade_date, market="cn_a", date_field="trade_date"
         )
         input_params = _apply_runtime_defaults(input_params, config, temporal_context)
         db = config.get("db") or Database()
@@ -674,9 +670,9 @@ def _save_candidate_signals(db: Database, run_id: str, trade_date: str, candidat
                 symbol=str(candidate.get("symbol") or candidate.get("ts_code") or ""),
                 name=str(candidate.get("name") or ""),
                 signal=str(candidate.get("signal") or "WATCHLIST"),
-                final_score=_optional_float(candidate.get("final_score")),
-                quant_score=_optional_float(candidate.get("quant_score")),
-                llm_confidence=_optional_float(candidate.get("llm_confidence")),
+                final_score=optional_float(candidate.get("final_score")),
+                quant_score=optional_float(candidate.get("quant_score")),
+                llm_confidence=optional_float(candidate.get("llm_confidence")),
                 fusion_mode=str(candidate.get("fusion_mode") or ""),
                 payload=candidate,
             )
@@ -702,38 +698,21 @@ def _save_reflection_cases(
             symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "").strip().upper()
             if not symbol:
                 continue
-            final_decision = str(candidate.get("final_decision") or candidate.get("signal") or "").upper()
-            if final_decision == "BUY":
-                scope = "decision_grade"
-                eligible = True
-            elif final_decision in {"WATCHLIST", "MONITOR", "HOLD_REVIEW"}:
-                scope = "candidate_pool"
-                eligible = False
-            else:
-                scope = "exploratory"
-                eligible = False
-            snapshot = _reflection_snapshot(candidate)
-            # case_id excludes run_id so that re-running daily_pipeline on the
-            # same (trade_date, symbol) — e.g. a manual trigger plus the 08:30
-            # scheduled one — replaces the prior case (INSERT OR REPLACE) instead
-            # of creating duplicates that double-count in reflection stats.
-            # Always derive a stable id from (trade_date, symbol); never fall
-            # back to uuid, which would defeat dedup entirely.
-            td = trade_date or "undated"
-            sym = symbol or "unknown"
-            case_id = f"daily_pipeline:{td}:{sym}"
-            db.save_reflection_case(
-                case_id=case_id,
+            enroll_reflection_case(
+                db,
+                source="daily_pipeline",
                 source_type="system_signal",
-                reflection_scope=scope,
-                eligible_for_strategy_learning=eligible,
                 symbol=symbol,
                 name=str(candidate.get("name") or ""),
                 signal_date=trade_date,
-                horizon_days=5,
+                rating_or_decision=candidate.get("final_decision") or candidate.get("signal"),
                 source_run_id=run_id,
-                snapshot_payload=snapshot,
-                status="pending",
+                snapshot_payload=_reflection_snapshot(candidate),
+                # daily_pipeline's 3-tier scope: BUY -> decision_grade,
+                # WATCHLIST/MONITOR/HOLD_REVIEW -> candidate_pool, else exploratory.
+                decision_grade_values=("buy",),
+                candidate_pool_values=("watchlist", "monitor", "hold_review"),
+                default_scope="exploratory",
             )
             created += 1
         except Exception as exc:
@@ -1014,15 +993,6 @@ def _quant_meta(payload: dict[str, Any] | None, input_params: DailyPipelineInput
         "selection_meta": payload.get("selection_meta") or {},
         "concentration_meta": payload.get("concentration_meta") or {},
     }
-
-
-def _optional_float(value: Any) -> float | None:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 async def _render_llm_briefing(

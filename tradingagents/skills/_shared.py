@@ -6,9 +6,13 @@ These functions are pure helpers — they do not interact with external services
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
+from pydantic import BaseModel
+
 from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_evidence_markdown
+from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate
 
 # Common constant shared by daily_pipeline and market_scanner
@@ -210,3 +214,70 @@ def mcp_board_filter(value: str) -> str:
     if value == "dual_growth_only":
         return "chinext_star"
     return value
+
+
+# ---------------------------------------------------------------------------
+# Temporal context resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_temporal_context(
+    config: dict[str, Any],
+    raw_date: str,
+    *,
+    market: str,
+    date_field: str,
+    params: BaseModel | None = None,
+) -> tuple[Any, BaseModel | None]:
+    """Resolve the trading-day temporal context shared by selection skills.
+
+    Centralizes the pattern duplicated by ``daily_pipeline``,
+    ``stock_analysis`` and ``daily_review``: compute the "current" temporal
+    context, decide whether the caller's ``raw_date`` is the default (today or
+    the context ``now`` day), and if not re-resolve against the requested date.
+
+    When ``params`` is given, the ``date_field`` on it is synced to
+    ``temporal_context.market_asof_date`` via ``model_copy`` (only when it
+    differs), mirroring what each skill previously did inline. When ``params``
+    is ``None`` only the temporal context is returned (the caller owns the
+    ``model_copy``); this is used by ``daily_pipeline`` whose
+    ``_apply_runtime_defaults`` couples the date sync with board-filter
+    resolution in a single ``model_copy``.
+
+    Returns ``(temporal_context, updated_params)``. ``updated_params`` is the
+    (possibly copied) params when ``params`` is given, otherwise ``None``.
+    """
+    current = get_temporal_context(config, market=market)
+    is_current_default = raw_date in {date.today().isoformat(), current.now[:10]}
+    temporal_context = (
+        current
+        if is_current_default
+        else get_temporal_context(config, market=market, requested_date=raw_date)
+    )
+    updated_params = params
+    if params is not None:
+        current_value = getattr(params, date_field, None)
+        if current_value != temporal_context.market_asof_date:
+            updated_params = params.model_copy(
+                update={date_field: temporal_context.market_asof_date}
+            )
+    return temporal_context, updated_params
+
+
+# ---------------------------------------------------------------------------
+# Numeric helpers
+# ---------------------------------------------------------------------------
+
+
+def optional_float(value: Any) -> float | None:
+    """Coerce ``value`` to ``float`` returning ``None`` for empty/invalid input.
+
+    Handles ``None`` and ``""`` (returns ``None`` without invoking ``float``),
+    and swallows ``TypeError``/``ValueError`` for any other non-numeric value.
+    """
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None

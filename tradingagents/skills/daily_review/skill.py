@@ -13,9 +13,8 @@ from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.reflection import ReflectionEngine
-from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
-from tradingagents.skills._shared import resolve_board_filter
+from tradingagents.skills._shared import resolve_board_filter, resolve_temporal_context
 from tradingagents.skills.daily_pipeline.skill import DailyPipelineInput, skill as daily_pipeline_skill
 from tradingagents.skills.risk_monitor.skill import RiskMonitorInput, skill as risk_monitor_skill
 
@@ -62,15 +61,9 @@ class DailyReviewSkill(BaseSkill):
     async def execute(self, params: BaseModel, config: dict[str, Any]) -> AsyncIterator[SkillEvent]:
         input_params: DailyReviewInput = params
         raw_trade_date = input_params.trade_date
-        current_temporal_context = get_temporal_context(config, market="cn_a")
-        is_current_default = raw_trade_date in {date.today().isoformat(), current_temporal_context.now[:10]}
-        temporal_context = (
-            current_temporal_context
-            if is_current_default
-            else get_temporal_context(config, market="cn_a", requested_date=input_params.trade_date)
+        temporal_context, input_params = resolve_temporal_context(
+            config, raw_trade_date, market="cn_a", date_field="trade_date", params=input_params
         )
-        if input_params.trade_date != temporal_context.market_asof_date:
-            input_params = input_params.model_copy(update={"trade_date": temporal_context.market_asof_date})
         db = config.get("db") or Database()
         run_id = str(config.get("run_id", ""))
 
