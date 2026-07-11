@@ -20,6 +20,11 @@ back to free-text generation for providers that lack native support, so
 the sentiment header (band + score + confidence) is deterministic across
 runs and providers instead of free-form per-model prose.
 
+Because of this pre-fetch + structured-output design (no ``bind_tools``,
+a different prompt template, and an ``AIMessage`` return), this analyst
+does NOT use :func:`tradingagents.agents.utils.create_tool_analyst.create_tool_analyst`
+unlike market/fundamentals/news analysts, which share a tool-calling template.
+
 See: https://github.com/TauricResearch/TradingAgents/issues/557
 See: https://github.com/TauricResearch/TradingAgents/issues/796
 """
