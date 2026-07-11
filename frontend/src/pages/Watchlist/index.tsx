@@ -3,11 +3,12 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CalendarDays, Play, RefreshCw } from "lucide-react";
 import { listRuns } from "../../api/client";
+import { queryKeys } from "@/api/queryKeys";
 
 export default function Watchlist() {
   const navigate = useNavigate();
   const runsQuery = useQuery({
-    queryKey: ["runs", "watchlist"],
+    queryKey: queryKeys.runsWatchlist(),
     queryFn: () => listRuns(50),
     refetchInterval: 30000,
     staleTime: 10_000,

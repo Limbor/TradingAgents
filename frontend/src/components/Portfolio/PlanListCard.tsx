@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Bell, Shield, Trash2, X } from "lucide-react";
 import { deletePlan, listPlans, updatePlan, type Plan } from "@/api/client";
 import { displayNameOf } from "@/components/common/StockName";
+import { queryKeys } from "@/api/queryKeys";
 
 function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined) return "-";
@@ -52,7 +53,7 @@ function PriceBlock({ label, value, tone }: { label: string; value: string; tone
 export function PlanListCard() {
   const qc = useQueryClient();
   const { data, refetch } = useQuery({
-    queryKey: ["plans"],
+    queryKey: queryKeys.plans(),
     queryFn: () => listPlans({ limit: 30 }),
   });
   const plans = data ?? [];
@@ -61,12 +62,12 @@ export function PlanListCard() {
 
   const close = async (id: string) => {
     await updatePlan(id, { status: "closed" });
-    qc.invalidateQueries({ queryKey: ["plans"] });
+    qc.invalidateQueries({ queryKey: queryKeys.plans() });
     refetch();
   };
   const remove = async (id: string) => {
     await deletePlan(id);
-    qc.invalidateQueries({ queryKey: ["plans"] });
+    qc.invalidateQueries({ queryKey: queryKeys.plans() });
     refetch();
   };
 

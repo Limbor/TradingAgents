@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import type { ArtifactInfo } from "../../api/client";
 import { authHeaders } from "../../api/auth";
+import { queryKeys } from "@/api/queryKeys";
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -64,29 +65,29 @@ export default function Dashboard() {
   // staleTime prevents refetch storms when tabs re-mount or the window
   // regains focus while data is still fresh.
   const runsQuery = useQuery({
-    queryKey: ["runs"],
+    queryKey: queryKeys.runs(),
     queryFn: () => listRuns(20),
     refetchInterval: 30000,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
   const holdingsQuery = useQuery({
-    queryKey: ["holdings"],
+    queryKey: queryKeys.holdings(),
     queryFn: listHoldings,
     refetchInterval: 60000,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
   const healthQuery = useQuery({
-    queryKey: ["health"],
+    queryKey: queryKeys.health(),
     queryFn: healthCheck,
     refetchInterval: 60000,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const configQuery = useQuery({ queryKey: ["config"], queryFn: getConfig, staleTime: 60_000 });
+  const configQuery = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig, staleTime: 60_000 });
   const reflectionQuery = useQuery({
-    queryKey: ["reflections-summary"],
+    queryKey: queryKeys.reflectionsSummary(),
     queryFn: async () => {
       const res = await fetch("/api/v1/reflections/summary?lookback_days=30", { headers: authHeaders() });
       if (!res.ok) return null;
@@ -97,14 +98,14 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
   const artifactQuery = useQuery({
-    queryKey: ["dashboard-artifacts"],
+    queryKey: queryKeys.dashboardArtifacts(),
     queryFn: () => listArtifacts({ limit: 20 }),
     refetchInterval: 60000,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
   const lessonsQuery = useQuery({
-    queryKey: ["strategy-lessons"],
+    queryKey: queryKeys.strategyLessons(),
     queryFn: () => listStrategyLessons({ limit: 5 }),
     refetchInterval: 120000,
     staleTime: 60_000,
@@ -141,8 +142,8 @@ export default function Dashboard() {
     try {
       const result = await advanceTradingDay();
       await holdingsQuery.refetch();
-      await queryClient.invalidateQueries({ queryKey: ["plans"] });
-      await queryClient.invalidateQueries({ queryKey: ["reflection-cases", "pending"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.plans() });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.reflectionCases() });
       const failedText = result.refreshed_prices.failed.length
         ? `，${result.refreshed_prices.failed.length} 个失败`
         : "";
@@ -364,7 +365,7 @@ export default function Dashboard() {
                 filters={(configQuery.data?.daily_pipeline_filters ?? {}) as DailyPipelineFilters}
                 onSave={async (filters) => {
                   await updateConfig({ daily_pipeline_filters: filters } as Parameters<typeof updateConfig>[0]);
-                  queryClient.invalidateQueries({ queryKey: ["config"] });
+                  queryClient.invalidateQueries({ queryKey: queryKeys.config() });
                   setShowFilters(false);
                 }}
               />

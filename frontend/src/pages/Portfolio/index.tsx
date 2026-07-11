@@ -32,6 +32,7 @@ import {
   formatNumber,
 } from "@/utils/portfolio";
 import { displayNameOf } from "@/components/common/StockName";
+import { queryKeys } from "@/api/queryKeys";
 
 type HoldingForm = {
   symbol: string;
@@ -53,7 +54,7 @@ export default function Portfolio() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const holdingsQuery = useQuery({
-    queryKey: ["holdings"],
+    queryKey: queryKeys.holdings(),
     queryFn: listHoldings,
   });
   const [form, setForm] = useState<HoldingForm>(EMPTY_FORM);
@@ -163,8 +164,8 @@ export default function Portfolio() {
     try {
       const result = await advanceTradingDay();
       await holdingsQuery.refetch();
-      await queryClient.invalidateQueries({ queryKey: ["plans"] });
-      await queryClient.invalidateQueries({ queryKey: ["reflection-cases", "pending"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.plans() });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.reflectionCases() });
       if (result.plan_alerts.length) {
         setError(`${result.plan_alerts.length} 个计划触发提醒，见下方"交易计划"`);
       }

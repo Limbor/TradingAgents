@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { listReflectionCases } from "@/api/client";
 import { displayNameOf } from "@/components/common/StockName";
+import { queryKeys } from "@/api/queryKeys";
 
 function daysUntil(iso: string | null): number | null {
   if (!iso) return null;
@@ -18,7 +19,7 @@ function scopeLabel(scope: string): string {
 
 export function ReflectionQueueCard() {
   const { data } = useQuery({
-    queryKey: ["reflection-cases", "pending"],
+    queryKey: queryKeys.reflectionCases(),
     queryFn: () => listReflectionCases({ status: "pending", limit: 15 }),
     refetchInterval: 60000,
   });

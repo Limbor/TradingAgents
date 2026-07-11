@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Boxes, FileText, Search } from "lucide-react";
 import { getArtifact, listArtifacts, listArtifactVersions, type ArtifactInfo, type ArtifactVersion } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { formatRelativeTime } from "@/lib/utils";
 import {
   CandidateTable,
@@ -58,7 +59,7 @@ export default function Library() {
   const runId = searchParams.get("run_id") || undefined;
 
   const artifactsQuery = useQuery({
-    queryKey: ["artifacts", artifactType, query, runId],
+    queryKey: queryKeys.artifacts(artifactType, query, runId),
     queryFn: () => listArtifacts({ limit: 50, artifact_type: artifactType || undefined, q: query || undefined, run_id: runId }),
     refetchInterval: runId ? 5000 : 30000,
   });
@@ -81,7 +82,7 @@ export default function Library() {
 
   const selected = selectedId ?? visibleArtifacts[0]?.id ?? null;
   const detailQuery = useQuery({
-    queryKey: ["artifact", selected],
+    queryKey: queryKeys.artifact(selected!),
     queryFn: () => getArtifact(selected!),
     enabled: Boolean(selected),
   });
@@ -239,7 +240,7 @@ function ArtifactDetail({ artifact, onAnalyze }: { artifact: ArtifactInfo; onAna
 function ArtifactVersions({ artifactId }: { artifactId: string }) {
   const [expanded, setExpanded] = useState(false);
   const versionsQuery = useQuery({
-    queryKey: ["artifact-versions", artifactId],
+    queryKey: queryKeys.artifactVersions(artifactId),
     queryFn: () => listArtifactVersions(artifactId),
     enabled: expanded,
   });

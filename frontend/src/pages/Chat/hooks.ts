@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { chatWsManager, type WSMessage } from "@/api/ws";
 import { getRun } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { useChatStore, type ChatMessage } from "@/stores/useChatStore";
 import {
   eventStepLabel,
@@ -51,12 +52,12 @@ export function useChatWebSocket() {
           setRunning(false);
           setCurrentRunId(null);
           finishTask(currentRunId, "completed");
-          queryClient.invalidateQueries({ queryKey: ["runs"] });
+          queryClient.invalidateQueries({ queryKey: queryKeys.runs() });
         } else if (status === "failed" || status === "cancelled") {
           setRunning(false);
           setCurrentRunId(null);
           finishTask(currentRunId, "failed", status === "cancelled" ? "任务已取消" : "任务失败");
-          queryClient.invalidateQueries({ queryKey: ["runs"] });
+          queryClient.invalidateQueries({ queryKey: queryKeys.runs() });
         }
         // If still "running", leave it — the run continues server-side; the
         // task card stays open but won't get more chat-WS events. The user
@@ -226,9 +227,9 @@ export function useChatWebSocket() {
         finishTask(message.run_id, "completed");
         // A run just finished — refresh the Dashboard's runs/artifacts/holdings
         // views on demand instead of waiting for their polling intervals.
-        queryClient.invalidateQueries({ queryKey: ["runs"] });
-        queryClient.invalidateQueries({ queryKey: ["dashboard-artifacts"] });
-        queryClient.invalidateQueries({ queryKey: ["holdings"] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboardArtifacts() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.holdings() });
       } else if (message.type === "run_cancelled") {
         // Terminal event: the run was cancelled (via Analysis page, scheduler,
         // or server restart). Without this branch the event fell into the
@@ -238,14 +239,14 @@ export function useChatWebSocket() {
           setCurrentRunId(null);
         }
         finishTask(message.run_id, "failed", "任务已取消");
-        queryClient.invalidateQueries({ queryKey: ["runs"] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs() });
       } else if (message.type === "error") {
         if (useChatStore.getState().currentRunId === message.run_id) {
           setRunning(false);
           setCurrentRunId(null);
         }
         finishTask(message.run_id, "failed", String(message.payload.message ?? "Run failed"));
-        queryClient.invalidateQueries({ queryKey: ["runs"] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs() });
       } else if (message.type === "run_cancellation_ack") {
         // Acknowledgement of a cancel action — no UI state change needed; the
         // subsequent run_cancelled event will clear running state.

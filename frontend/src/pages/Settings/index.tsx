@@ -10,6 +10,7 @@ import {
   type UserProfile,
 } from "../../api/client";
 import { getAuthToken, setAuthToken } from "../../api/auth";
+import { queryKeys } from "@/api/queryKeys";
 
 const LANGUAGES = [
   { label: "English", value: "English" },
@@ -22,12 +23,12 @@ const LANGUAGES = [
 ];
 
 export default function Settings() {
-  const configQuery = useQuery({ queryKey: ["config"], queryFn: getConfig });
+  const configQuery = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig });
   const providersQuery = useQuery({
-    queryKey: ["providers"],
+    queryKey: queryKeys.providers(),
     queryFn: listProviders,
   });
-  const profileQuery = useQuery({ queryKey: ["profile"], queryFn: getProfile });
+  const profileQuery = useQuery({ queryKey: queryKeys.profile(), queryFn: getProfile });
 
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
