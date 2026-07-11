@@ -1,4 +1,5 @@
 import { AlertTriangle, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
+import { displayNameOf } from "@/components/common/StockName";
 
 export interface RiskRow {
   symbol: string;
@@ -51,7 +52,7 @@ export function RiskAlertList({ risks, onAnalyze }: RiskAlertListProps) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-stone-100">
-                  {risk.name && risk.name !== risk.symbol ? risk.name : risk.symbol}
+                  {displayNameOf(risk.name, risk.symbol)}
                   {risk.name && risk.name !== risk.symbol && (
                     <span className="ml-1 font-mono text-xs text-stone-500">{risk.symbol}</span>
                   )}

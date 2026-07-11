@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { listReflectionCases } from "@/api/client";
+import { displayNameOf } from "@/components/common/StockName";
 
 function daysUntil(iso: string | null): number | null {
   if (!iso) return null;
@@ -47,7 +48,7 @@ export function ReflectionQueueCard() {
               <li key={c.id} className="flex items-center justify-between gap-2 rounded border border-stone-800 bg-stone-950 px-2 py-1.5">
                 <div className="min-w-0">
                   <div className="text-stone-200">
-                    {c.name && c.name !== c.symbol ? c.name : c.symbol}
+                    {displayNameOf(c.name, c.symbol)}
                     {c.name && c.name !== c.symbol && (
                       <span className="ml-1 font-mono text-[10px] text-stone-500">{c.symbol}</span>
                     )}

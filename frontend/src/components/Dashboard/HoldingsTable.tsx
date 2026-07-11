@@ -1,5 +1,6 @@
 import type { Holding } from "@/api/client";
 import { holdingMarketValue, holdingPnl, formatMoney, formatNumber } from "@/utils/portfolio";
+import { displayNameOf } from "@/components/common/StockName";
 
 /** Raw holding fields handed off to stock_analysis as holding_context.
  *  The backend enriches these with derived metrics (P&L, position weight). */
@@ -46,7 +47,7 @@ export function HoldingsTable({ holdings, totalValue, onAnalyze, onManage }: Hol
             const pnl = holdingPnl(holding);
             const pnlPct = holding.avg_cost ? ((price - holding.avg_cost) / holding.avg_cost) * 100 : 0;
             const weight = totalValue ? (value / totalValue) * 100 : 0;
-            const displayName = holding.name && holding.name !== holding.symbol ? holding.name : holding.symbol;
+            const displayName = displayNameOf(holding.name, holding.symbol);
             return (
               <tr key={holding.symbol} className="border-t border-stone-800">
                 <td className="px-3 py-2">

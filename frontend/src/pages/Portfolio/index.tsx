@@ -31,6 +31,7 @@ import {
   formatMoney,
   formatNumber,
 } from "@/utils/portfolio";
+import { displayNameOf } from "@/components/common/StockName";
 
 type HoldingForm = {
   symbol: string;
@@ -134,7 +135,7 @@ export default function Portfolio() {
     try {
       const result = await adjustHolding(holding.symbol, { action, quantity, price });
       await holdingsQuery.refetch();
-      const name = holding.name && holding.name !== holding.symbol ? holding.name : holding.symbol;
+      const name = displayNameOf(holding.name, holding.symbol);
       if (action === "add") {
         setNotice(`已加仓 ${name} ${quantity} 股 @ ${price}`);
       } else if (result.closed) {
@@ -344,7 +345,7 @@ export default function Portfolio() {
                     const value = holdingMarketValue(item);
                     const pnl = holdingPnl(item);
                     const weight = summary.value ? (value / summary.value) * 100 : 0;
-                    const displayName = item.name && item.name !== item.symbol ? item.name : item.symbol;
+                    const displayName = displayNameOf(item.name, item.symbol);
                     return (
                       <tr key={item.symbol} className="border-t border-stone-800">
                         <td className="px-3 py-2">
@@ -454,7 +455,7 @@ export default function Portfolio() {
 	            {sortedHoldings.slice(0, 9).map((item) => {
 	              const value = holdingMarketValue(item);
 	              const weight = summary.value ? (value / summary.value) * 100 : 0;
-	              const displayName = item.name && item.name !== item.symbol ? item.name : item.symbol;
+	              const displayName = displayNameOf(item.name, item.symbol);
 	              return (
 	                <div key={item.symbol} className="rounded-lg border border-stone-800 bg-stone-950 px-3 py-2">
 	                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">

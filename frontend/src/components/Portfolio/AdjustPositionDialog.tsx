@@ -2,6 +2,7 @@ import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { TrendingDown, TrendingUp, X } from "lucide-react";
 import type { Holding } from "@/api/client";
+import { displayNameOf } from "@/components/common/StockName";
 
 interface Props {
   holding: Holding;
@@ -47,7 +48,7 @@ export function AdjustPositionDialog({ holding, action, submitting, error, onCon
           <div className="flex items-center justify-between">
             <Dialog.Title className="flex items-center gap-2 text-sm font-semibold text-stone-100">
               {isAdd ? <TrendingUp className="h-4 w-4 text-teal-300" /> : <TrendingDown className="h-4 w-4 text-amber-300" />}
-              {title} · {holding.name && holding.name !== holding.symbol ? holding.name : holding.symbol}
+              {title} · {displayNameOf(holding.name, holding.symbol)}
             </Dialog.Title>
             <Dialog.Close asChild>
               <button className="rounded p-1 text-stone-500 hover:bg-stone-800 hover:text-stone-200" disabled={submitting} aria-label="关闭">

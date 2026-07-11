@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Bell, Shield, Trash2, X } from "lucide-react";
 import { deletePlan, listPlans, updatePlan, type Plan } from "@/api/client";
+import { displayNameOf } from "@/components/common/StockName";
 
 function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined) return "-";
@@ -103,7 +104,7 @@ export function PlanListCard() {
 
 function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void; onRemove: () => void }) {
   const isTriggered = plan.status === "triggered";
-  const displayName = plan.name && plan.name !== plan.symbol ? plan.name : plan.symbol;
+  const displayName = displayNameOf(plan.name, plan.symbol);
 
   return (
     <div
