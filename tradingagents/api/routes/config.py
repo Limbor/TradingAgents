@@ -24,6 +24,7 @@ class ConfigResponse(BaseModel):
     stockmanager_mcp_enabled: bool = True
     stockmanager_mcp_timeout: float = 30.0
     daily_pipeline_filters: dict = {}
+    scheduler_enabled: bool = True
     api_keys: dict[str, bool] = {}
 
 
@@ -120,6 +121,7 @@ def _build_config_response(config: dict) -> ConfigResponse:
         stockmanager_mcp_enabled=config.get("stockmanager_mcp_enabled", True),
         stockmanager_mcp_timeout=config.get("stockmanager_mcp_timeout", 30.0),
         daily_pipeline_filters=config.get("daily_pipeline_filters") or {},
+        scheduler_enabled=config.get("scheduler_enabled", True),
         api_keys=_get_api_key_status(),
     )
 

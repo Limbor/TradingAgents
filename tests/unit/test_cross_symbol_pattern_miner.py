@@ -7,8 +7,6 @@ from tradingagents.core.cross_symbol_pattern_miner import (
     CrossSymbolPatternMiner,
     PatternBucket,
     _lesson_id_from_finding,
-    _normalize_finding,
-    _fuzzy_match,
 )
 
 
@@ -252,20 +250,6 @@ class TestDedupHelpers:
         id1 = _lesson_id_from_finding("pattern A")
         id2 = _lesson_id_from_finding("pattern B")
         assert id1 != id2
-
-    def test_normalize_finding(self):
-        norm = _normalize_finding("近30天，BUY胜率80%（基准60%）")
-        assert "buy" in norm
-        assert "%" not in norm
-
-    def test_fuzzy_match_same(self):
-        assert _fuzzy_match("pattern a", "pattern a")
-
-    def test_fuzzy_match_subset(self):
-        assert _fuzzy_match("high quant with weak catalyst", "high quant with weak catalyst leads to losses")
-
-    def test_fuzzy_match_different(self):
-        assert not _fuzzy_match("valuation missing", "momentum strong")
 
 
 # ---------------------------------------------------------------------------

@@ -668,28 +668,3 @@ def _lesson_id_from_finding(finding: str) -> str:
     """Generate a stable lesson ID from the finding text."""
     h = hashlib.sha256(finding.encode("utf-8")).hexdigest()[:16]
     return f"csp_{h}"
-
-
-def _normalize_finding(text: str) -> str:
-    """Normalize finding text for fuzzy matching."""
-    import re
-    # Remove percentages, numbers, dates
-    text = re.sub(r"\d+(?:\.\d+)?%?", " ", text)
-    text = re.sub(r"\b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b", " ", text)
-    # Collapse whitespace
-    text = re.sub(r"\s+", " ", text).strip().lower()
-    return text
-
-
-def _fuzzy_match(a: str, b: str) -> bool:
-    """Simple fuzzy match: check if one is a substring of the other or share >50% words."""
-    if a == b:
-        return True
-    if a in b or b in a:
-        return True
-    words_a = set(a.split())
-    words_b = set(b.split())
-    if not words_a or not words_b:
-        return False
-    overlap = len(words_a & words_b)
-    return overlap / min(len(words_a), len(words_b)) >= 0.5

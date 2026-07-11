@@ -24,6 +24,13 @@ import {
   upsertHolding,
   type Holding,
 } from "@/api/client";
+import {
+  buildPortfolioSummary,
+  holdingMarketValue,
+  holdingPnl,
+  formatMoney,
+  formatNumber,
+} from "@/utils/portfolio";
 
 type HoldingForm = {
   symbol: string;
@@ -59,11 +66,11 @@ export default function Portfolio() {
   const [adjustError, setAdjustError] = useState<string | null>(null);
 
   const holdings = holdingsQuery.data ?? [];
-  const summary = useMemo(() => buildSummary(holdings), [holdings]);
+  const summary = useMemo(() => buildPortfolioSummary(holdings), [holdings]);
   const sortedHoldings = useMemo(
     () =>
       [...holdings].sort(
-        (a, b) => marketValue(b) - marketValue(a)
+        (a, b) => holdingMarketValue(b) - holdingMarketValue(a)
       ),
     [holdings]
   );
@@ -214,7 +221,7 @@ export default function Portfolio() {
           label="最大仓位"
           value={summary.count ? `${summary.concentration.toFixed(1)}%` : "-"}
           tone={summary.concentration > 50 ? "amber" : "teal"}
-          sub={summary.topSymbol ?? "暂无持仓"}
+          sub={summary.topSymbol || "暂无持仓"}
         />
       </section>
 
@@ -334,8 +341,8 @@ export default function Portfolio() {
                 </thead>
                 <tbody>
                   {sortedHoldings.map((item) => {
-                    const value = marketValue(item);
-                    const pnl = unrealizedPnl(item);
+                    const value = holdingMarketValue(item);
+                    const pnl = holdingPnl(item);
                     const weight = summary.value ? (value / summary.value) * 100 : 0;
                     const displayName = item.name && item.name !== item.symbol ? item.name : item.symbol;
                     return (
@@ -445,7 +452,7 @@ export default function Portfolio() {
           </div>
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
 	            {sortedHoldings.slice(0, 9).map((item) => {
-	              const value = marketValue(item);
+	              const value = holdingMarketValue(item);
 	              const weight = summary.value ? (value / summary.value) * 100 : 0;
 	              const displayName = item.name && item.name !== item.symbol ? item.name : item.symbol;
 	              return (
@@ -473,50 +480,9 @@ export default function Portfolio() {
   );
 }
 
-function buildSummary(holdings: Holding[]) {
-  let cost = 0;
-  let value = 0;
-  let topSymbol: string | null = null;
-  let topValue = 0;
-  for (const item of holdings) {
-    const itemCost = item.quantity * item.avg_cost;
-    const itemValue = marketValue(item);
-    cost += itemCost;
-    value += itemValue;
-    if (itemValue > topValue) {
-      topValue = itemValue;
-      topSymbol = item.symbol;
-    }
-  }
-  const pnl = value - cost;
-  const pnlPct = cost ? (pnl / cost) * 100 : 0;
-  const concentration = value ? (topValue / value) * 100 : 0;
-  return { count: holdings.length, cost, value, pnl, pnlPct, concentration, topSymbol };
-}
-
-function marketValue(item: Holding) {
-  return item.quantity * (item.current_price ?? item.avg_cost);
-}
-
-function unrealizedPnl(item: Holding) {
-  return ((item.current_price ?? item.avg_cost) - item.avg_cost) * item.quantity;
-}
-
-function formatMoney(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
 function formatPnl(value: number | null) {
   if (value == null) return "0";
   return `${value >= 0 ? "+" : ""}${formatMoney(value)}`;
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
-    maximumFractionDigits: 2,
-  }).format(value);
 }
 
 function Metric({
