@@ -1294,6 +1294,7 @@ class Database:
         reflection_scope: str | None = None,
         eligible_only: bool = False,
         lookback_days: int | None = None,
+        due_only: bool = False,
     ) -> list[dict]:
         """List reflection cases with decoded JSON payloads.
 
@@ -1304,6 +1305,14 @@ class Database:
             reflection_scope: Filter by reflection scope.
             eligible_only: Only return cases eligible for strategy learning.
             lookback_days: Only return cases updated within the last N days.
+            due_only: Only return cases whose horizon has elapsed
+                (signal_date + horizon_days, in calendar days, <= today) and
+                order oldest-first. The reflection batch uses this so it reaches
+                due cases instead of stalling on the newest pending cases that
+                aren't due yet. Calendar days is a conservative lower bound
+                (trading-day due dates are always >= it), so no truly-due case
+                is dropped; the caller still skips cases whose price outcome
+                isn't available yet.
         """
         query = "SELECT * FROM reflection_cases"
         clauses: list[str] = []
@@ -1323,9 +1332,12 @@ class Database:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
             clauses.append("updated_at >= ?")
             params.append(cutoff)
+        if due_only:
+            clauses.append("date(signal_date, '+' || horizon_days || ' days') <= date('now')")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY signal_date DESC, created_at DESC LIMIT ?"
+        order = "signal_date ASC, created_at ASC" if due_only else "signal_date DESC, created_at DESC"
+        query += f" ORDER BY {order} LIMIT ?"
         params.append(limit)
         with self._conn() as conn:
             rows = conn.execute(query, params).fetchall()

@@ -413,9 +413,13 @@ class ReflectionEngine:
         """
         pending_cases = []
         if hasattr(self.db, "list_reflection_cases"):
+            # due_only=True returns only cases whose horizon has elapsed
+            # (oldest-first), so the batch reaches due cases instead of stalling
+            # on the newest pending cases that aren't due yet.
             pending_cases = self.db.list_reflection_cases(
                 status="outcome_ready",
                 limit=max_per_run,
+                due_only=True,
             )
             remaining = max(0, max_per_run - len(pending_cases))
             if remaining:
