@@ -106,7 +106,7 @@ async def enrich_candidates(
     ]
     results = await asyncio.gather(*tasks)
 
-    return {sym: ctx for sym, ctx in zip(symbols, results)}
+    return dict(zip(symbols, results, strict=False))
 
 
 async def _enrich_one(

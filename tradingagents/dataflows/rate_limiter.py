@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Optional
 
 
 class TokenBucket:
@@ -24,7 +23,7 @@ class TokenBucket:
             rounded up, so peak burst == 1 second worth of requests).
     """
 
-    def __init__(self, rate: float, capacity: Optional[float] = None):
+    def __init__(self, rate: float, capacity: float | None = None):
         if rate <= 0:
             raise ValueError(f"rate must be > 0, got {rate!r}")
         self._rate = float(rate)
@@ -33,7 +32,7 @@ class TokenBucket:
         self._last = time.monotonic()
         self._lock = threading.Lock()
 
-    def update_rate(self, rate: float, capacity: Optional[float] = None) -> None:
+    def update_rate(self, rate: float, capacity: float | None = None) -> None:
         """Hot-swap the rate (used when config changes at runtime)."""
         with self._lock:
             self._rate = float(rate)

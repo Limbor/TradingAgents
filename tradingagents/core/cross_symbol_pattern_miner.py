@@ -14,9 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -333,7 +331,7 @@ class CrossSymbolPatternMiner:
         """
         buckets: dict[str, PatternBucket] = {}
 
-        for case, feats in zip(cases, features):
+        for case, feats in zip(cases, features, strict=False):
             outcome = self._safe_json(case.get("outcome_payload"))
             was_correct = outcome.get("was_correct")
             actual_return = outcome.get("actual_return")

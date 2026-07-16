@@ -293,7 +293,7 @@ function ArtifactVersions({ artifactId }: { artifactId: string }) {
 }
 
 function StructuredArtifact({ artifact, onAnalyze }: { artifact: ArtifactInfo; onAnalyze: (symbol: string) => void }) {
-  const payload = artifact.payload ?? {};
+  const payload = useMemo(() => artifact.payload ?? {}, [artifact.payload]);
   const candidates = useMemo(() => {
     const rows = payload.decision_pack ?? payload.reviewed_candidates ?? payload.quant_candidates ?? payload.candidates;
     return parseCandidates(rows);

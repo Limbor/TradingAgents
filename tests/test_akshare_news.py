@@ -1,8 +1,8 @@
 import pandas as pd
 
-from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.dataflows import akshare_news
 from tradingagents.dataflows.config import set_config
+from tradingagents.default_config import DEFAULT_CONFIG
 
 
 def test_a_share_news_includes_capped_body_snippet(monkeypatch):

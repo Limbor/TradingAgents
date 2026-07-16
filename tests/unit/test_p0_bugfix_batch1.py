@@ -21,8 +21,8 @@ from tradingagents.skills.daily_pipeline.skill import DailyPipelineSkill
 from tradingagents.skills.daily_review.skill import DailyReviewSkill
 from tradingagents.skills.market_scanner.skill import MarketScannerSkill
 from tradingagents.skills.portfolio_management.skill import PortfolioManagementSkill
-from tradingagents.skills.risk_monitor.skill import RiskMonitorSkill
 from tradingagents.skills.registry import SkillRegistry
+from tradingagents.skills.risk_monitor.skill import RiskMonitorSkill
 from tradingagents.skills.stock_analysis.skill import StockAnalysisSkill
 
 
@@ -128,7 +128,7 @@ def test_seconds_until_shanghai_not_affected_by_host_utc(monkeypatch):
     """If the host wall clock were UTC (00:00 UTC = 08:00 Shanghai), the delay
     to 08:30 Shanghai must still be 30 minutes, not 8.5 hours (UTC 08:30)."""
 
-    shanghai = ZoneInfo("Asia/Shanghai")
+    ZoneInfo("Asia/Shanghai")
     utc = ZoneInfo("UTC")
     # 2026-07-05 00:00:00 UTC == 2026-07-05 08:00:00 Shanghai
     fixed_now_utc = datetime(2026, 7, 5, 0, 0, 0, tzinfo=utc)

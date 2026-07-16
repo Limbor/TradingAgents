@@ -278,21 +278,27 @@ class ChatAgent:
         return ChatResponse(intent="chat_answer", content=content)
 
     async def _handle_tool_call(self, response: Any) -> ChatResponse:
-        """Process the first tool_call from the LLM response."""
-        tool_call = response.tool_calls[0]
-        tool_name = (
-            tool_call.get("name")
-            or tool_call.get("function", {}).get("name", "")
-        )
-        tool_args = (
-            tool_call.get("args")
-            or tool_call.get("function", {}).get("arguments", {})
-        )
-        if not isinstance(tool_args, dict):
-            try:
-                tool_args = json.loads(tool_args) if isinstance(tool_args, str) else {}
-            except (json.JSONDecodeError, TypeError):
-                tool_args = {}
+        """Process one tool call, or combine multiple lightweight lookups."""
+        parsed_calls = [self._parse_tool_call(item) for item in response.tool_calls]
+        if len(parsed_calls) > 1 and all(
+            name in self._lightweight_names for name, _ in parsed_calls
+        ):
+            answers = await asyncio.gather(
+                *(self._execute_lightweight_tool(name, args) for name, args in parsed_calls)
+            )
+            return ChatResponse(
+                intent="tool_answer",
+                tool_name="multi_tool",
+                tool_args=dict(parsed_calls),
+                tool_result={
+                    "results": {answer.tool_name: answer.tool_result for answer in answers}
+                },
+                tool_display="card",
+                citations=[citation for answer in answers for citation in answer.citations],
+                content="已综合查询：" + "、".join(name for name, _ in parsed_calls),
+            )
+
+        tool_name, tool_args = parsed_calls[0]
 
         # Is it a lightweight tool?
         if tool_name in self._lightweight_names:
@@ -308,12 +314,28 @@ class ChatAgent:
                 content=f"正在为您调用 {skill.metadata.name}...",
             )
 
-        # Unknown tool — fall back to chat_answer
         logger.warning("ChatAgent: unknown tool '%s' called by LLM, falling back", tool_name)
         return ChatResponse(
             intent="chat_answer",
             content=f"抱歉，我不认识 '{tool_name}' 这个功能。请换一种方式描述您的需求。",
         )
+
+    @staticmethod
+    def _parse_tool_call(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        tool_name = (
+            tool_call.get("name")
+            or tool_call.get("function", {}).get("name", "")
+        )
+        tool_args = (
+            tool_call.get("args")
+            or tool_call.get("function", {}).get("arguments", {})
+        )
+        if not isinstance(tool_args, dict):
+            try:
+                tool_args = json.loads(tool_args) if isinstance(tool_args, str) else {}
+            except (json.JSONDecodeError, TypeError):
+                tool_args = {}
+        return str(tool_name), tool_args
 
     async def _execute_lightweight_tool(
         self, tool_name: str, args: dict[str, Any]
@@ -364,7 +386,7 @@ class ChatAgent:
             tool_result=result,
             tool_display=tool.display,
             citations=citations,
-            content="",
+            content=_tool_answer_summary(tool_name, result_dict),
         )
 
     # ------------------------------------------------------------------
@@ -394,3 +416,16 @@ class ChatAgent:
         """Clear a specific session's conversation buffer."""
         self._buffers.pop(session_id, None)
         self._buffer_ts.pop(session_id, None)
+
+
+def _tool_answer_summary(tool_name: str, result: dict[str, Any]) -> str:
+    message = str(result.get("message") or result.get("summary") or "").strip()
+    if message:
+        return message
+    for key in ("holdings", "runs", "lessons", "results"):
+        rows = result.get(key)
+        if isinstance(rows, list):
+            return f"{tool_name} 返回 {len(rows)} 条结果。"
+    if result.get("error"):
+        return f"{tool_name} 查询失败：{result['error']}"
+    return f"{tool_name} 查询完成。"

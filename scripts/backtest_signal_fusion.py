@@ -35,7 +35,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tradingagents.core.mcp_client import StockManagerMCPClient, config_from_app_config
 from tradingagents.core.signal_fusion import fuse_candidate_signal
-from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows, payload_warnings
+from tradingagents.dataflows.mcp_adapter import (
+    normalize_quant_candidate,
+    payload_rows,
+)
 from tradingagents.default_config import DEFAULT_CONFIG
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

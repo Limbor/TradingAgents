@@ -9,6 +9,7 @@ strategy-lesson path on the same entries.
 
 def test_resolve_pending_entries_is_noop():
     import inspect
+
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
     src = inspect.getsource(TradingAgentsGraph._resolve_pending_entries)

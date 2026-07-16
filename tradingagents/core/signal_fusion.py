@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
 STYLE_ALPHA = {
     "short_term": 0.70,
     "medium_term": 0.55,
@@ -57,7 +56,7 @@ def fuse_candidate_signal(
     assessment = _coerce_assessment(llm_assessment)
     quant_score = _clamp(_float_or(candidate.get("quant_score") or candidate.get("score"), 0.0))
     tradability = candidate.get("tradability") if isinstance(candidate.get("tradability"), dict) else {}
-    is_tradable = bool(tradability.get("is_tradable", True))
+    bool(tradability.get("is_tradable", True))
     risk_flags = _merge_flags(candidate.get("risk_flags"), assessment.risk_flags)
     risk_severity = _classify_risk_severity(risk_flags)
 

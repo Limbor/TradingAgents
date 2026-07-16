@@ -217,6 +217,93 @@ CREATE TABLE IF NOT EXISTS run_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
+
+CREATE TABLE IF NOT EXISTS risk_events (
+    id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    name TEXT,
+    level TEXT NOT NULL,
+    event_type TEXT NOT NULL DEFAULT 'announcement',
+    title TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    event_date TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    resolved_at TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_risk_events_symbol ON risk_events(symbol);
+CREATE INDEX IF NOT EXISTS idx_risk_events_status ON risk_events(status, level);
+CREATE INDEX IF NOT EXISTS idx_risk_events_last_seen ON risk_events(last_seen_at);
+
+CREATE TABLE IF NOT EXISTS decision_records (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_run_id TEXT NOT NULL DEFAULT '',
+    source_artifact_id TEXT NOT NULL DEFAULT '',
+    symbol TEXT NOT NULL,
+    name TEXT,
+    decision_date TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    horizon_days INTEGER NOT NULL DEFAULT 5,
+    reference_price REAL,
+    status TEXT NOT NULL DEFAULT 'open',
+    reflection_case_id TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decision_records_date ON decision_records(decision_date);
+CREATE INDEX IF NOT EXISTS idx_decision_records_symbol ON decision_records(symbol);
+CREATE INDEX IF NOT EXISTS idx_decision_records_status ON decision_records(status);
+
+CREATE TABLE IF NOT EXISTS trade_executions (
+    id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL DEFAULT '',
+    symbol TEXT NOT NULL,
+    action TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    price REAL NOT NULL,
+    executed_at TEXT NOT NULL,
+    realized_pnl REAL,
+    source TEXT NOT NULL DEFAULT 'user_confirmed',
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_trade_executions_decision ON trade_executions(decision_id);
+CREATE INDEX IF NOT EXISTS idx_trade_executions_symbol ON trade_executions(symbol, executed_at);
+
+CREATE TABLE IF NOT EXISTS decision_outcomes (
+    id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    horizon_days INTEGER NOT NULL,
+    as_of_date TEXT NOT NULL,
+    close_at_signal REAL,
+    close_at_horizon REAL,
+    actual_return REAL NOT NULL,
+    benchmark_return REAL,
+    excess_return REAL,
+    source TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(decision_id, horizon_days)
+);
+CREATE INDEX IF NOT EXISTS idx_decision_outcomes_decision ON decision_outcomes(decision_id);
+
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL DEFAULT '',
+    strategy_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'submitted',
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs(status, updated_at);
 """
 
 
@@ -243,10 +330,65 @@ class Database:
                 except sqlite3.OperationalError:
                     conn.execute(f"ALTER TABLE plans ADD COLUMN {_col} TEXT")
             self._backfill_report_artifacts(conn)
+            self._backfill_decision_records(conn)
             # One-time dedup of historical reflection_cases created before the
             # case_id scheme was stabilized (old ids embedded run_id, so the
             # same (source_type, symbol, signal_date) accumulated multiple rows).
             self._dedup_reflection_cases(conn)
+
+    def _backfill_decision_records(self, conn: sqlite3.Connection) -> None:
+        """Idempotently enroll pre-ledger signals and stock reports for audit."""
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO decision_records (
+                id, source_type, source_run_id, symbol, name, decision_date,
+                decision, horizon_days, reference_price, status,
+                reflection_case_id, payload_json, created_at, updated_at
+            )
+            SELECT 'signal:' || id, 'daily_pipeline', run_id, symbol, name,
+                   trade_date, signal, 5, NULL, 'open',
+                   'daily_pipeline:' || trade_date || ':' || UPPER(symbol),
+                   payload, created_at, ?
+            FROM signals
+            """,
+            (now,),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO decision_records (
+                id, source_type, source_run_id, source_artifact_id, symbol, name,
+                decision_date, decision, horizon_days, reference_price, status,
+                reflection_case_id, payload_json, created_at, updated_at
+            )
+            SELECT 'report:' || id, 'stock_analysis', run_id, id, ticker,
+                   COALESCE(ticker_name, ticker), SUBSTR(created_at, 1, 10),
+                   UPPER(COALESCE(rating, 'HOLD')), 5, NULL, 'open',
+                   'stock_analysis:' || SUBSTR(created_at, 1, 10) || ':' || UPPER(ticker),
+                   '{}', created_at, ?
+            FROM reports
+            WHERE UPPER(COALESCE(rating, '')) IN (
+                'BUY', 'SELL', 'HOLD', 'OVERWEIGHT', 'UNDERWEIGHT',
+                'ADD', 'REDUCE', 'EXIT', 'WATCHLIST'
+            )
+            """,
+            (now,),
+        )
+        # Remove rows created by an earlier ledger migration that admitted
+        # parser fallbacks such as UNKNOWN. Never remove rows with outcomes or
+        # executions, because those have become user-visible audit evidence.
+        conn.execute(
+            """
+            DELETE FROM decision_records
+            WHERE source_type = 'stock_analysis'
+              AND decision NOT IN (
+                  'BUY', 'SELL', 'HOLD', 'OVERWEIGHT', 'UNDERWEIGHT',
+                  'ADD', 'REDUCE', 'EXIT', 'WATCHLIST'
+              )
+              AND NOT EXISTS (SELECT 1 FROM decision_outcomes o WHERE o.decision_id = decision_records.id)
+              AND NOT EXISTS (SELECT 1 FROM trade_executions e WHERE e.decision_id = decision_records.id)
+            """
+        )
 
     def _dedup_reflection_cases(self, conn: sqlite3.Connection) -> None:
         """Delete duplicate reflection cases, keeping the newest per group.
@@ -361,6 +503,107 @@ class Database:
                 "INSERT OR REPLACE INTO runs (id, skill_id, params, status, created_at) VALUES (?, ?, ?, ?, ?)",
                 (run_id, skill_id, json.dumps(params), status, datetime.now(timezone.utc).isoformat()),
             )
+
+    def upsert_risk_event(
+        self,
+        *,
+        event_id: str,
+        symbol: str,
+        level: str,
+        title: str,
+        name: str | None = None,
+        event_type: str = "announcement",
+        source: str = "",
+        event_date: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict:
+        """Insert a risk event or refresh its last-seen timestamp without duplicating it."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO risk_events (
+                    id, symbol, name, level, event_type, title, source, event_date,
+                    status, first_seen_at, last_seen_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    level = excluded.level,
+                    title = excluded.title,
+                    source = excluded.source,
+                    event_date = excluded.event_date,
+                    last_seen_at = excluded.last_seen_at,
+                    payload_json = excluded.payload_json,
+                    status = CASE WHEN risk_events.status = 'resolved' THEN 'open' ELSE risk_events.status END,
+                    resolved_at = CASE WHEN risk_events.status = 'resolved' THEN NULL ELSE risk_events.resolved_at END
+                """,
+                (
+                    event_id,
+                    symbol.upper(),
+                    name,
+                    level,
+                    event_type,
+                    title,
+                    source,
+                    event_date,
+                    now,
+                    now,
+                    json.dumps(payload or {}, ensure_ascii=False, default=str),
+                ),
+            )
+        return self.get_risk_event(event_id) or {}
+
+    def get_risk_event(self, event_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM risk_events WHERE id = ?", (event_id,)).fetchone()
+        return self._decode_risk_event(dict(row)) if row else None
+
+    def list_risk_events(
+        self,
+        *,
+        status: str | None = "open",
+        symbol: str | None = None,
+        level: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            values.append(status)
+        if symbol:
+            clauses.append("symbol = ?")
+            values.append(symbol.upper())
+        if level:
+            clauses.append("level = ?")
+            values.append(level)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(min(max(limit, 1), 500))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM risk_events {where} ORDER BY last_seen_at DESC LIMIT ?",
+                values,
+            ).fetchall()
+        return [self._decode_risk_event(dict(row)) for row in rows]
+
+    def update_risk_event_status(self, event_id: str, status: str) -> dict | None:
+        if status not in {"open", "acknowledged", "monitoring", "resolved"}:
+            raise ValueError("invalid risk event status")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE risk_events SET status = ?, resolved_at = ?, last_seen_at = last_seen_at WHERE id = ?",
+                (status, now if status == "resolved" else None, event_id),
+            )
+        return self.get_risk_event(event_id)
+
+    @staticmethod
+    def _decode_risk_event(row: dict) -> dict:
+        try:
+            row["payload"] = json.loads(row.pop("payload_json", "{}") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            row["payload"] = {}
+        return row
 
     def update_run_status(self, run_id: str, status: str, **kwargs) -> None:
         """Update a run's status and optional fields."""
@@ -701,6 +944,21 @@ class Database:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+        # Every production signal enters the audit ledger under the same stable
+        # id, so reruns update evidence instead of duplicating performance data.
+        reference_price = payload.get("latest_price") or payload.get("close") or payload.get("price")
+        self.upsert_decision_record(
+            decision_id=f"signal:{signal_id}",
+            source_type="daily_pipeline",
+            source_run_id=run_id,
+            symbol=symbol,
+            name=name,
+            decision_date=str(payload.get("decision_target_date") or trade_date),
+            decision=signal,
+            horizon_days=int(payload.get("horizon_days") or 5),
+            reference_price=float(reference_price) if isinstance(reference_price, (int, float)) else None,
+            payload=payload,
+        )
 
     def list_signals(self, limit: int = 50, trade_date: str | None = None) -> list[dict]:
         """List structured trading signals."""
@@ -722,6 +980,216 @@ class Database:
                 item["payload"] = {}
             result.append(item)
         return result
+
+    # ------------------------------------------------------------------
+    # Decision audit ledger
+    # ------------------------------------------------------------------
+
+    def upsert_decision_record(self, *, decision_id: str, source_type: str,
+                               symbol: str, decision_date: str, decision: str,
+                               horizon_days: int = 5, source_run_id: str = "",
+                               source_artifact_id: str = "", name: str | None = None,
+                               reference_price: float | None = None,
+                               payload: dict | None = None) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO decision_records (
+                    id, source_type, source_run_id, source_artifact_id, symbol, name,
+                    decision_date, decision, horizon_days, reference_price, status,
+                    payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name, decision=excluded.decision,
+                    horizon_days=excluded.horizon_days,
+                    reference_price=COALESCE(excluded.reference_price, decision_records.reference_price),
+                    payload_json=excluded.payload_json, updated_at=excluded.updated_at
+                """,
+                (decision_id, source_type, source_run_id, source_artifact_id,
+                 symbol.strip().upper(), name, decision_date, decision.upper(),
+                 max(1, int(horizon_days)), reference_price,
+                 json.dumps(payload or {}, ensure_ascii=False, default=str), now, now),
+            )
+        return self.get_decision_record(decision_id) or {}
+
+    def get_decision_record(self, decision_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM decision_records WHERE id = ?", (decision_id,)).fetchone()
+        return self._decode_json_columns(dict(row), ("payload_json",)) if row else None
+
+    def list_decision_records(self, *, status: str | None = None,
+                              symbol: str | None = None, limit: int = 100,
+                              oldest_first: bool = False) -> list[dict]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if status:
+            clauses.append("d.status = ?")
+            values.append(status)
+        if symbol:
+            clauses.append("d.symbol = ?")
+            values.append(symbol.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(min(max(limit, 1), 500))
+        order = "ASC" if oldest_first else "DESC"
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""SELECT d.*,
+                    (SELECT COUNT(*) FROM trade_executions e WHERE e.decision_id=d.id) AS execution_count,
+                    (SELECT COUNT(*) FROM decision_outcomes o WHERE o.decision_id=d.id) AS outcome_count,
+                    (SELECT actual_return FROM decision_outcomes o
+                     WHERE o.decision_id=d.id AND o.horizon_days=d.horizon_days) AS final_return,
+                    (SELECT excess_return FROM decision_outcomes o
+                     WHERE o.decision_id=d.id AND o.horizon_days=d.horizon_days) AS final_excess_return
+                    FROM decision_records d {where}
+                    ORDER BY d.decision_date {order}, d.created_at {order} LIMIT ?""",
+                values,
+            ).fetchall()
+        return [self._decode_json_columns(dict(row), ("payload_json",)) for row in rows]
+
+    def update_decision_record(self, decision_id: str, *, status: str | None = None,
+                               reflection_case_id: str | None = None) -> dict | None:
+        sets = ["updated_at = ?"]
+        values: list[Any] = [datetime.now(timezone.utc).isoformat()]
+        if status is not None:
+            if status not in {"open", "partially_realized", "tracking", "realized", "cancelled"}:
+                raise ValueError("invalid decision status")
+            sets.append("status = ?")
+            values.append(status)
+        if reflection_case_id is not None:
+            sets.append("reflection_case_id = ?")
+            values.append(reflection_case_id)
+        values.append(decision_id)
+        with self._conn() as conn:
+            conn.execute(f"UPDATE decision_records SET {', '.join(sets)} WHERE id = ?", values)
+        return self.get_decision_record(decision_id)
+
+    def save_trade_execution(self, *, execution_id: str, symbol: str, action: str,
+                             quantity: float, price: float, executed_at: str,
+                             decision_id: str = "", realized_pnl: float | None = None,
+                             source: str = "user_confirmed", payload: dict | None = None) -> dict:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO trade_executions
+                (id, decision_id, symbol, action, quantity, price, executed_at,
+                 realized_pnl, source, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (execution_id, decision_id, symbol.upper(), action.lower(), quantity, price,
+                 executed_at, realized_pnl, source,
+                 json.dumps(payload or {}, ensure_ascii=False, default=str)),
+            )
+        return self.get_trade_execution(execution_id) or {}
+
+    def get_trade_execution(self, execution_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM trade_executions WHERE id = ?", (execution_id,)).fetchone()
+        return self._decode_json_columns(dict(row), ("payload_json",)) if row else None
+
+    def list_trade_executions(self, *, decision_id: str | None = None,
+                              symbol: str | None = None, limit: int = 100) -> list[dict]:
+        clauses, values = [], []
+        if decision_id:
+            clauses.append("decision_id = ?")
+            values.append(decision_id)
+        if symbol:
+            clauses.append("symbol = ?")
+            values.append(symbol.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(min(max(limit, 1), 500))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM trade_executions {where} ORDER BY executed_at DESC LIMIT ?", values
+            ).fetchall()
+        return [self._decode_json_columns(dict(row), ("payload_json",)) for row in rows]
+
+    def save_decision_outcome(self, *, outcome_id: str, decision_id: str,
+                              horizon_days: int, as_of_date: str, actual_return: float,
+                              close_at_signal: float | None = None,
+                              close_at_horizon: float | None = None,
+                              benchmark_return: float | None = None,
+                              source: str = "", payload: dict | None = None) -> dict:
+        excess = actual_return - benchmark_return if benchmark_return is not None else None
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO decision_outcomes
+                (id, decision_id, horizon_days, as_of_date, close_at_signal,
+                 close_at_horizon, actual_return, benchmark_return, excess_return,
+                 source, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(decision_id, horizon_days) DO UPDATE SET
+                    as_of_date=excluded.as_of_date, close_at_signal=excluded.close_at_signal,
+                    close_at_horizon=excluded.close_at_horizon, actual_return=excluded.actual_return,
+                    benchmark_return=excluded.benchmark_return, excess_return=excluded.excess_return,
+                    source=excluded.source, payload_json=excluded.payload_json""",
+                (outcome_id, decision_id, horizon_days, as_of_date, close_at_signal,
+                 close_at_horizon, actual_return, benchmark_return, excess, source,
+                 json.dumps(payload or {}, ensure_ascii=False, default=str),
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            row = conn.execute(
+                "SELECT * FROM decision_outcomes WHERE decision_id=? AND horizon_days=?",
+                (decision_id, horizon_days),
+            ).fetchone()
+        return self._decode_json_columns(dict(row), ("payload_json",))
+
+    def list_decision_outcomes(self, *, decision_id: str | None = None,
+                               limit: int = 500) -> list[dict]:
+        where, values = "", []
+        if decision_id:
+            where = "WHERE decision_id = ?"
+            values.append(decision_id)
+        values.append(min(max(limit, 1), 5000))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM decision_outcomes {where} ORDER BY as_of_date DESC LIMIT ?", values
+            ).fetchall()
+        return [self._decode_json_columns(dict(row), ("payload_json",)) for row in rows]
+
+    @staticmethod
+    def _decode_json_columns(row: dict, columns: tuple[str, ...]) -> dict:
+        for column in columns:
+            target = column.removesuffix("_json")
+            try:
+                row[target] = json.loads(row.pop(column, "{}") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                row[target] = {}
+        return row
+
+    def save_backtest_run(self, *, backtest_id: str, strategy_type: str,
+                          start_date: str, end_date: str, config: dict,
+                          job_id: str = "", status: str = "submitted",
+                          result: dict | None = None, error: str | None = None) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO backtest_runs
+                (id, job_id, strategy_type, status, start_date, end_date, config_json,
+                 result_json, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET job_id=excluded.job_id,
+                    status=excluded.status, result_json=excluded.result_json,
+                    error=excluded.error, updated_at=excluded.updated_at""",
+                (backtest_id, job_id, strategy_type, status, start_date, end_date,
+                 json.dumps(config, ensure_ascii=False, default=str),
+                 json.dumps(result or {}, ensure_ascii=False, default=str), error, now, now),
+            )
+        return self.get_backtest_run(backtest_id) or {}
+
+    def get_backtest_run(self, backtest_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM backtest_runs WHERE id=?", (backtest_id,)).fetchone()
+        return self._decode_json_columns(dict(row), ("config_json", "result_json")) if row else None
+
+    def list_backtest_runs(self, *, status: str | None = None, limit: int = 50) -> list[dict]:
+        where, values = "", []
+        if status:
+            where = "WHERE status=?"
+            values.append(status)
+        values.append(min(max(limit, 1), 200))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM backtest_runs {where} ORDER BY created_at DESC LIMIT ?", values
+            ).fetchall()
+        return [self._decode_json_columns(dict(row), ("config_json", "result_json")) for row in rows]
 
     # ------------------------------------------------------------------
     # Reflection cases and strategy lessons
@@ -884,7 +1352,10 @@ class Database:
             return int(cur.rowcount or 0)
 
     def get_reflection_case(self, case_id: str) -> dict | None:
-        with self._conn() as conn:            row = conn.execute("SELECT * FROM reflection_cases WHERE id = ?", (case_id,)).fetchone()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM reflection_cases WHERE id = ?", (case_id,)
+            ).fetchone()
         return self._decode_reflection_case(dict(row)) if row else None
 
     def _decode_reflection_case(self, row: dict) -> dict:

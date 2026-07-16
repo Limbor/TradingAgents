@@ -8,14 +8,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import sys
-from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-
 
 STOCKMANAGER_DIR = "/Users/goujunhong/Documents/develop/StockManager"
 TUSHARE_TOKEN = "240c6168b72fd1d42484a7e5e3df33d5b72869287ddecf43e7c53cde"
@@ -41,8 +37,10 @@ async def test_tools():
         cwd=STOCKMANAGER_DIR,
     )
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
+    async with (
+        stdio_client(server_params) as (read, write),
+        ClientSession(read, write) as session,
+    ):
             await session.initialize()
 
             # ------------------------------------------------------------------

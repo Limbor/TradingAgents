@@ -6,9 +6,9 @@ trading calendar data directly from public APIs, then writing the
 cache file that cn_trading_calendar.py expects.
 """
 
+import json
 import os
 import sys
-import json
 import urllib.request
 from datetime import datetime
 
@@ -53,7 +53,7 @@ def fetch_from_eastmoney():
         "secid=1.000001&fields1=f1&fields2=f51&klt=101&fqt=0"
         "&beg=20000101&end=20261231"
     )
-    print(f"Fetching from East Money API...")
+    print("Fetching from East Money API...")
 
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:

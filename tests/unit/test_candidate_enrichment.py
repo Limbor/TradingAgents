@@ -1,17 +1,15 @@
 """Tests for candidate_enrichment module."""
 
 import asyncio
-from unittest.mock import patch, AsyncMock
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from tradingagents.core.candidate_enrichment import (
     CandidateContext,
-    enrich_candidates,
-    _fetch_news,
     _fetch_announcements,
+    _fetch_news,
     _fetch_northbound,
     _fetch_risk_events,
+    enrich_candidates,
 )
 
 
@@ -125,11 +123,13 @@ class TestEnrichCandidates:
             {"symbol": "600519.SH"},
             {"symbol": "000001.SZ"},
         ]
-        with patch("tradingagents.core.candidate_enrichment._fetch_news", return_value=""):
-            with patch("tradingagents.core.candidate_enrichment._fetch_announcements", return_value=""):
-                with patch("tradingagents.core.candidate_enrichment._fetch_northbound", return_value=""):
-                    with patch("tradingagents.core.candidate_enrichment._fetch_risk_events", return_value=[]):
-                        result = asyncio.run(enrich_candidates(candidates, "2026-06-28", {"stockmanager_mcp_enabled": False}))
+        with (
+            patch("tradingagents.core.candidate_enrichment._fetch_news", return_value=""),
+            patch("tradingagents.core.candidate_enrichment._fetch_announcements", return_value=""),
+            patch("tradingagents.core.candidate_enrichment._fetch_northbound", return_value=""),
+            patch("tradingagents.core.candidate_enrichment._fetch_risk_events", return_value=[]),
+        ):
+            result = asyncio.run(enrich_candidates(candidates, "2026-06-28", {"stockmanager_mcp_enabled": False}))
         assert len(result) == 2
         assert "600519.SH" in result
         assert "000001.SZ" in result

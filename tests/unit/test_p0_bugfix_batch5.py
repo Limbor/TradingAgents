@@ -8,8 +8,6 @@ Covers:
 """
 
 import asyncio
-import tempfile
-from pathlib import Path
 
 from tradingagents.api.middleware.auth import (
     auth_token_configured,
@@ -17,7 +15,6 @@ from tradingagents.api.middleware.auth import (
     verify_ws_token,
 )
 from tradingagents.core.persistence import Database
-
 
 # ---------------------------------------------------------------------------
 # Fix 1: pagination

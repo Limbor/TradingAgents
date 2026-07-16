@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from datetime import date
-from typing import Any, AsyncIterator
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -13,9 +14,12 @@ from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.reflection import ReflectionEngine
-from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 from tradingagents.skills._shared import resolve_board_filter, resolve_temporal_context
-from tradingagents.skills.daily_pipeline.skill import DailyPipelineInput, skill as daily_pipeline_skill
+from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
+from tradingagents.skills.daily_pipeline.skill import (
+    DailyPipelineInput,
+    skill as daily_pipeline_skill,
+)
 from tradingagents.skills.risk_monitor.skill import RiskMonitorInput, skill as risk_monitor_skill
 
 logger = logging.getLogger(__name__)

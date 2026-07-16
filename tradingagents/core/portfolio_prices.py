@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from functools import lru_cache
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Any
 
 from tradingagents.core.trading_time import get_temporal_context
@@ -122,7 +122,7 @@ def _looks_like_cn_name(text: str) -> bool:
 
 @lru_cache(maxsize=1)
 def _cn_name_map() -> dict[str, str]:
-    from tradingagents.dataflows.akshare_common import akshare_call, ak_lazy_import
+    from tradingagents.dataflows.akshare_common import ak_lazy_import, akshare_call
 
     ak = ak_lazy_import()
     fn = getattr(ak, "stock_info_a_code_name", None)
@@ -282,7 +282,7 @@ def _first_float(row: dict[str, Any], *keys: str) -> float | None:
 
 def _latest_close_from_akshare_direct(symbol: str, end: date) -> dict[str, Any] | None:
     try:
-        from tradingagents.dataflows.akshare_common import akshare_call, ak_lazy_import
+        from tradingagents.dataflows.akshare_common import ak_lazy_import, akshare_call
         from tradingagents.dataflows.symbol_utils import normalize_for_akshare
 
         ak = ak_lazy_import()

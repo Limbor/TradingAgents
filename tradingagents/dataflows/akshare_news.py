@@ -7,9 +7,9 @@ from typing import Annotated
 
 import pandas as pd
 
-from .akshare_common import akshare_call, ak_lazy_import, df_to_csv_report
+from .akshare_common import ak_lazy_import, akshare_call, df_to_csv_report
 from .config import get_config
-from .symbol_utils import normalize_for_akshare, normalize_cn_display
+from .symbol_utils import normalize_cn_display, normalize_for_akshare
 
 
 def get_news(
@@ -51,7 +51,7 @@ def get_news(
     body_items = max(0, int(config.get("news_body_snippet_items", 0) or 0))
     body_chars = max(0, int(config.get("news_body_snippet_chars", 0) or 0))
     lines = [f"# A-share news for {display} ({start_date} -> {end_date})",
-             f"# Source: AKShare stock_news_em",
+             "# Source: AKShare stock_news_em",
              f"# Items: {len(raw)}", ""]
     for idx, (_, row) in enumerate(raw.iterrows()):
         t = row[col_time].strftime("%Y-%m-%d %H:%M") if col_time and pd.notna(row[col_time]) else ""

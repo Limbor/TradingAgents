@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
-from typing import Iterable, List, Optional, Set
 
 import pandas as pd
 
@@ -20,8 +20,8 @@ from .config import get_config
 
 logger = logging.getLogger(__name__)
 
-_calendar_cache: Optional[Set[date]] = None
-_sorted_cache: Optional[List[date]] = None
+_calendar_cache: set[date] | None = None
+_sorted_cache: list[date] | None = None
 
 
 def _to_date(value) -> date:
@@ -32,7 +32,7 @@ def _to_date(value) -> date:
     return pd.to_datetime(value).date()
 
 
-def _load_from_disk(path: str) -> Optional[Set[date]]:
+def _load_from_disk(path: str) -> set[date] | None:
     if not os.path.exists(path):
         return None
     try:
@@ -46,7 +46,7 @@ def _load_from_disk(path: str) -> Optional[Set[date]]:
         return None
 
 
-def _fetch_from_eastmoney() -> Set[date]:
+def _fetch_from_eastmoney() -> set[date]:
     """Fetch CN trading calendar from East Money K-line API.
 
     Uses the SSE Composite Index (secid=1.000001) daily K-line data.
@@ -75,7 +75,7 @@ def _fetch_from_eastmoney() -> Set[date]:
     }
 
 
-def _fetch_from_akshare() -> Set[date]:
+def _fetch_from_akshare() -> set[date]:
     """Fallback: use akshare (triggers py_mini_racer, may crash on Apple Silicon)."""
     import akshare as ak  # imported lazily; akshare has heavy side-effects
 
@@ -176,7 +176,7 @@ def next_trading_day(day) -> date:
     raise RuntimeError(f"No trading day found within 15 days after {day}")
 
 
-def trading_days_between(start, end) -> List[date]:
+def trading_days_between(start, end) -> list[date]:
     """All trading days in the inclusive range [start, end]."""
     _ensure_loaded()
     s = _to_date(start)

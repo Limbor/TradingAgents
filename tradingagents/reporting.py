@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 SECTION_FILES = {
     "market_report": ("1_analysts", "market.md", "Market Analyst"),
     "sentiment_report": ("1_analysts", "sentiment.md", "Sentiment Analyst"),

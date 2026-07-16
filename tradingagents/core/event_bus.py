@@ -7,7 +7,8 @@ forward them to the frontend).
 
 import asyncio
 from collections import defaultdict
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 

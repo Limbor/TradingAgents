@@ -1,10 +1,11 @@
 """Unit tests for the Skill Registry."""
 
-import pytest
-from pydantic import BaseModel
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
 
-from tradingagents.skills.base import BaseSkill, SkillMetadata, SkillEvent
+import pytest
+from pydantic import BaseModel, ValidationError
+
+from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata
 from tradingagents.skills.registry import SkillRegistry
 
 
@@ -102,5 +103,5 @@ def test_validate_params():
 
 def test_validate_params_invalid():
     skill = MockSkill()
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         skill.validate_params({})  # Missing required 'ticker'

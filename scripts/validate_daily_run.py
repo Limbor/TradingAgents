@@ -25,12 +25,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tradingagents.core.mcp_client import StockManagerMCPClient, config_from_app_config
-from tradingagents.core.persistence import Database
-from tradingagents.core.signal_fusion import fuse_candidate_signal
-from tradingagents.core.llm_candidate_review import build_candidate_reviewer
 from tradingagents.core.candidate_enrichment import enrich_candidates
-from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows, payload_warnings
+from tradingagents.core.llm_candidate_review import build_candidate_reviewer
+from tradingagents.core.mcp_client import StockManagerMCPClient, config_from_app_config
+from tradingagents.core.signal_fusion import fuse_candidate_signal
+from tradingagents.dataflows.mcp_adapter import (
+    normalize_quant_candidate,
+    payload_rows,
+)
 from tradingagents.default_config import DEFAULT_CONFIG
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -73,7 +75,7 @@ async def generate_signals(
         if not connected:
             raise RuntimeError("Cannot connect to StockManager MCP")
     except Exception as exc:
-        raise RuntimeError(f"MCP connection failed: {exc}")
+        raise RuntimeError(f"MCP connection failed: {exc}") from exc
 
     # Step 1: Get quant rankings
     logger.info("Fetching quant rankings for %s...", trade_date)
@@ -95,7 +97,6 @@ async def generate_signals(
     # Fallback: Tushare index_weight is MONTHLY data (published at month-end).
     # Try month-end dates going back up to 6 months, plus a few nearby calendar days.
     if not rows:
-        from datetime import date as _date_type
         try:
             current = datetime.strptime(trade_date, "%Y-%m-%d").date()
         except ValueError:
@@ -105,7 +106,6 @@ async def generate_signals(
         # Strategy 1: try nearby calendar days (up to 10 days)
         nearby_dates = [(current - timedelta(days=offset)).isoformat() for offset in range(1, 11)]
         # Strategy 2: try month-end dates going back 6 months (Tushare index_weight is monthly)
-        import calendar
         month_end_dates = []
         d = current
         for _ in range(6):

@@ -1,6 +1,6 @@
 from tradingagents.agents.utils.agent_utils import (
-    get_balance_sheet,
     get_announcements,
+    get_balance_sheet,
     get_cashflow,
     get_fundamentals,
     get_income_statement,

@@ -1,8 +1,9 @@
 """Unit tests for the persistence layer."""
 
-import pytest
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import pytest
 
 from tradingagents.core.persistence import Database
 

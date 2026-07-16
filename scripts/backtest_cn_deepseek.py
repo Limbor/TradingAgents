@@ -16,7 +16,6 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
-
 DEFAULT_SAMPLES = {
     "601899.SH": Path.home() / ".tradingagents/cache/601899.SH-TS-data-2021-06-18-2026-06-18.csv",
     "605589.SH": Path.home() / ".tradingagents/cache/605589-AKShare-data-2021-06-17-2026-06-17.csv",

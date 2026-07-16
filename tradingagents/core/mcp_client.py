@@ -9,10 +9,12 @@ rest of the app can degrade to local data sources.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
@@ -97,7 +99,7 @@ class StockManagerMCPClient:
         self._call_semaphore = asyncio.Semaphore(8)
         self._status = MCPStatus(enabled=self._config.enabled, url=self._config.url)
 
-    async def __aenter__(self) -> "StockManagerMCPClient":
+    async def __aenter__(self) -> StockManagerMCPClient:
         await self.connect()
         return self
 
@@ -194,15 +196,11 @@ class StockManagerMCPClient:
     async def disconnect(self) -> None:
         """Close the MCP session."""
         if self._session_context is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._session_context.__aexit__(None, None, None)
-            except Exception:
-                pass
         if self._transport_context is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._transport_context.__aexit__(None, None, None)
-            except Exception:
-                pass
         self._session_context = None
         self._transport_context = None
         self._session = None
@@ -239,10 +237,36 @@ class StockManagerMCPClient:
                 )
                 if result.content:
                     text = getattr(result.content[0], "text", str(result.content[0]))
+                    if bool(getattr(result, "isError", False)):
+                        return {
+                            "status": "error",
+                            "error": {"code": "mcp_tool_error", "message": str(text)},
+                            "rows": [],
+                            "warnings": [f"StockManager tool {name} returned an error"],
+                        }
                     try:
-                        return json.loads(text)
+                        payload = json.loads(text)
                     except (json.JSONDecodeError, TypeError):
-                        return text
+                        return {
+                            "status": "error",
+                            "error": {
+                                "code": "invalid_json",
+                                "message": f"Tool {name} returned non-JSON content",
+                            },
+                            "rows": [],
+                            "warnings": [str(text)[:500]],
+                        }
+                    if not isinstance(payload, (dict, list)):
+                        return {
+                            "status": "error",
+                            "error": {
+                                "code": "invalid_payload_type",
+                                "message": f"Tool {name} returned {type(payload).__name__}",
+                            },
+                            "rows": [],
+                            "warnings": [],
+                        }
+                    return payload
                 return None
             except asyncio.TimeoutError:
                 logger.warning(

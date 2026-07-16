@@ -11,17 +11,12 @@ Covers:
 """
 
 import asyncio
-import sqlite3
-from pathlib import Path
-
-import pytest
 
 from tradingagents.agents.utils.agent_utils import get_investment_style_instruction
 from tradingagents.core.mcp_client import MCPConfig, StockManagerMCPClient
 from tradingagents.core.persistence import Database
 from tradingagents.core.reflection import ReflectionEngine
 from tradingagents.graph.propagation import Propagator
-
 
 # ---------------------------------------------------------------------------
 # Fix 15: SQLite WAL
@@ -91,18 +86,18 @@ def test_reflection_case_id_excludes_run_id_for_dedup(tmp_path):
     """Two saves with the same (trade_date, symbol) must collide on case_id so
     INSERT OR REPLACE dedups instead of accumulating duplicates."""
     db = Database(tmp_path / "t.db")
-    base = dict(
-        source_type="system_signal",
-        reflection_scope="candidate_pool",
-        eligible_for_strategy_learning=False,
-        symbol="600519.SH",
-        name="贵州茅台",
-        signal_date="2026-07-04",
-        horizon_days=5,
-        source_run_id="run-A",
-        snapshot_payload="{}",
-        status="pending",
-    )
+    base = {
+        "source_type": "system_signal",
+        "reflection_scope": "candidate_pool",
+        "eligible_for_strategy_learning": False,
+        "symbol": "600519.SH",
+        "name": "贵州茅台",
+        "signal_date": "2026-07-04",
+        "horizon_days": 5,
+        "source_run_id": "run-A",
+        "snapshot_payload": "{}",
+        "status": "pending",
+    }
     case_id = "daily_pipeline:2026-07-04:600519.SH"
     db.save_reflection_case(case_id=case_id, **base)
     # Same case_id from a different run — must replace, not duplicate.
@@ -286,7 +281,7 @@ def test_market_analyst_prompt_includes_style():
     # Capture the system_message via the prompt partial. We invoke the node
     # with a state that has investment_style set and inspect that the prompt
     # template was partially applied with a style-bearing system_message.
-    node = create_market_analyst(_StubLLM())
+    create_market_analyst(_StubLLM())
     # The node builds the prompt internally; we just assert it runs and the
     # style helper is wired by checking the source imports the symbol.
     import inspect
@@ -302,6 +297,7 @@ def test_market_analyst_prompt_includes_style():
 
 def test_astream_propagate_has_checkpointer_branch():
     import inspect
+
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
     src = inspect.getsource(TradingAgentsGraph.astream_propagate)

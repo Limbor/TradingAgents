@@ -10,8 +10,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from tradingagents.dataflows import cn_trading_calendar as cal
-from tradingagents.dataflows import config as config_mod
+from tradingagents.dataflows import cn_trading_calendar as cal, config as config_mod
 
 
 def _write_cache(path, days):

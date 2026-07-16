@@ -9,6 +9,8 @@ interface Props {
   action: "add" | "reduce";
   submitting?: boolean;
   error?: string | null;
+  initialQuantity?: number;
+  initialPrice?: number;
   onConfirm: (action: "add" | "reduce", quantity: number, price: number) => void;
   onClose: () => void;
 }
@@ -18,11 +20,13 @@ function fmt(n: number, digits = 2) {
 }
 
 /** 加仓 / 减仓 弹窗:按一笔交易调整持仓,实时预览新成本(加仓)或已实现盈亏(减仓)。 */
-export function AdjustPositionDialog({ holding, action, submitting, error, onConfirm, onClose }: Props) {
+export function AdjustPositionDialog({ holding, action, submitting, error, initialQuantity, initialPrice, onConfirm, onClose }: Props) {
   const isAdd = action === "add";
-  const [quantity, setQuantity] = useState("");
+  const [quantity, setQuantity] = useState(initialQuantity && initialQuantity > 0 ? String(initialQuantity) : "");
   const [price, setPrice] = useState(
-    holding.current_price != null ? String(holding.current_price) : String(holding.avg_cost),
+    initialPrice && initialPrice > 0
+      ? String(initialPrice)
+      : holding.current_price != null ? String(holding.current_price) : String(holding.avg_cost),
   );
 
   const qty = Number(quantity);

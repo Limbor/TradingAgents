@@ -1,7 +1,8 @@
 """Unit tests for ToolRegistry and lightweight tool handlers."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
 

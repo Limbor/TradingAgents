@@ -10,6 +10,7 @@ import {
   AnalysisSummaryCard,
   parseAnalysisSummary,
   parseAnalysisSummaryFromStructured,
+  PositionAdviceCard,
 } from "@/components/Chat";
 
 interface TaskCardProps {
@@ -162,6 +163,22 @@ function TaskResult({
             <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">
               展开风险报告正文
             </summary>
+            <div className="mt-2 max-h-60 overflow-y-auto rounded-lg border border-stone-800 bg-stone-900 p-3 whitespace-pre-wrap text-sm leading-6 text-stone-300">
+              {structured.remainingText}
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  }
+
+  if (structured?.type === "position_advice" && structured.data && typeof structured.data === "object") {
+    return (
+      <div className="space-y-3">
+        <PositionAdviceCard advice={structured.data as Record<string, unknown>} />
+        {structured.remainingText.trim() && (
+          <details className="group">
+            <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">展开完整建议</summary>
             <div className="mt-2 max-h-60 overflow-y-auto rounded-lg border border-stone-800 bg-stone-900 p-3 whitespace-pre-wrap text-sm leading-6 text-stone-300">
               {structured.remainingText}
             </div>

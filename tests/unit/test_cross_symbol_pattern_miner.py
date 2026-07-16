@@ -1,14 +1,14 @@
 """Unit tests for CrossSymbolPatternMiner."""
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 from tradingagents.core.cross_symbol_pattern_miner import (
     CrossSymbolPatternMiner,
     PatternBucket,
     _lesson_id_from_finding,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -262,9 +262,11 @@ class TestPersistenceUpdates:
 
     def test_deactivate_strategy_lesson(self):
         """Test that deactivate sets active=0."""
-        from tradingagents.core.persistence import Database
-        import tempfile, os
+        import os
+        import tempfile
         from pathlib import Path
+
+        from tradingagents.core.persistence import Database
 
         db_path = Path(os.path.join(tempfile.mkdtemp(), "test.db"))
         db = Database(db_path)
@@ -282,7 +284,7 @@ class TestPersistenceUpdates:
 
         # Verify it exists and is active
         lessons = db.list_strategy_lessons(active_only=True)
-        assert any(l["id"] == "test_lesson_1" for l in lessons)
+        assert any(lesson["id"] == "test_lesson_1" for lesson in lessons)
 
         # Deactivate
         result = db.deactivate_strategy_lesson("test_lesson_1")
@@ -290,15 +292,17 @@ class TestPersistenceUpdates:
 
         # Verify it's now inactive
         active = db.list_strategy_lessons(active_only=True)
-        assert not any(l["id"] == "test_lesson_1" for l in active)
+        assert not any(lesson["id"] == "test_lesson_1" for lesson in active)
 
         all_lessons = db.list_strategy_lessons(active_only=False)
-        assert any(l["id"] == "test_lesson_1" for l in all_lessons)
+        assert any(lesson["id"] == "test_lesson_1" for lesson in all_lessons)
 
     def test_deactivate_nonexistent(self):
-        from tradingagents.core.persistence import Database
-        import tempfile, os
+        import os
+        import tempfile
         from pathlib import Path
+
+        from tradingagents.core.persistence import Database
 
         db_path = Path(os.path.join(tempfile.mkdtemp(), "test.db"))
         db = Database(db_path)
@@ -307,9 +311,11 @@ class TestPersistenceUpdates:
         assert result is False
 
     def test_update_strategy_lesson_accumulate_evidence(self):
-        from tradingagents.core.persistence import Database
-        import tempfile, os
+        import os
+        import tempfile
         from pathlib import Path
+
+        from tradingagents.core.persistence import Database
 
         db_path = Path(os.path.join(tempfile.mkdtemp(), "test.db"))
         db = Database(db_path)
@@ -334,9 +340,11 @@ class TestPersistenceUpdates:
         assert updated["confidence"] == "medium"
 
     def test_update_strategy_lesson_nonexistent(self):
-        from tradingagents.core.persistence import Database
-        import tempfile, os
+        import os
+        import tempfile
         from pathlib import Path
+
+        from tradingagents.core.persistence import Database
 
         db_path = Path(os.path.join(tempfile.mkdtemp(), "test.db"))
         db = Database(db_path)
@@ -503,7 +511,7 @@ class TestMineEndToEnd:
         db.update_strategy_lesson = MagicMock(return_value={"id": "x"})
         miner._db = db
 
-        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+        await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
 
         # Both dimensions should produce distinct lessons (not merged into one).
         dimensions_saved = [s["payload"]["dimension"] for s in saved]

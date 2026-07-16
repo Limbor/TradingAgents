@@ -11,7 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from .config import get_config
 from .rate_limiter import acquire_tushare

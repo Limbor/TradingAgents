@@ -3,13 +3,15 @@
 import asyncio
 
 from tradingagents.core.orchestrator import Orchestrator
-from tradingagents.skills.registry import SkillRegistry
-from tradingagents.skills.stock_analysis.skill import StockAnalysisSkill
-from tradingagents.skills.portfolio_management.skill import PortfolioManagementSkill
-from tradingagents.skills.market_scanner.skill import MarketScannerSkill
 from tradingagents.skills.daily_pipeline.skill import DailyPipelineSkill
 from tradingagents.skills.daily_review.skill import DailyReviewSkill
+from tradingagents.skills.decision_audit.skill import DecisionAuditSkill
+from tradingagents.skills.market_scanner.skill import MarketScannerSkill
+from tradingagents.skills.portfolio_management.skill import PortfolioManagementSkill
+from tradingagents.skills.registry import SkillRegistry
 from tradingagents.skills.risk_monitor.skill import RiskMonitorSkill
+from tradingagents.skills.stock_analysis.skill import StockAnalysisSkill
+from tradingagents.skills.strategy_backtest.skill import StrategyBacktestSkill
 
 
 def _registry():
@@ -20,7 +22,25 @@ def _registry():
     registry.register(DailyPipelineSkill())
     registry.register(DailyReviewSkill())
     registry.register(RiskMonitorSkill())
+    registry.register(DecisionAuditSkill())
+    registry.register(StrategyBacktestSkill())
     return registry
+
+
+def test_route_decision_audit_and_backtest():
+    async def run():
+        audit = await Orchestrator(_registry()).route("评估到期决策")
+        assert audit.skill is not None
+        assert audit.skill.metadata.id == "decision_audit"
+
+        backtest = await Orchestrator(_registry()).route(
+            "策略回测 2024-01-01 到 2025-01-01"
+        )
+        assert backtest.skill is not None
+        assert backtest.skill.metadata.id == "strategy_backtest"
+        assert backtest.params == {"start_date": "2024-01-01", "end_date": "2025-01-01"}
+
+    asyncio.run(run())
 
 
 def test_route_chinese_stock_name_to_analysis():

@@ -1,13 +1,13 @@
 """Unit tests for the Run Manager."""
 
 import asyncio
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
 from tradingagents.core.persistence import Database
-from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata
 from tradingagents.core.run_manager import RunManager, RunStatus
+from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata
 
 
 class RunInput(BaseModel):

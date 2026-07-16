@@ -73,6 +73,7 @@ markers = [
     "unit: fast isolated unit tests",
     "integration: tests requiring external services",
     "smoke: quick sanity-check tests",
+    "live: tests that call real external services and require explicit opt-in",
     "asyncio: mark test as async",
 ]
 filterwarnings = [

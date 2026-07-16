@@ -15,8 +15,8 @@ from collections.abc import Iterable
 import pandas as pd
 from stockstats import wrap
 
-from tradingagents.dataflows.symbol_utils import detect_market, normalize_cn_display
 from tradingagents.dataflows.stockstats_utils import load_ohlcv
+from tradingagents.dataflows.symbol_utils import detect_market, normalize_cn_display
 
 # A fixed, common indicator set so the snapshot is the same shape every run.
 DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (

@@ -12,7 +12,6 @@ import { CircleSlash2, Layers3, RadioTower, ScrollText } from "lucide-react";
 export default function Analysis() {
   const { runId } = useParams<{ runId: string }>();
   const {
-    currentRunId,
     status,
     agentStatuses,
     reportSections,
@@ -28,10 +27,9 @@ export default function Analysis() {
   } = useRunStore();
 
   useEffect(() => {
-    if (!runId || runId === currentRunId) return;
+    if (!runId) return;
 
     startRun(runId);
-    wsManager.connect(runId);
 
     const unsubStatus = wsManager.on("agent_status", (msg: WSMessage) => {
       updateAgentStatus({
@@ -80,6 +78,11 @@ export default function Analysis() {
       failRun(msg.payload.message as string);
     });
 
+    // Register every handler before connecting: the server replays persisted
+    // events immediately after the handshake, so connecting first can drop the
+    // opening status/report frames on fast local or reconnected sessions.
+    wsManager.connect(runId);
+
     return () => {
       unsubStatus();
       unsubReport();
@@ -90,7 +93,16 @@ export default function Analysis() {
       unsubError();
       wsManager.disconnect();
     };
-  }, [runId]);
+  }, [
+    addToolCall,
+    cancelRun,
+    completeRun,
+    failRun,
+    runId,
+    startRun,
+    updateAgentStatus,
+    updateReportSection,
+  ]);
 
   if (!runId) {
     return (

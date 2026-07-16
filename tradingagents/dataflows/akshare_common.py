@@ -7,9 +7,9 @@ AKShare vendor functions should route remote calls through
 
 from __future__ import annotations
 
-import functools
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .rate_limiter import acquire_akshare
 
@@ -64,7 +64,6 @@ def ak_lazy_import():
 
 def df_to_csv_report(df, title: str, header_lines: list[str] | None = None) -> str:
     """Render a DataFrame as a CSV report with a markdown-ish header block."""
-    import pandas as pd
     from datetime import datetime
 
     if df is None or (hasattr(df, "empty") and df.empty):

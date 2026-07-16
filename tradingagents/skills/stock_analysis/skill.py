@@ -5,21 +5,20 @@ pipeline: 13 agents across 5 phases (Analyst → Research → Trader →
 Risk → Portfolio Manager).
 """
 
-from datetime import date, datetime as _dt
-from typing import Any, AsyncIterator
-
 import logging
 import re
+from collections.abc import AsyncIterator
+from datetime import date, datetime as _dt
+from typing import Any
+
 from pydantic import BaseModel, Field
 
-from tradingagents.dataflows.symbol_utils import detect_market
-
-logger = logging.getLogger(__name__)
-
 from tradingagents.core.reflection_enroll import enroll_reflection_case
+from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.skills._shared import optional_float, resolve_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
+logger = logging.getLogger(__name__)
 
 AGENT_PROGRESS_STAGES: dict[str, tuple[str, str]] = {
     "Market Analyst": ("analyst_market", "市场分析"),
@@ -338,6 +337,7 @@ class StockAnalysisSkill(BaseSkill):
     ) -> str | None:
         """Save report sections to disk as markdown files."""
         from pathlib import Path
+
         from tradingagents.dataflows.utils import safe_ticker_component
         from tradingagents.reporting import write_report_sections
 
@@ -364,6 +364,7 @@ class StockAnalysisSkill(BaseSkill):
     ) -> None:
         """Save report to SQLite database for indexing."""
         import uuid
+
         from tradingagents.agents.utils.rating import parse_rating
         from tradingagents.core.persistence import Database
 
@@ -492,6 +493,7 @@ class StockAnalysisSkill(BaseSkill):
         Returns dict with keys: rating, target_price, confidence, reasons, symbol.
         """
         import re
+
         from tradingagents.agents.utils.rating import parse_rating
 
         decision_text = sections.get("final_trade_decision", "")
@@ -621,7 +623,11 @@ async def _load_holding_context(
     if db is None:
         return None
     try:
-        from tradingagents.core.portfolio_prices import latest_close, resolve_portfolio_name, resolve_portfolio_symbol
+        from tradingagents.core.portfolio_prices import (
+            latest_close,
+            resolve_portfolio_name,
+            resolve_portfolio_symbol,
+        )
 
         symbol = resolve_portfolio_symbol(ticker)
         # When the caller (e.g. the portfolio UI) hands off raw holding fields,
@@ -691,8 +697,8 @@ def _format_holding_context(context: dict[str, Any] | None) -> str:
     lines = [
         "User portfolio holding context:",
         (
-            f"- This ticker is already held by the user. Analyze it as a position review, "
-            f"not only as a standalone stock pitch."
+            "- This ticker is already held by the user. Analyze it as a position review, "
+            "not only as a standalone stock pitch."
         ),
         f"- symbol/name: {context.get('symbol')} {context.get('name') or ''}".strip(),
         f"- quantity: {_format_number(context.get('quantity'))}",

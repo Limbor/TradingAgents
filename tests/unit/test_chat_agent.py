@@ -4,16 +4,15 @@ All tests mock the LLM to return controlled responses so we do not need an
 actual LLM provider or API key to verify the routing logic.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from langchain_core.messages import AIMessage
 
-from tradingagents.core.chat_agent import ChatAgent, ChatResponse
+from tradingagents.core.chat_agent import ChatAgent
 from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
 from tradingagents.skills.base import BaseSkill, SkillMetadata
 from tradingagents.skills.registry import SkillRegistry
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -113,6 +112,38 @@ class TestChatAgentIntentClassification:
             assert result.tool_name == "get_portfolio_summary"
             assert result.tool_display == "table"
             assert result.tool_result is not None
+            assert "返回 0 条结果" in result.content
+
+    @pytest.mark.asyncio
+    async def test_multiple_lightweight_tools_are_combined(self, chat_agent):
+        second = LightweightTool(
+            name="get_strategy_lessons",
+            description="Get lessons",
+            parameters={"type": "object", "properties": {}},
+            handler=AsyncMock(return_value={"lessons": [{"id": "l1"}]}),
+            display="text",
+        )
+        chat_agent._tool_registry.register(second)
+        chat_agent._lightweight_names.add(second.name)
+        mock_llm = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.content = ""
+        mock_response.tool_calls = [
+            {"name": "get_portfolio_summary", "args": {}},
+            {"name": "get_strategy_lessons", "args": {}},
+        ]
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await chat_agent.handle("结合持仓和策略经验给建议")
+
+        assert result.intent == "tool_answer"
+        assert result.tool_name == "multi_tool"
+        assert set(result.tool_result["results"]) == {
+            "get_portfolio_summary",
+            "get_strategy_lessons",
+        }
+        assert len(result.citations) == 2
 
     @pytest.mark.asyncio
     async def test_skill_run_intent(self, chat_agent):

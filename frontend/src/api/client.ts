@@ -434,6 +434,67 @@ export async function getTradingTime(market = "cn_a"): Promise<TradingTemporalCo
   return fetchJson(`${API_BASE}/trading-time?${params}`);
 }
 
+export interface DecisionAuditSummary {
+  decision_count: number;
+  open_count: number;
+  realized_count: number;
+  execution_count: number;
+  linked_execution_count: number;
+  execution_link_rate: number;
+  execution_validation: { sample_count: number; win_rate: number; average_directional_return: number; statistically_usable: boolean };
+  validation: {
+    overall: { sample_count: number; win_rate: number; average_return: number; statistically_usable: boolean };
+    by_decision: Record<string, { sample_count: number; win_rate: number; average_return: number; average_directional_return: number }>;
+    strategy_claims_allowed: boolean;
+    effectiveness_claim_allowed?: boolean;
+    warnings: string[];
+  };
+}
+
+export interface DecisionRecord {
+  id: string; source_type: string; symbol: string; name: string | null;
+  decision_date: string; decision: string; horizon_days: number;
+  reference_price: number | null; status: string; reflection_case_id: string;
+  execution_count: number; outcome_count: number; final_return: number | null;
+  final_excess_return: number | null; payload: Record<string, unknown>;
+}
+
+export interface BacktestRun {
+  id: string; job_id: string; strategy_type: string; status: string;
+  start_date: string; end_date: string; config: Record<string, unknown>;
+  result: Record<string, unknown>; error: string | null; created_at: string; updated_at: string;
+}
+
+export interface BacktestCatalog {
+  strategies: { name: string; sha1: string }[];
+  configs: { name: string; sha1: string }[];
+}
+
+export const getDecisionAuditSummary = (): Promise<DecisionAuditSummary> =>
+  fetchJson(`${API_BASE}/decision-audit/summary`);
+
+export const listDecisionRecords = (): Promise<DecisionRecord[]> =>
+  fetchJson(`${API_BASE}/decision-audit/decisions?limit=100`);
+
+export const evaluateDecisionAudit = (): Promise<Record<string, unknown>> =>
+  fetchJson(`${API_BASE}/decision-audit/evaluate`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+  });
+
+export const recordDecisionExecution = (body: {
+  decision_id: string; symbol: string; action: string; quantity: number; price: number;
+}): Promise<Record<string, unknown>> => fetchJson(`${API_BASE}/decision-audit/executions`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+});
+
+export const listBacktests = (): Promise<BacktestRun[]> => fetchJson(`${API_BASE}/backtests`);
+export const getBacktestCatalog = (): Promise<BacktestCatalog> => fetchJson(`${API_BASE}/backtests/catalog`);
+
+export const createBacktest = (body: Record<string, unknown>): Promise<BacktestRun> =>
+  fetchJson(`${API_BASE}/backtests`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+
 export async function updateConfig(
   config: Partial<ConfigResponse>
 ): Promise<ConfigResponse> {
@@ -462,6 +523,37 @@ export async function listHoldings(): Promise<Holding[]> {
   return fetchJson(`${API_BASE}/holdings`);
 }
 
+export interface RiskEvent {
+  id: string;
+  symbol: string;
+  name?: string | null;
+  level: string;
+  event_type: string;
+  title: string;
+  source: string;
+  event_date?: string | null;
+  status: "open" | "acknowledged" | "monitoring" | "resolved";
+  first_seen_at: string;
+  last_seen_at: string;
+  resolved_at?: string | null;
+  payload: Record<string, unknown>;
+}
+
+export async function listRiskEvents(status = "open"): Promise<RiskEvent[]> {
+  return fetchJson(`${API_BASE}/risk-events?status=${encodeURIComponent(status)}`);
+}
+
+export async function updateRiskEventStatus(
+  id: string,
+  status: RiskEvent["status"],
+): Promise<RiskEvent> {
+  return fetchJson(`${API_BASE}/risk-events/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+}
+
 export async function upsertHolding(holding: Omit<Holding, "updated_at">): Promise<Holding> {
   return fetchJson(`${API_BASE}/holdings/${encodeURIComponent(holding.symbol)}`, {
     method: "PUT",
@@ -480,7 +572,7 @@ export interface AdjustPositionResult {
 
 export async function adjustHolding(
   symbol: string,
-  body: { action: "add" | "reduce"; quantity: number; price: number },
+  body: { action: "add" | "reduce"; quantity: number; price: number; decision_id?: string },
 ): Promise<AdjustPositionResult> {
   return fetchJson(`${API_BASE}/holdings/${encodeURIComponent(symbol)}/adjust`, {
     method: "POST",

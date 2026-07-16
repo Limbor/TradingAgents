@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -90,7 +90,7 @@ class CandidateReviewer:
     async def review(
         self,
         candidate: dict[str, Any],
-        context: "CandidateContext | None" = None,
+        context: CandidateContext | None = None,
     ) -> CandidateLLMReview:
         """Review a candidate with optional real-time context."""
         prompt = _build_prompt(
@@ -171,7 +171,7 @@ def _build_prompt(
     candidate: dict[str, Any],
     style: str,
     trade_date: str,
-    context: "CandidateContext | None" = None,
+    context: CandidateContext | None = None,
     strategy_lessons: list[dict[str, Any]] | None = None,
 ) -> str:
     style_label = {
@@ -292,15 +292,7 @@ def _matching_lessons(candidate: dict[str, Any], lessons: list[dict[str, Any]]) 
     for lesson in lessons:
         scope = str(lesson.get("scope") or "global")
         target = str(lesson.get("target") or "")
-        if scope == "global":
-            matched.append(lesson)
-        elif scope == "symbol" and target == symbol:
-            matched.append(lesson)
-        elif scope == "industry" and target and target == industry:
-            matched.append(lesson)
-        elif scope == "board" and target and target == board:
-            matched.append(lesson)
-        elif scope == "factor" and target and (target in factor_keys or target in missing_keys):
+        if scope == "global" or scope == "symbol" and target == symbol or scope == "industry" and target and target == industry or scope == "board" and target and target == board or scope == "factor" and target and (target in factor_keys or target in missing_keys):
             matched.append(lesson)
     return matched
 

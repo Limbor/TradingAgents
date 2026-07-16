@@ -13,6 +13,7 @@ from langgraph.prebuilt import ToolNode
 # Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
+    get_announcements,
     get_balance_sheet,
     get_cashflow,
     get_fundamentals,
@@ -20,23 +21,22 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_indicators,
     get_insider_transactions,
-    get_macro_indicators,
-    get_news,
-    get_prediction_markets,
-    get_stock_data,
-    get_verified_market_snapshot,
-    resolve_instrument_identity,
-    # CN market tools
-    get_social_sentiment,
-    get_announcements,
-    get_macro_calendar,
-    get_market_structure_snapshot,
-    get_theme_heat,
     get_lhb_detail,
     get_limit_status,
-    get_northbound_flow,
+    get_macro_calendar,
+    get_macro_indicators,
     get_margin_balance,
+    get_market_structure_snapshot,
+    get_news,
+    get_northbound_flow,
+    get_prediction_markets,
+    # CN market tools
+    get_social_sentiment,
+    get_stock_data,
+    get_theme_heat,
     get_unlock_schedule,
+    get_verified_market_snapshot,
+    resolve_instrument_identity,
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
@@ -252,7 +252,8 @@ class TradingAgentsGraph:
         entry, which is the right default because the alpha calculation works
         in USD.
         """
-        explicit = self.config.get("benchmark_ticker")
+        config = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        explicit = config.get("benchmark_ticker")
         if explicit:
             return explicit
         # A-share defaults: Shanghai Composite for .SH, Shenzhen Component for
@@ -262,7 +263,7 @@ class TradingAgentsGraph:
         for suffix, bench in default_map.items():
             if ticker_upper.endswith(suffix):
                 return bench
-        benchmark_map = self.config.get("benchmark_map", {})
+        benchmark_map = config.get("benchmark_map", {})
         for suffix, benchmark in benchmark_map.items():
             if suffix and ticker_upper.endswith(suffix.upper()):
                 return benchmark
@@ -270,12 +271,12 @@ class TradingAgentsGraph:
 
     def _fetch_returns(
         self, ticker: str, trade_date: str, holding_days: int = 5,
-        benchmark: str = "000001.SH",
+        benchmark: str | None = None,
     ) -> tuple[float | None, float | None, int | None]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
 
-        ``benchmark`` is the index used as the alpha baseline (resolved by the
-        caller via ``_resolve_benchmark``). Returns ``(raw_return, alpha_return,
+        ``benchmark`` is the index used as the alpha baseline. When omitted it
+        is resolved from the ticker market. Returns ``(raw_return, alpha_return,
         actual_holding_days)`` or ``(None, None, None)`` if price data is
         unavailable (too recent, delisted, or network error).
 
@@ -290,6 +291,9 @@ class TradingAgentsGraph:
         from tradingagents.dataflows.symbol_utils import detect_market, normalize_symbol
 
         try:
+            # Call the implementation directly so this utility also behaves
+            # predictably when invoked unbound with a lightweight test double.
+            benchmark = benchmark or TradingAgentsGraph._resolve_benchmark(self, ticker)
             start = datetime.strptime(trade_date, "%Y-%m-%d")
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
             end_str = end.strftime("%Y-%m-%d")

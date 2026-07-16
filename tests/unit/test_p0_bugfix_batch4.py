@@ -8,10 +8,6 @@ Covers:
 
 import asyncio
 import inspect
-import tempfile
-from pathlib import Path
-
-import pytest
 
 from tradingagents.core.orchestrator import NAME_TO_TICKER, Orchestrator
 from tradingagents.core.persistence import Database
@@ -79,7 +75,7 @@ def test_llm_router_wraps_user_input_against_injection():
     are treated as data, not instructions."""
     from tradingagents.core.llm_router import LLMRouter
 
-    router = LLMRouter(_registry(), {"llm_provider": "openai", "quick_think_llm": "x"})
+    LLMRouter(_registry(), {"llm_provider": "openai", "quick_think_llm": "x"})
     src = inspect.getsource(LLMRouter._do_route)
     assert "<user_input>" in src
     assert "untrusted DATA" in src or "untrusted data" in src.lower() or "as data" in src.lower()

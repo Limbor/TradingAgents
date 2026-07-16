@@ -18,6 +18,7 @@ export const queryKeys = {
   reflectionsSummary: () => ["reflections-summary"] as const,
   dashboardArtifacts: () => ["dashboard-artifacts"] as const,
   strategyLessons: () => ["strategy-lessons"] as const,
+  riskEvents: (status = "open") => ["risk-events", status] as const,
   reflectionCases: (status = "pending") => ["reflection-cases", status] as const,
   artifacts: (type?: string, query?: string, runId?: string) =>
     ["artifacts", type, query, runId] as const,

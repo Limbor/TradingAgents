@@ -6,8 +6,9 @@ StateGraph, input/output schemas, and shared core infrastructure
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 

@@ -1,12 +1,12 @@
 """FastAPI application factory."""
 
-from contextlib import asynccontextmanager
 import asyncio
-from datetime import time
 import logging
-from pathlib import Path
 import time as monotonic_time
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import time
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +24,21 @@ from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.skills.registry import SkillRegistry
 
-from .routes import artifacts, config, health, plans, portfolio, profile, reflections, reports, runs, skills, trading_time
+from .routes import (
+    artifacts,
+    config,
+    decision_audit,
+    health,
+    plans,
+    portfolio,
+    profile,
+    reflections,
+    reports,
+    risk_events,
+    runs,
+    skills,
+    trading_time,
+)
 from .ws import stream
 
 
@@ -122,6 +136,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         app.state.scheduler.register_daily("reflection_job", time(16, 30), run_reflection_pipeline)
 
+        async def run_decision_audit() -> None:
+            from tradingagents.core.decision_audit import DecisionAuditEngine
+            from tradingagents.core.trading_time import get_temporal_context
+
+            ctx = get_temporal_context(app.state.config, market="cn_a")
+            if ctx.calendar_state != "trading_day":
+                return
+            result = await DecisionAuditEngine(app.state.db, app.state.config).evaluate_due(
+                as_of_date=ctx.market_asof_date, limit=20,
+            )
+            logging.getLogger(__name__).info("Decision audit completed: %s", result)
+
+        app.state.scheduler.register_daily("decision_audit", time(16, 20), run_decision_audit)
+
         # Plan monitoring — runs after the reflection job, evaluates active
         # plans' conditions (price levels / golden cross / cash flow) against
         # the fresh close and flags triggers as plan_alert artifacts.
@@ -215,6 +243,8 @@ def create_app() -> FastAPI:
     app.include_router(portfolio.router, prefix="/api/v1", tags=["portfolio"])
     app.include_router(plans.router, prefix="/api/v1", tags=["plans"])
     app.include_router(reflections.router, prefix="/api/v1", tags=["reflections"])
+    app.include_router(decision_audit.router, prefix="/api/v1", tags=["decision-audit"])
+    app.include_router(risk_events.router, prefix="/api/v1", tags=["risk-events"])
     app.include_router(trading_time.router, prefix="/api/v1", tags=["trading-time"])
 
     # Register WebSocket routes

@@ -6,6 +6,7 @@ import {
   MessageSquareText,
   Settings,
   TrendingUp,
+  ClipboardCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -14,6 +15,7 @@ const navItems = [
   { to: "/chat", label: "Chat", icon: MessageSquareText },
   { to: "/portfolio", label: "Portfolio", icon: BriefcaseBusiness },
   { to: "/library", label: "Library", icon: FileText },
+  { to: "/audit", label: "Audit", icon: ClipboardCheck },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

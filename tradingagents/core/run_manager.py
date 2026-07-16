@@ -6,6 +6,7 @@ endpoints) via per-run asyncio Queues.
 """
 
 import asyncio
+import contextlib
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -154,10 +155,8 @@ class RunManager:
         # Persist for replay-on-reconnect. Best-effort; never block the pipeline.
         if self._db is not None and hasattr(self._db, "save_run_event"):
             run._event_seq += 1
-            try:
+            with contextlib.suppress(Exception):
                 self._db.save_run_event(run_id, run._event_seq, event.event_type, event.data)
-            except Exception:
-                pass
         await self._broadcast(run_id, event)
 
     async def _broadcast(self, run_id: str, event: SkillEvent) -> None:
@@ -174,16 +173,10 @@ class RunManager:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
                 # Drop the oldest event to make room for the newer one.
-                try:
+                with contextlib.suppress(asyncio.QueueEmpty):
                     queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
+                with contextlib.suppress(asyncio.QueueFull):
                     queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    # Still full (concurrent producer); drop this event rather
-                    # than block the run loop.
-                    pass
 
     def _save_run(self, run: Run) -> None:
         """Save a run record if persistence is configured."""
@@ -250,10 +243,8 @@ class RunManager:
             if run._skill is not None:
                 await run._skill.cancel()
             run._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await asyncio.wait_for(run._task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
             return True
         return False
 
@@ -269,10 +260,8 @@ class RunManager:
         for run in self._runs.values():
             if run._task and not run._task.done():
                 if run._skill is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         await run._skill.cancel()
-                    except Exception:
-                        pass
                 run._task.cancel()
                 tasks.append(run._task)
         if tasks:

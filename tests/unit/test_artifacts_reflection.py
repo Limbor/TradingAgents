@@ -242,7 +242,11 @@ def test_reflection_engine_case_ex_ante_miss_creates_lesson(tmp_path):
         assert result["cases_processed"] == 1
         assert result["lessons_created"] == 1
         assert db.list_reflection_cases(status="reflected")[0]["attribution_payload"]["attribution"] == "ex_ante_miss"
-        assert db.list_strategy_lessons()[0]["finding"].startswith("资金流缺失")
+        assert db.list_strategy_lessons() == []
+        candidate = db.list_strategy_lessons(active_only=False)[0]
+        assert candidate["finding"].startswith("资金流缺失")
+        assert candidate["active"] is False
+        assert candidate["payload"]["governance_status"] == "candidate"
 
     asyncio.run(run())
 

@@ -6,7 +6,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 InvestmentStyle = Literal["short_term", "medium_term", "long_term"]
 RiskTolerance = Literal["low", "moderate", "high"]
 

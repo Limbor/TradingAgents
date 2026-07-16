@@ -167,6 +167,7 @@ async def list_strategy_lessons(
 async def save_candidate_action(request: Request, body: CandidateActionRequest):
     """Record user intent for a candidate without forcing it into strategy learning."""
     import uuid
+
     from tradingagents.core.trading_time import get_temporal_context
 
     action = body.action.strip().lower()

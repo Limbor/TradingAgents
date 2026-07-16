@@ -9,11 +9,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-import pandas as pd
-
-from .akshare_common import akshare_call, ak_lazy_import, df_to_csv_report
 from .akshare_cn_specific import _append_hot_rank_fallback
-from .symbol_utils import normalize_for_akshare, normalize_cn_display
+from .akshare_common import ak_lazy_import, akshare_call, df_to_csv_report
+from .symbol_utils import normalize_cn_display, normalize_for_akshare
 
 
 def get_social_sentiment(

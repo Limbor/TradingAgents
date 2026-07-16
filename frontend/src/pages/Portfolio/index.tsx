@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
@@ -9,6 +9,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Scale,
   ShieldAlert,
   Trash2,
   TrendingDown,
@@ -49,9 +50,12 @@ const EMPTY_FORM: HoldingForm = {
   current_price: "",
   notes: "",
 };
+const EMPTY_HOLDINGS: Holding[] = [];
 
 export default function Portfolio() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const consumedAdjustmentRef = useRef(false);
   const queryClient = useQueryClient();
   const holdingsQuery = useQuery({
     queryKey: queryKeys.holdings(),
@@ -63,11 +67,17 @@ export default function Portfolio() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [adjustTarget, setAdjustTarget] = useState<{ holding: Holding; action: "add" | "reduce" } | null>(null);
+  const [adjustTarget, setAdjustTarget] = useState<{
+    holding: Holding;
+    action: "add" | "reduce";
+    initialQuantity?: number;
+    initialPrice?: number;
+    decisionId?: string;
+  } | null>(null);
   const [adjusting, setAdjusting] = useState(false);
   const [adjustError, setAdjustError] = useState<string | null>(null);
 
-  const holdings = holdingsQuery.data ?? [];
+  const holdings = holdingsQuery.data ?? EMPTY_HOLDINGS;
   const summary = useMemo(() => buildPortfolioSummary(holdings), [holdings]);
   const sortedHoldings = useMemo(
     () =>
@@ -76,6 +86,28 @@ export default function Portfolio() {
       ),
     [holdings]
   );
+
+  useEffect(() => {
+    const state = location.state as {
+      adjustment?: { symbol?: string; action?: "add" | "reduce"; quantity?: number; price?: number; decision_id?: string };
+    } | null;
+    const adjustment = state?.adjustment;
+    if (!adjustment || consumedAdjustmentRef.current || holdings.length === 0) return;
+    const holding = holdings.find((item) => item.symbol === adjustment.symbol);
+    consumedAdjustmentRef.current = true;
+    navigate(location.pathname, { replace: true, state: null });
+    if (!holding || !adjustment.action) {
+      setError("建议对应的持仓不存在或已被删除。");
+      return;
+    }
+    setAdjustTarget({
+      holding,
+      action: adjustment.action,
+      initialQuantity: adjustment.quantity,
+      initialPrice: adjustment.price,
+      decisionId: adjustment.decision_id,
+    });
+  }, [holdings, location.pathname, location.state, navigate]);
 
   const save = async () => {
     const symbol = form.symbol.trim().toUpperCase();
@@ -134,7 +166,9 @@ export default function Portfolio() {
     setAdjustError(null);
     setNotice(null);
     try {
-      const result = await adjustHolding(holding.symbol, { action, quantity, price });
+      const result = await adjustHolding(holding.symbol, {
+        action, quantity, price, decision_id: adjustTarget.decisionId,
+      });
       await holdingsQuery.refetch();
       const name = displayNameOf(holding.name, holding.symbol);
       if (action === "add") {
@@ -394,6 +428,21 @@ export default function Portfolio() {
                         <td className="px-3 py-2">
                           <div className="flex justify-end gap-1.5">
                             <button
+                              onClick={() =>
+                                navigate("/chat", {
+                                  state: {
+                                    prompt: `${item.symbol} 要不要卖，给出持仓建议`,
+                                    autoSend: true,
+                                    context: { holding_context: item },
+                                  },
+                                })
+                              }
+                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-indigo-300"
+                              title="持仓建议"
+                            >
+                              <Scale className="h-4 w-4" />
+                            </button>
+                            <button
                               onClick={() => { setNotice(null); setAdjustError(null); setAdjustTarget({ holding: item, action: "add" }); }}
                               className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-teal-300"
                               title="加仓"
@@ -439,6 +488,8 @@ export default function Portfolio() {
         <AdjustPositionDialog
           holding={adjustTarget.holding}
           action={adjustTarget.action}
+          initialQuantity={adjustTarget.initialQuantity}
+          initialPrice={adjustTarget.initialPrice}
           submitting={adjusting}
           error={adjustError}
           onConfirm={adjust}

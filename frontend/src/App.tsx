@@ -9,6 +9,7 @@ const Chat = lazy(() => import("./pages/Chat"));
 const Portfolio = lazy(() => import("./pages/Portfolio"));
 const Library = lazy(() => import("./pages/Library"));
 const Settings = lazy(() => import("./pages/Settings"));
+const Audit = lazy(() => import("./pages/Audit"));
 
 const queryClient = new QueryClient();
 
@@ -33,6 +34,7 @@ export default function App() {
               <Route path="/analysis" element={<Analysis />} />
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/library" element={<Library />} />
+              <Route path="/audit" element={<Audit />} />
               <Route path="/settings" element={<Settings />} />
               {/* Redirects for removed pages */}
               <Route path="/reports" element={<Navigate to="/library" replace />} />

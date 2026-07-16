@@ -22,8 +22,8 @@ from tradingagents.skills.daily_pipeline.skill import DailyPipelineSkill
 from tradingagents.skills.daily_review.skill import DailyReviewSkill
 from tradingagents.skills.market_scanner.skill import MarketScannerSkill
 from tradingagents.skills.portfolio_management.skill import PortfolioManagementSkill
-from tradingagents.skills.risk_monitor.skill import RiskMonitorSkill
 from tradingagents.skills.registry import SkillRegistry
+from tradingagents.skills.risk_monitor.skill import RiskMonitorSkill
 from tradingagents.skills.stock_analysis.skill import (
     StockAnalysisSkill,
     _extract_trade_plan,

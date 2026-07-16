@@ -7,8 +7,8 @@ and optionally generates LLM-assisted reflection text.
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -67,7 +67,9 @@ class ReflectionEngine:
 
         try:
             start_date = signal_date.replace("-", "")
-            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days + 5)
+            # horizon_days is a trading-session count; allow enough calendar
+            # days for weekends and long exchange holidays.
+            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
             end_date = end_dt.strftime("%Y%m%d")
 
             client = await get_mcp_client(self.config)
@@ -83,10 +85,50 @@ class ReflectionEngine:
                     if isinstance(rows, list) and len(rows) >= 2:
                         return self._compute_return_from_rows(rows, signal_date, horizon_days)
 
-            # Fallback to yfinance
+            # A-share fallback uses the same qfq AKShare series as the analysis
+            # pipeline. This is both more reliable than Yahoo for CN tickers
+            # and keeps the signal/outcome adjustment convention consistent.
+            if symbol.upper().endswith((".SH", ".SZ", ".BJ")):
+                cn_outcome = await self._fetch_outcome_cn(symbol, signal_date, horizon_days)
+                if cn_outcome is not None:
+                    return cn_outcome
+
+            # Final fallback to yfinance
             return await self._fetch_outcome_yfinance(symbol, signal_date, horizon_days)
         except Exception as exc:
             logger.warning("fetch_outcome failed for %s: %s", symbol, exc)
+            return None
+
+    async def _fetch_outcome_cn(
+        self, symbol: str, signal_date: str, horizon_days: int
+    ) -> dict[str, Any] | None:
+        try:
+            import asyncio
+
+            import pandas as pd
+
+            from tradingagents.dataflows.akshare_stock import load_ohlcv_cn
+
+            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
+            df = await asyncio.to_thread(load_ohlcv_cn, symbol, end_dt.date().isoformat())
+            if df is None or df.empty:
+                return None
+            eligible = df[pd.to_datetime(df["Date"]) >= pd.to_datetime(signal_date)].sort_values("Date")
+            if len(eligible) <= horizon_days:
+                return None
+            close_at_signal = float(eligible.iloc[0]["Close"])
+            close_at_horizon = float(eligible.iloc[horizon_days]["Close"])
+            if close_at_signal <= 0:
+                return None
+            return {
+                "actual_return": round((close_at_horizon - close_at_signal) / close_at_signal, 4),
+                "close_at_signal": round(close_at_signal, 4),
+                "close_at_horizon": round(close_at_horizon, 4),
+                "horizon_days": horizon_days,
+                "source": "akshare_qfq",
+            }
+        except Exception as exc:
+            logger.debug("AKShare outcome fallback failed for %s: %s", symbol, exc)
             return None
 
     async def _fetch_outcome_yfinance(
@@ -103,7 +145,7 @@ class ReflectionEngine:
 
             yahoo_ticker = _convert_ticker_for_yahoo(symbol)
             start_dt = datetime.strptime(signal_date, "%Y-%m-%d")
-            end_dt = start_dt + timedelta(days=horizon_days + 10)
+            end_dt = start_dt + timedelta(days=horizon_days * 2 + 10)
 
             def _download():
                 ticker = yf.Ticker(yahoo_ticker)
@@ -140,14 +182,14 @@ class ReflectionEngine:
     ) -> dict[str, Any] | None:
         """Compute return from MCP daily data rows."""
         # Sort by trade_date
-        sorted_rows = sorted(rows, key=lambda r: str(r.get("trade_date", "")))
+        sorted_rows = sorted(rows, key=lambda r: str(r.get("trade_date", "")).replace("-", ""))
         signal_date_compact = signal_date.replace("-", "")
 
         # Find signal date row
         signal_row = None
         signal_idx = -1
         for idx, row in enumerate(sorted_rows):
-            td = str(row.get("trade_date", ""))
+            td = str(row.get("trade_date", "")).replace("-", "")
             if td >= signal_date_compact:
                 signal_row = row
                 signal_idx = idx
@@ -304,6 +346,7 @@ class ReflectionEngine:
             "case_id": case.get("id"),
             "symbol": symbol,
             "missed_evidence": missed,
+            "governance_status": "candidate",
         }
         try:
             self.db.save_strategy_lesson(
@@ -315,6 +358,7 @@ class ReflectionEngine:
                 suggested_adjustment=lesson["suggested_adjustment"],
                 evidence_count=lesson["evidence_count"],
                 confidence=lesson["confidence"],
+                active=False,
                 payload=lesson,
             )
         except Exception as exc:
@@ -351,7 +395,7 @@ class ReflectionEngine:
             return str(response.content).strip()
         except Exception as exc:
             logger.warning("LLM reflection generation failed: %s", exc)
-            was_correct = outcome.get("was_correct", None)
+            was_correct = outcome.get("was_correct")
             ret = outcome.get("actual_return", 0)
             if was_correct:
                 return f"Decision was directionally correct. Return: {ret:.2%}."
@@ -370,9 +414,14 @@ class ReflectionEngine:
         pending_cases = []
         if hasattr(self.db, "list_reflection_cases"):
             pending_cases = self.db.list_reflection_cases(
-                status="pending",
+                status="outcome_ready",
                 limit=max_per_run,
             )
+            remaining = max(0, max_per_run - len(pending_cases))
+            if remaining:
+                pending_cases.extend(self.db.list_reflection_cases(
+                    status="pending", limit=remaining,
+                ))
 
         pending = self.memory_log.get_pending_entries() if self.memory_log is not None else []
         if not pending_cases and not pending:
@@ -398,7 +447,8 @@ class ReflectionEngine:
                 case_horizon = int(case.get("horizon_days") or horizon_days)
                 if not symbol or not signal_date:
                     continue
-                outcome = await self.fetch_outcome(symbol, signal_date, case_horizon)
+                stored_outcome = case.get("outcome_payload") or {}
+                outcome = stored_outcome if isinstance(stored_outcome.get("actual_return"), (int, float)) else await self.fetch_outcome(symbol, signal_date, case_horizon)
                 if outcome is None:
                     continue
                 original_decision = _case_original_decision(case)

@@ -236,17 +236,17 @@ def make_get_strategy_lessons(db: Any):
         return {
             "lessons": [
                 {
-                    "id": l.get("id", ""),
-                    "lesson_type": l.get("lesson_type", ""),
-                    "scope": l.get("scope", ""),
-                    "target": l.get("target", ""),
-                    "finding": l.get("finding", ""),
-                    "suggested_adjustment": l.get("suggested_adjustment", ""),
-                    "confidence": l.get("confidence", ""),
-                    "evidence_count": l.get("evidence_count", 0),
-                    "created_at": l.get("created_at", ""),
+                    "id": lesson.get("id", ""),
+                    "lesson_type": lesson.get("lesson_type", ""),
+                    "scope": lesson.get("scope", ""),
+                    "target": lesson.get("target", ""),
+                    "finding": lesson.get("finding", ""),
+                    "suggested_adjustment": lesson.get("suggested_adjustment", ""),
+                    "confidence": lesson.get("confidence", ""),
+                    "evidence_count": lesson.get("evidence_count", 0),
+                    "created_at": lesson.get("created_at", ""),
                 }
-                for l in lessons
+                for lesson in lessons
             ],
             "total": len(lessons),
         }

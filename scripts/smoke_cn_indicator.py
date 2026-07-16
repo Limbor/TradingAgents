@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import sys
 import traceback
-from datetime import date
 
 SYMBOL = "600158.SH"  # 大唐发电
 INDICATOR = "close_50_sma"
@@ -49,6 +48,7 @@ def step_tushare_raw() -> None:
     _banner("STEP 2: TuShare raw pro_bar")
     # Note: ts.pro_bar is a top-level helper, NOT a method on pro_api()
     import tushare as ts
+
     from tradingagents.dataflows.tushare_common import get_pro_api, tushare_call
     get_pro_api()  # ensure ts.set_token(...) was called
     df = tushare_call(
@@ -66,7 +66,7 @@ def step_tushare_raw() -> None:
 
 def step_akshare_raw() -> None:
     _banner("STEP 3: AKShare raw stock_zh_a_hist")
-    from tradingagents.dataflows.akshare_common import akshare_call, ak_lazy_import
+    from tradingagents.dataflows.akshare_common import ak_lazy_import, akshare_call
     ak = ak_lazy_import()
     df = akshare_call(
         ak.stock_zh_a_hist,

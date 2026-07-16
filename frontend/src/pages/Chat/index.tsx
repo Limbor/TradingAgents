@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { chatWsManager } from "@/api/ws";
 import { useChatStore } from "@/stores/useChatStore";
@@ -21,13 +21,13 @@ export default function Chat() {
     [connected, input, running],
   );
 
-  const sendPrompt = (message: string, context?: Record<string, unknown>) => {
+  const sendPrompt = useCallback((message: string, context?: Record<string, unknown>) => {
     if (!connected || !message.trim() || running) return;
     useChatStore.getState().addMessage({ role: "user", content: message.trim() });
     chatWsManager.send(message.trim(), context);
     setInput("");
     useChatStore.getState().setRunning(true);
-  };
+  }, [connected, running]);
 
   // Auto-send from navigation state (e.g. Dashboard quick action)
   useEffect(() => {
@@ -41,7 +41,7 @@ export default function Chat() {
     } else {
       setInput(prompt);
     }
-  }, [connected, location.pathname, location.state, navigate, running]);
+  }, [connected, location.pathname, location.state, navigate, running, sendPrompt]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();

@@ -6,11 +6,11 @@ import importlib
 from tradingagents.core.persistence import Database
 from tradingagents.core.signal_fusion import fuse_candidate_signal
 from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows
+from tradingagents.skills.base import skill_progress
 from tradingagents.skills.daily_pipeline.skill import DailyPipelineInput, DailyPipelineSkill
 from tradingagents.skills.market_scanner.skill import MarketScannerInput, MarketScannerSkill
 from tradingagents.skills.portfolio_management.skill import PortfolioInput, PortfolioManagementSkill
 from tradingagents.skills.risk_monitor.skill import RiskMonitorInput, RiskMonitorSkill
-from tradingagents.skills.base import skill_progress
 
 daily_pipeline_module = importlib.import_module("tradingagents.skills.daily_pipeline.skill")
 market_scanner_module = importlib.import_module("tradingagents.skills.market_scanner.skill")

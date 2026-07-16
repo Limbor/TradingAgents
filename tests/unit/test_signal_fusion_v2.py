@@ -12,26 +12,19 @@ Covers:
 
 import asyncio
 
-import pytest
-
+from tradingagents.core.llm_candidate_review import CandidateLLMReview
 from tradingagents.core.signal_fusion import (
-    CRITICAL_FLAGS,
-    MODERATE_FLAGS,
-    LLMAssessment,
-    STYLE_ALPHA,
-    decision_gate,
-    fuse_candidate_signal,
     _catalyst_bonus,
     _classify_risk_severity,
     _entry_zone,
     _get_atr,
-    _stop_loss,
-    _targets,
     _position_pct,
     _risk_level,
+    _stop_loss,
+    _targets,
+    decision_gate,
+    fuse_candidate_signal,
 )
-from tradingagents.core.llm_candidate_review import CandidateLLMReview
-
 
 # --- ATR Adaptive Tests ---
 
@@ -403,8 +396,9 @@ class TestConcurrentReview:
     def test_concurrent_reviews_gather(self, monkeypatch, tmp_path):
         """Verify asyncio.gather based review works correctly with multiple candidates."""
         import importlib
-        from tradingagents.skills.daily_pipeline.skill import DailyPipelineInput, DailyPipelineSkill
+
         from tradingagents.core.persistence import Database
+        from tradingagents.skills.daily_pipeline.skill import DailyPipelineInput, DailyPipelineSkill
 
         daily_pipeline_module = importlib.import_module("tradingagents.skills.daily_pipeline.skill")
 
@@ -440,11 +434,7 @@ class TestConcurrentReview:
         async def fake_get_mcp(config):
             return FakeMCPClient()
 
-        async def fake_enrich(candidates, trade_date, config):
-            return {}
-
         monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp)
-        monkeypatch.setattr(daily_pipeline_module, "enrich_candidates", fake_enrich)
 
         async def run():
             db = Database(tmp_path / "concurrent.db")

@@ -15,7 +15,7 @@ from stockstats import wrap
 
 from .config import get_config
 from .stockstats_utils import _clean_dataframe
-from .symbol_utils import normalize_for_tushare, normalize_cn_display
+from .symbol_utils import normalize_cn_display, normalize_for_tushare
 from .tushare_common import get_pro_api, tushare_call
 
 # Column mapping: TuShare -> canonical (same as stockstats_utils expects)
@@ -151,11 +151,12 @@ def get_indicator(
     ``curr_date`` is automatically adjusted to the most recent
     trading day so a non-trading input never returns empty.
     """
+    from datetime import timedelta
+
     from .cn_trading_calendar import (
         prev_trading_day,
         trading_days_between,
     )
-    from datetime import timedelta
 
     # Adjust non-trading-day input to the last actual trading day
     curr_date = prev_trading_day(curr_date).strftime("%Y-%m-%d")

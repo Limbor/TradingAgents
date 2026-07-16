@@ -81,10 +81,13 @@ async def evaluate_plan(
         cond_result = await _evaluate_condition_text(text, kind, symbol, provider)
         if cond_result:
             details.append(f"condition[{kind}]: {cond_result}")
-            if "satisfied" in cond_result and kind in ("stop", "take_profit", "full"):
-                if kind in ("stop", "take_profit") and not reason:
-                    triggered = True
-                    reason = f"condition[{kind}] satisfied: {cond_result}"
+            if (
+                "satisfied" in cond_result
+                and kind in ("stop", "take_profit")
+                and not reason
+            ):
+                triggered = True
+                reason = f"condition[{kind}] satisfied: {cond_result}"
 
     return {
         "triggered": triggered,
@@ -166,6 +169,7 @@ class _LiveDataProvider:
         rows: list[dict[str, Any]] = []
         try:
             from datetime import date, timedelta
+
             from tradingagents.core.mcp_client import get_mcp_client
             end = date.today().isoformat().replace("-", "")
             start = (date.today() - timedelta(days=60)).isoformat().replace("-", "")

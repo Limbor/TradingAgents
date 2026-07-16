@@ -230,6 +230,8 @@ reports/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
 
 # Dev logs and pids
 .dev-logs/

@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-import inspect
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from datetime import date, datetime, timedelta
-from typing import Any, AsyncIterator, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from tradingagents.agents.utils.memory import TradingMemoryLog
-from tradingagents.core.candidate_enrichment import CandidateContext, enrich_candidates
 from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.candidate_review_runner import apply_llm_reviews
 from tradingagents.core.mcp_client import get_mcp_client
@@ -21,8 +19,12 @@ from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.reflection_enroll import enroll_reflection_case
 from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_evidence_markdown
 from tradingagents.core.trading_time import get_temporal_context
+from tradingagents.dataflows.mcp_adapter import (
+    normalize_quant_candidate,
+    payload_rows,
+    payload_warnings,
+)
 from tradingagents.llm_clients import create_llm_client
-from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows, payload_warnings
 from tradingagents.skills._shared import (
     FACTOR_DATA_SOURCE,
     board_for_symbol,
@@ -30,7 +32,6 @@ from tradingagents.skills._shared import (
     default_filters,
     demo_candidates,
     factor_profile_for_style,
-    mcp_board_filter,
     optional_float,
     resolve_board_filter,
     resolve_temporal_context,
@@ -106,7 +107,6 @@ class DailyPipelineSkill(BaseSkill):
                 "universe_index": input_params.universe_index,
                 "board_filter": input_params.board_filter,
                 "exclude_boards": input_params.exclude_boards,
-                "temporal_context": temporal_context.to_dict(),
             },
         )
         yield skill_progress(
@@ -184,6 +184,10 @@ class DailyPipelineSkill(BaseSkill):
         strategy_meta = quant_meta.get("strategy_meta") or {}
         quant_candidates = _candidate_cards(candidates, include_llm=False)
         reviewed_candidates = _candidate_cards(candidates, include_llm=True)
+        for candidate in candidates:
+            candidate["market_asof_date"] = temporal_context.market_asof_date
+            candidate["decision_target_date"] = temporal_context.decision_target_date
+            candidate["decision_id"] = f"signal:{_signal_id(input_params.trade_date, candidate)}"
         decision_pack = _decision_pack(candidates)
 
         yield SkillEvent(
@@ -664,12 +668,12 @@ def _save_candidate_signals(db: Database, run_id: str, trade_date: str, candidat
     for candidate in candidates:
         try:
             db.save_signal(
-                signal_id=str(uuid.uuid4()),
+                signal_id=str(candidate.get("decision_id") or "").removeprefix("signal:") or _signal_id(trade_date, candidate),
                 run_id=run_id,
                 trade_date=trade_date,
                 symbol=str(candidate.get("symbol") or candidate.get("ts_code") or ""),
                 name=str(candidate.get("name") or ""),
-                signal=str(candidate.get("signal") or "WATCHLIST"),
+                signal=str(candidate.get("final_decision") or candidate.get("signal") or "WATCHLIST"),
                 final_score=optional_float(candidate.get("final_score")),
                 quant_score=optional_float(candidate.get("quant_score")),
                 llm_confidence=optional_float(candidate.get("llm_confidence")),
@@ -704,7 +708,7 @@ def _save_reflection_cases(
                 source_type="system_signal",
                 symbol=symbol,
                 name=str(candidate.get("name") or ""),
-                signal_date=trade_date,
+                signal_date=str(candidate.get("decision_target_date") or trade_date),
                 rating_or_decision=candidate.get("final_decision") or candidate.get("signal"),
                 source_run_id=run_id,
                 snapshot_payload=_reflection_snapshot(candidate),
@@ -714,11 +718,20 @@ def _save_reflection_cases(
                 candidate_pool_values=("watchlist", "monitor", "hold_review"),
                 default_scope="exploratory",
             )
+            db.update_decision_record(
+                f"signal:{_signal_id(trade_date, candidate)}",
+                reflection_case_id=f"daily_pipeline:{candidate.get('decision_target_date') or trade_date}:{symbol}",
+            )
             created += 1
         except Exception as exc:
             logger.warning("Failed to save reflection case for %s: %s", candidate.get("symbol"), exc)
             failed += 1
     return {"created": created, "failed": failed}
+
+
+def _signal_id(trade_date: str, candidate: dict[str, Any]) -> str:
+    symbol = candidate.get("symbol") or candidate.get("ts_code") or "unknown"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"daily_pipeline:{trade_date}:{symbol}"))
 
 
 def _reflection_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -966,6 +979,7 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "position_pct": item.get("position_pct", 0.0),
             "strategy_lesson_hits": item.get("strategy_lesson_hits") or [],
             "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
+            "decision_id": item.get("decision_id"),
         }
         for item in candidates
     ]

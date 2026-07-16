@@ -5,7 +5,8 @@ analysis. The skill is deliberately deterministic so Phase 2 remains usable
 without market-data network access.
 """
 
-from typing import Any, AsyncIterator, Literal
+from collections.abc import AsyncIterator
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 

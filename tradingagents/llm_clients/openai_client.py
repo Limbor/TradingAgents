@@ -269,7 +269,14 @@ class OpenAIClient(BaseLLMClient):
             # API key: required unless key_optional; keyless local servers get a
             # placeholder. The env-var name is the single source in api_key_env.
             api_key_env = get_api_key_env(self.provider)
-            api_key = os.environ.get(api_key_env) if api_key_env else None
+            # Explicit constructor configuration must win over ambient process
+            # state.  Apart from being the least surprising precedence rule,
+            # this lets callers keep credentials out of global environment
+            # variables (and makes isolated client construction testable).
+            explicit_api_key = self.kwargs.get("api_key")
+            api_key = explicit_api_key or (
+                os.environ.get(api_key_env) if api_key_env else None
+            )
             if api_key:
                 llm_kwargs["api_key"] = api_key
             elif spec.key_optional:

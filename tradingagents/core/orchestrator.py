@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date
 from typing import Any
 
-from tradingagents.skills.base import BaseSkill
-from tradingagents.skills.registry import SkillRegistry
 from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.dataflows.symbol_utils import detect_market
+from tradingagents.skills.base import BaseSkill
+from tradingagents.skills.registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +192,16 @@ class Orchestrator:
         text = user_message.strip()
         lowered = text.lower()
 
+        if _contains_any(lowered, ["决策审计", "评估到期决策", "decision audit"]):
+            return RouteResult(self.registry.get("decision_audit"), {}, 0.95, "Matched decision audit")
+
+        if _contains_any(lowered, ["策略回测", "回测选股", "回测 dailypipeline", "backtest"]):
+            dates = re.findall(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", text)
+            if len(dates) >= 2:
+                params = {"start_date": dates[0].replace("/", "-"), "end_date": dates[1].replace("/", "-")}
+                return RouteResult(self.registry.get("strategy_backtest"), params, 0.95, "Matched strategy backtest with date range")
+            return RouteResult(None, {}, 0.0, "Backtest requires start and end dates")
+
         if _contains_any(lowered, ["收盘复盘", "每日复盘", "次日计划", "daily review", "after close"]):
             return self._route_daily_review(text)
 
@@ -201,6 +210,12 @@ class Orchestrator:
 
         if _contains_any(lowered, ["风险监控", "持仓风险", "风险扫描", "预警", "risk monitor"]):
             return self._route_risk_monitor(text)
+
+        if _contains_any(
+            lowered,
+            ["要不要卖", "卖出建议", "减仓", "加仓", "止损", "止盈", "position advice"],
+        ):
+            return self._route_position_advisor(text)
 
         if _has_analysis_intent(lowered) and (_extract_ticker(text) or self._resolve_known_ticker(text)):
             return self._route_stock_analysis(text)
@@ -310,6 +325,30 @@ class Orchestrator:
             params.setdefault("avg_cost", 100.0)
 
         return RouteResult(skill, params, 0.82, "Matched portfolio intent")
+
+    def _route_position_advisor(self, text: str) -> RouteResult:
+        skill = self.registry.get("position_advisor")
+        ticker = _extract_ticker(text) or self._resolve_known_ticker(text)
+        if skill is None or not ticker:
+            return RouteResult(
+                None,
+                {},
+                0.0,
+                "Position advice needs an existing holding symbol; needs clarification",
+            )
+        lowered = text.lower()
+        intent = "review"
+        if _contains_any(lowered, ["加仓", "add"]):
+            intent = "add"
+        elif _contains_any(lowered, ["清仓", "退出", "exit"]):
+            intent = "exit"
+        elif _contains_any(lowered, ["要不要卖", "减仓", "卖出", "reduce", "sell"]):
+            intent = "reduce"
+        params: dict[str, Any] = {"symbol": ticker, "intent": intent}
+        days_match = re.search(r"(\d+)\s*(?:天|days?)", lowered)
+        if days_match:
+            params["lookback_days"] = min(max(int(days_match.group(1)), 1), 365)
+        return RouteResult(skill, params, 0.9, "Matched position advice intent")
 
     def _route_scanner(self, text: str) -> RouteResult:
         skill = self.registry.get("market_scanner")

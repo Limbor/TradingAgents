@@ -57,7 +57,7 @@ class SkillRegistry:
             logger.warning("Could not import skills package: %s", package_path)
             return
 
-        for importer, modname, ispkg in pkgutil.iter_modules(
+        for _importer, modname, ispkg in pkgutil.iter_modules(
             package.__path__, prefix=package.__name__ + "."
         ):
             if not ispkg:

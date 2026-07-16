@@ -1,6 +1,7 @@
 """WebSocket endpoints for real-time event streaming."""
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -145,11 +146,8 @@ async def ws_chat(websocket: WebSocket):
     async def _send(payload: dict) -> None:
         """Serialize socket writes so the consumer + main loop can't interleave."""
         async with send_lock:
-            try:
+            with contextlib.suppress(Exception):
                 await websocket.send_json(payload)
-            except Exception:
-                # Socket already closing/closed — drop the write quietly.
-                pass
 
     async def _consume_run_events(run, queue) -> None:
         """Stream a run's events to the client as a background task."""
@@ -260,6 +258,7 @@ async def ws_chat(websocket: WebSocket):
                             "run_id": "",
                             "timestamp": _now(),
                             "payload": {
+                                "content": chat_response.content,
                                 "tool": chat_response.tool_name,
                                 "args": chat_response.tool_args,
                                 "result": chat_response.tool_result,
@@ -344,10 +343,8 @@ async def ws_chat(websocket: WebSocket):
             # Cancel any still-running prior consumer before starting a new one.
             if active_consumer is not None and not active_consumer.done():
                 active_consumer.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await active_consumer
-                except (asyncio.CancelledError, Exception):
-                    pass
 
             active_run_id = run.id
             active_consumer = asyncio.create_task(_consume_run_events(run, queue))
@@ -356,10 +353,8 @@ async def ws_chat(websocket: WebSocket):
     finally:
         if active_consumer is not None and not active_consumer.done():
             active_consumer.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await active_consumer
-            except (asyncio.CancelledError, Exception):
-                pass
 
 
 def _serialize_event(run_id: str, event: SkillEvent) -> dict:

@@ -8,15 +8,12 @@ from typing import Annotated
 import pandas as pd
 
 from .akshare_common import df_to_csv_report  # shared CSV rendering helper
-from .symbol_utils import normalize_for_tushare, normalize_cn_display
+from .symbol_utils import normalize_cn_display, normalize_for_tushare
 from .tushare_common import get_pro_api, tushare_call
 
 
 def _year_bounds(curr_date: str | None) -> tuple[str, str]:
-    if not curr_date:
-        today = datetime.today()
-    else:
-        today = datetime.strptime(curr_date, "%Y-%m-%d")
+    today = datetime.today() if not curr_date else datetime.strptime(curr_date, "%Y-%m-%d")
     start = today.replace(year=today.year - 3)
     return start.strftime("%Y%m%d"), today.strftime("%Y%m%d")
 

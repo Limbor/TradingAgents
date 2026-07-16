@@ -11,8 +11,9 @@ search, run status, MCP snapshots, and strategy lesson lookups.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

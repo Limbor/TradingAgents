@@ -1,6 +1,7 @@
 """Market scanner skill backed by StockManager quant ranking."""
 
-from typing import Any, AsyncIterator, Literal
+from collections.abc import AsyncIterator
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -9,7 +10,11 @@ from tradingagents.core.candidate_review_runner import apply_llm_reviews
 from tradingagents.core.mcp_client import get_mcp_client
 from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_evidence_markdown
 from tradingagents.core.trading_time import get_temporal_context
-from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows, payload_warnings
+from tradingagents.dataflows.mcp_adapter import (
+    normalize_quant_candidate,
+    payload_rows,
+    payload_warnings,
+)
 from tradingagents.skills._shared import (
     FACTOR_DATA_SOURCE,
     candidate_rationale,

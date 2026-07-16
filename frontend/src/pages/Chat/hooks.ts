@@ -179,6 +179,16 @@ export function useChatWebSocket() {
           status: "completed",
         });
         appendTaskResult(message.run_id, JSON.stringify({ __type: "risks", data: rows }));
+      } else if (message.type === "position_advice") {
+        addTaskStep(message.run_id, {
+          label: "完成持仓建议",
+          detail: `${String(message.payload.action ?? "HOLD")} · 置信度 ${Math.round(Number(message.payload.confidence ?? 0) * 100)}%`,
+          status: "completed",
+        });
+        appendTaskResult(
+          message.run_id,
+          JSON.stringify({ __type: "position_advice", data: message.payload }),
+        );
       } else if (message.type === "portfolio_update") {
         addTaskStep(message.run_id, {
           label: "更新持仓数据",

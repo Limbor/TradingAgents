@@ -5,7 +5,7 @@ Used by LLMRouter to present available skills as tools for intent recognition.
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tradingagents.core.tool_registry import ToolRegistry
@@ -45,7 +45,7 @@ def generate_tool_schemas(registry: SkillRegistry) -> list[dict[str, Any]]:
     return tools
 
 
-def generate_lightweight_tool_schemas(tool_registry: "ToolRegistry") -> list[dict[str, Any]]:
+def generate_lightweight_tool_schemas(tool_registry: ToolRegistry) -> list[dict[str, Any]]:
     """Generate OpenAI function-calling tool schemas from a ToolRegistry.
 
     This function mirrors :func:`generate_tool_schemas` but operates on

@@ -13,6 +13,20 @@ from tradingagents.llm_clients.factory import create_llm_client
 
 @pytest.mark.unit
 class TestTemperatureForwarding:
+    def test_explicit_api_key_does_not_require_environment(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        llm = create_llm_client(
+            provider="openai", model="gpt-4.1", api_key="explicit-key"
+        ).get_llm()
+        assert llm.openai_api_key.get_secret_value() == "explicit-key"
+
+    def test_explicit_api_key_overrides_environment(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+        llm = create_llm_client(
+            provider="openai", model="gpt-4.1", api_key="explicit-key"
+        ).get_llm()
+        assert llm.openai_api_key.get_secret_value() == "explicit-key"
+
     @pytest.mark.parametrize(
         "provider,model",
         [

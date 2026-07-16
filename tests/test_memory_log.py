@@ -646,8 +646,8 @@ class TestDeferredReflection:
         mock_graph._fetch_returns.assert_not_called()
         assert len(log.get_pending_entries()) == 1
 
-    def test_resolve_marks_entry_completed(self, tmp_path):
-        """After resolve, get_pending_entries() is empty and the entry has a REFLECTION."""
+    def test_deprecated_resolver_leaves_entry_for_core_reflection(self, tmp_path):
+        """The graph must not consume entries owned by the core reflection batch."""
         log = make_log(tmp_path)
         log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
         mock_reflector = MagicMock()
@@ -657,13 +657,13 @@ class TestDeferredReflection:
         mock_graph.reflector = mock_reflector
         mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 5))
         TradingAgentsGraph._resolve_pending_entries(mock_graph, "NVDA")
-        assert log.get_pending_entries() == []
+        assert len(log.get_pending_entries()) == 1
         entries = log.load_entries()
         assert len(entries) == 1
-        assert entries[0]["pending"] is False
-        assert entries[0]["reflection"] == "Momentum confirmed."
-        assert "+5.0%" in entries[0]["raw"]
-        assert "+2.0%" in entries[0]["alpha"]
+        assert entries[0]["pending"] is True
+        assert not entries[0].get("reflection")
+        mock_graph._fetch_returns.assert_not_called()
+        mock_reflector.reflect_on_final_decision.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

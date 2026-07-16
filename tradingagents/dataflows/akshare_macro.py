@@ -11,7 +11,7 @@ from typing import Annotated
 
 import pandas as pd
 
-from .akshare_common import akshare_call, ak_lazy_import, df_to_csv_report
+from .akshare_common import ak_lazy_import, akshare_call, df_to_csv_report
 
 
 def _tail(df: pd.DataFrame | None, n: int) -> pd.DataFrame | None:

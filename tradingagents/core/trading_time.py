@@ -14,7 +14,6 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-
 CalendarState = Literal["trading_day", "holiday"]
 SessionState = Literal["before_close_data", "after_close_data", "non_trading"]
 

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from collections.abc import AsyncIterator
 from datetime import timedelta
-from typing import Any, AsyncIterator
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,7 @@ from tradingagents.core.persistence import Database
 from tradingagents.core.trading_time import get_info_cutoff_date, get_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
+logger = logging.getLogger(__name__)
 
 # Severity-weighted risk classification. Previously the level was a pure count
 # of matched announcements (<3 = orange, >=3 = red), which flagged a stock with
@@ -145,6 +146,7 @@ class RiskMonitorSkill(BaseSkill):
         )
 
         risks, mcp_used = await _scan_risks(holdings, input_params, config)
+        _persist_risk_events(db, risks)
         yield skill_progress(
             stage_id="announcement_scan",
             stage_label="公告与风险事件扫描",
@@ -288,6 +290,50 @@ def _render_report(holdings: list[dict[str, Any]], risks: list[dict[str, Any]], 
     for item in risks:
         lines.append(f"| {item['symbol']} | {item['level']} | {item['message']} |")
     return "\n".join(lines)
+
+
+def _persist_risk_events(db: Database, risks: list[dict[str, Any]]) -> None:
+    """Persist actionable announcement rows as stable, cross-run risk events."""
+    for risk in risks:
+        level = str(risk.get("level") or "unknown").lower()
+        if level in {"green", "unknown"}:
+            continue
+        symbol = str(risk.get("symbol") or "").upper()
+        rows = risk.get("announcements") if isinstance(risk.get("announcements"), list) else []
+        if not rows:
+            rows = [{"title": risk.get("message") or "Risk monitor alert"}]
+        event_ids: list[str] = []
+        for row in rows:
+            item = row if isinstance(row, dict) else {"title": str(row)}
+            title = str(
+                item.get("title")
+                or item.get("公告标题")
+                or item.get("subject")
+                or risk.get("message")
+                or "Risk monitor alert"
+            ).strip()
+            event_date = str(
+                item.get("date")
+                or item.get("公告日期")
+                or item.get("publish_date")
+                or item.get("published_at")
+                or ""
+            )[:10]
+            source = str(item.get("source") or item.get("来源") or "StockManager MCP")
+            fingerprint = "|".join((symbol, title, event_date))
+            event_id = "risk:" + hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:24]
+            db.upsert_risk_event(
+                event_id=event_id,
+                symbol=symbol,
+                name=risk.get("name"),
+                level=level,
+                title=title,
+                source=source,
+                event_date=event_date or None,
+                payload={"announcement": item, "message": risk.get("message")},
+            )
+            event_ids.append(event_id)
+        risk["risk_event_ids"] = event_ids
 
 
 def _save_risk_artifact(

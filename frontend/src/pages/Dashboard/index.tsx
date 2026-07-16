@@ -9,6 +9,8 @@ import {
   listHoldings,
   listRuns,
   listStrategyLessons,
+  listRiskEvents,
+  updateRiskEventStatus,
   advanceTradingDay,
 
   updateConfig,
@@ -34,7 +36,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import type { ArtifactInfo } from "../../api/client";
+import type { ArtifactInfo, RiskEvent } from "../../api/client";
 import { authHeaders } from "../../api/auth";
 import { queryKeys } from "@/api/queryKeys";
 
@@ -111,6 +113,13 @@ export default function Dashboard() {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  const riskEventsQuery = useQuery({
+    queryKey: queryKeys.riskEvents(),
+    queryFn: () => listRiskEvents("open"),
+    refetchInterval: 60000,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
 
   const runs = runsQuery.data ?? [];
   const holdings = holdingsQuery.data ?? [];
@@ -128,7 +137,8 @@ export default function Dashboard() {
     ["decision_pack", "signal_pack", "screening_report", "scanner_report"].includes(item.artifact_type)
   ).slice(0, 3);
   const riskArtifacts = (artifactQuery.data ?? []).filter((item) => item.artifact_type === "risk_report").slice(0, 3);
-  const riskKpi = buildRiskKpi(riskArtifacts, portfolio.count);
+  const riskEvents = riskEventsQuery.data ?? [];
+  const riskKpi = buildStructuredRiskKpi(riskEvents, portfolio.count);
   const dailyReviewDone = todayRuns.some((run) => run.skill_id === "daily_review" && run.status === "completed");
   const dailyReviewRunning = todayRuns.some((run) => run.skill_id === "daily_review" && ["pending", "running"].includes(run.status));
 
@@ -339,6 +349,18 @@ export default function Dashboard() {
 
           <LatestSignalCard artifacts={signalArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} />
           <RiskTodoCard artifacts={riskArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} />
+          <RiskEventCard
+            events={riskEvents}
+            onMonitor={async (id) => {
+              await updateRiskEventStatus(id, "monitoring");
+              await riskEventsQuery.refetch();
+            }}
+            onResolve={async (id) => {
+              await updateRiskEventStatus(id, "resolved");
+              await riskEventsQuery.refetch();
+            }}
+            onAdvice={(symbol) => goChat(`${symbol} 要不要卖，结合风险事件给出持仓建议`)}
+          />
           <StrategyLessonsCard lessons={lessonsQuery.data ?? []} />
 
           {/* Reflection Summary Card */}
@@ -409,48 +431,58 @@ function QuickActionBtn({
 
 type KpiTone = "teal" | "emerald" | "amber" | "red";
 
-function buildRiskKpi(artifacts: ArtifactInfo[], holdingCount: number): { value: string; sub: string; tone: KpiTone } {
-  if (holdingCount === 0) {
-    return { value: "-", sub: "暂无持仓", tone: "teal" };
-  }
-
-  const latest = artifacts[0];
-  if (!latest) {
-    return { value: "未扫描", sub: "运行持仓风险扫描", tone: "amber" };
-  }
-
-  const risks = parseRiskRows(latest.payload?.risks);
-  const levels = risks.map((item) => normalizeRiskLevel(item.level));
-  const highCount = levels.filter((level) => ["critical", "high", "red"].includes(level)).length;
-  const actionableCount = levels.filter((level) => !["none", "green", "low", "unknown"].includes(level)).length;
-  const scanDate = formatArtifactDate(latest.created_at);
-
-  if (highCount > 0) {
-    return { value: "高", sub: `高风险 ${highCount} 条 · ${scanDate}`, tone: "red" };
-  }
-  if (actionableCount > 0) {
-    return { value: "中", sub: `风险待办 ${actionableCount} 条 · ${scanDate}`, tone: "amber" };
-  }
-  if (levels.length > 0 && levels.every((level) => level === "unknown")) {
-    return { value: "未知", sub: `扫描结果不可判定 · ${scanDate}`, tone: "amber" };
-  }
-  return { value: "低", sub: `最近扫描 ${scanDate}`, tone: "emerald" };
+function buildStructuredRiskKpi(events: RiskEvent[], holdingCount: number): { value: string; sub: string; tone: KpiTone } {
+  if (holdingCount === 0) return { value: "-", sub: "暂无持仓", tone: "teal" };
+  const red = events.filter((item) => ["red", "critical", "high"].includes(item.level.toLowerCase())).length;
+  const orange = events.filter((item) => ["orange", "medium", "moderate", "yellow"].includes(item.level.toLowerCase())).length;
+  if (red) return { value: "高", sub: `${red} 条高风险事件`, tone: "red" };
+  if (orange) return { value: "中", sub: `${orange} 条风险事件待处理`, tone: "amber" };
+  if (events.length) return { value: "低", sub: `${events.length} 条开放事件`, tone: "emerald" };
+  return { value: "低", sub: "无开放风险事件", tone: "emerald" };
 }
 
-function parseRiskRows(value: unknown): Array<{ level?: unknown }> {
-  return Array.isArray(value) ? value.filter((item): item is { level?: unknown } => typeof item === "object" && item !== null) : [];
-}
-
-function normalizeRiskLevel(value: unknown): string {
-  const text = String(value ?? "unknown").trim().toLowerCase();
-  if (["critical", "high", "red"].includes(text)) return text;
-  if (["orange", "medium", "moderate", "yellow", "amber"].includes(text)) return "medium";
-  if (["green", "low", "none", "ok"].includes(text)) return text === "ok" ? "green" : text;
-  return "unknown";
-}
-
-function formatArtifactDate(value: string | null | undefined): string {
-  return value ? value.slice(0, 10) : "未知日期";
+function RiskEventCard({
+  events,
+  onMonitor,
+  onResolve,
+  onAdvice,
+}: {
+  events: RiskEvent[];
+  onMonitor: (id: string) => void;
+  onResolve: (id: string) => void;
+  onAdvice: (symbol: string) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <ShieldAlert className="h-4 w-4 text-amber-300" />
+        <h3 className="text-sm font-semibold text-stone-100">结构化风险事件</h3>
+        <span className="ml-auto rounded border border-stone-700 px-2 py-0.5 text-xs text-stone-400">{events.length} open</span>
+      </div>
+      {events.length === 0 ? (
+        <p className="text-xs text-stone-500">暂无开放风险事件。</p>
+      ) : (
+        <div className="space-y-2">
+          {events.slice(0, 5).map((event) => (
+            <div key={event.id} className="rounded border border-stone-800 bg-stone-950 p-3">
+              <div className="flex items-start gap-2">
+                <span className={`mt-0.5 rounded px-1.5 py-0.5 text-[11px] ${["red", "critical", "high"].includes(event.level) ? "bg-red-500/10 text-red-300" : "bg-amber-500/10 text-amber-300"}`}>{event.level}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-stone-200">{event.symbol} · {event.title}</div>
+                  <div className="mt-1 text-[11px] text-stone-500">{event.event_date || event.last_seen_at.slice(0, 10)} · {event.source || "unknown"}</div>
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button onClick={() => onAdvice(event.symbol)} className="rounded border border-indigo-500/30 px-2 py-1 text-[11px] text-indigo-200">持仓建议</button>
+                <button onClick={() => onMonitor(event.id)} className="rounded border border-stone-700 px-2 py-1 text-[11px] text-stone-300">持续关注</button>
+                <button onClick={() => onResolve(event.id)} className="rounded border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300">标记解除</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function LatestSignalCard({ artifacts, onOpen }: { artifacts: ArtifactInfo[]; onOpen: (item: ArtifactInfo) => void }) {
