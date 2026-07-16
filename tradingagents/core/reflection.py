@@ -81,7 +81,12 @@ class ReflectionEngine:
                     adj_type="qfq",
                 )
                 if result and isinstance(result, dict):
-                    rows = result.get("data") or result.get("rows") or []
+                    # MCP returns {"rows": {ts_code: [records]}} (dict keyed by
+                    # symbol); extract this symbol's record list. Previously we
+                    # treated the dict itself as the row list, so isinstance(rows,
+                    # list) was always False and MCP was silently skipped.
+                    rows_by_code = result.get("rows") or result.get("data") or {}
+                    rows = rows_by_code.get(symbol, []) if isinstance(rows_by_code, dict) else rows_by_code
                     if isinstance(rows, list) and len(rows) >= 2:
                         return self._compute_return_from_rows(rows, signal_date, horizon_days)
 
