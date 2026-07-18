@@ -188,6 +188,45 @@ async def deactivate_strategy_lesson(request: Request, lesson_id: str):
     )
 
 
+@router.get("/strategy-lessons/{lesson_id}/cases", response_model=list[ReflectionCaseItem])
+async def list_lesson_cases(request: Request, lesson_id: str):
+    """Return the reflection cases that produced a strategy lesson.
+
+    Reads the ``evidence_cases`` ids the miner persisted into the lesson
+    payload and resolves each to its full reflection case, letting the UI drill
+    from a lesson back to its supporting evidence. Returns an empty list when
+    the lesson is unknown or predates evidence tracking. Cases that can no
+    longer be resolved (e.g. purged) are skipped.
+    """
+    db = request.app.state.db
+    lesson = db.get_strategy_lesson(lesson_id)
+    if not lesson:
+        return []
+    payload = lesson.get("payload") or {}
+    evidence = payload.get("evidence_cases") if isinstance(payload, dict) else None
+    if not isinstance(evidence, list):
+        return []
+
+    from tradingagents.core.trading_time import advance_trading_days
+
+    items: list[ReflectionCaseItem] = []
+    seen: set[str] = set()
+    for entry in evidence:
+        cid = str((entry or {}).get("id") if isinstance(entry, dict) else "") or ""
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        row = db.get_reflection_case(cid)
+        if not row:
+            continue
+        due = advance_trading_days(
+            str(row.get("signal_date") or ""),
+            int(row.get("horizon_days") or 5),
+        )
+        items.append(ReflectionCaseItem(**row, due_date=due))
+    return items
+
+
 @router.post("/candidate-actions", response_model=CandidateActionResponse)
 async def save_candidate_action(request: Request, body: CandidateActionRequest):
     """Record user intent for a candidate without forcing it into strategy learning."""

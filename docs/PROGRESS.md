@@ -547,11 +547,11 @@ Chat 层已完成四类意图分流：
 ### 10.1 下一阶段优先推进
 
 0. ~~**中性通道加「板块性行情」护栏**~~ 已实现时间分散度护栏（`neutral_min_periods=2`，跨 ISO 周才晋级，已滤掉单日 valuation/flow 伪信号）。**剩余 TODO：行业指数 beta 分解**——单行业桶（如 `industry=地产`）即使跨多周仍可能只是板块相对大盘持续走弱，需在超额中扣除同期行业指数收益（需接入行业指数日线）才能分离“选股规避”与“板块普跌”。
-1. ~~修复/补齐 StockManager `get_stock_daily` 的股票历史覆盖~~ 已确认 `get_stock_daily` 本身正常（真实返回股票日线，无需改 StockManager）；真正卡点是 `run_reflection_batch` pending 回退未用 `due_only`，已修复。**当前待推进：门禁需 ≥20 条方向性（BUY/SELL）已实现样本，现仅 3 条**——依赖 DailyPipeline 持续产出方向决策 + 每日反思批处理积累，非代码问题；门禁保持关闭直至样本足够且方向收益显著。
+1. ~~修复/补齐 StockManager `get_stock_daily` 的股票历史覆盖~~ 已确认 `get_stock_daily` 本身正常（真实返回股票日线，无需改 StockManager）；真正卡点是 `run_reflection_batch` pending 回退未用 `due_only`，已修复。**当前待推进：门禁需 ≥20 条方 向性（BUY/SELL）已实现样本，现仅 3 条**——依赖 DailyPipeline 持续产出方向决策 +  每日反思批处理积累，非代码问题；门禁保持关闭直至样本足够且方向收益显著。方向性通道晋级链路已加就绪回归测试（样本足时显著 BUY 模式晋级为 `scope="global"` lesson），证明代码侧就绪，只待真实样本积累。
 2. 为 DailyPipeline 增加可选 Top N 深度 StockAnalysisSkill 串联，并把深度结论回写 candidate payload。
 3. 扩展 StrategyBacktest 的 walk-forward/ablation 对比和执行滑点明细，不增加任意参数搜索器。
 4. 扩展 Playwright 到真实后端的预发布 smoke；CI 合约 mock 负责稳定验证前端主流程。
-5. `/reflection` 评测页已上线（KPI/经验库/案例/手动触发），并已增强：经验详情抽屉（类型/样本量/一致率/平均超额/胜率/跨周数/失效）、手动停用 lesson 入口（`POST /strategy-lessons/{id}/deactivate`）、helpers 抽出并加 13 条 Vitest 覆盖。**待增强**：经验历史趋势图（avg_excess/consistency 随时间）、按支撑证据反查 case。
+5. `/reflection` 评测页已上线（KPI/经验库/案例/手动触发），并持续增强：经验详情抽屉（类型/样本量/一致率/平均超额/胜率/跨周数/失效）、手动停用 lesson 入口（`POST /strategy-lessons/{id}/deactivate`）、**经验历史趋势 sparkline**（miner 每次挖掘写入 `payload.history`，方向档 win_rate、中性档 avg_excess 随挖掘日演化）、**按支撑证据反查 case**（miner 写入 `payload.evidence_cases`，抽屉懒加载 `GET /strategy-lessons/{id}/cases`）；helpers 抽出并加 20 条 Vitest 覆盖。
 6. **DailyPipeline 复核扩容已落地**：`daily_pipeline_llm_review_limit` 5→8，且新增 lesson 优先复核——排名超限但命中活跃 lesson 的候选被有界拉入复核窗（`daily_pipeline_llm_review_lesson_extra`，默认 4），使刚修复的注入链路对高排名之外的候选也真正生效。
 
 ### 10.2 代码质量

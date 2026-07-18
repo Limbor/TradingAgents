@@ -588,6 +588,16 @@ class CrossSymbolPatternMiner:
             existing = []
 
         merged = self._find_and_merge(existing, lesson_id, bucket.dimension)
+        payload["evidence_cases"] = self._evidence_cases(bucket)
+        payload["history"] = self._append_history(
+            (merged or {}).get("payload"),
+            {
+                "date": date.today().isoformat(),
+                "win_rate": round(bucket.win_rate, 4),
+                "lift": round(bucket.lift, 4),
+                "n": bucket.scored_n,
+            },
+        )
         if merged:
             try:
                 updated = self._db.update_strategy_lesson(
@@ -869,6 +879,16 @@ class CrossSymbolPatternMiner:
             existing = []
 
         merged = self._find_and_merge(existing, lesson_id, bucket.dimension)
+        payload["evidence_cases"] = self._evidence_cases(bucket)
+        payload["history"] = self._append_history(
+            (merged or {}).get("payload"),
+            {
+                "date": date.today().isoformat(),
+                "avg_excess": round(bucket.neutral_avg_excess, 4),
+                "consistency": round(bucket.neutral_consistency, 4),
+                "n": n,
+            },
+        )
         if merged:
             try:
                 updated = self._db.update_strategy_lesson(
@@ -936,6 +956,48 @@ class CrossSymbolPatternMiner:
             except (json.JSONDecodeError, TypeError):
                 return {}
         return {}
+
+    @staticmethod
+    def _evidence_cases(bucket: PatternBucket, cap: int = 20) -> list[dict[str, str]]:
+        """Compact, de-duplicated list of the reflection cases behind a bucket.
+
+        Persisted into the lesson payload so the UI can drill from a lesson back
+        to the specific cases that produced it (``GET
+        /strategy-lessons/{id}/cases``). Capped to keep the payload small.
+        """
+        seen: set[str] = set()
+        out: list[dict[str, str]] = []
+        for sample in bucket.samples:
+            cid = str(sample.get("id") or "")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            out.append({"id": cid, "symbol": str(sample.get("symbol") or "")})
+            if len(out) >= cap:
+                break
+        return out
+
+    @staticmethod
+    def _append_history(
+        prior_payload: dict[str, Any] | None, point: dict[str, Any], cap: int = 30
+    ) -> list[dict[str, Any]]:
+        """Append a metrics snapshot to the lesson's history series.
+
+        The miner overwrites the lesson payload each run, so a trend is only
+        visible if we carry the prior series forward. Same-day re-runs replace
+        the last point (rather than inflating the series) so the history tracks
+        distinct mining days.
+        """
+        history: list[dict[str, Any]] = []
+        if isinstance(prior_payload, dict):
+            prev = prior_payload.get("history")
+            if isinstance(prev, list):
+                history = [h for h in prev if isinstance(h, dict)]
+        if history and history[-1].get("date") == point.get("date"):
+            history[-1] = point
+        else:
+            history.append(point)
+        return history[-cap:]
 
 
 # ---------------------------------------------------------------------------

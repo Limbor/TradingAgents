@@ -365,6 +365,11 @@ export async function deactivateLesson(
   });
 }
 
+/** The reflection cases that produced a lesson (its supporting evidence). */
+export async function listLessonCases(lessonId: string): Promise<ReflectionCase[]> {
+  return fetchJson(`${API_BASE}/strategy-lessons/${encodeURIComponent(lessonId)}/cases`);
+}
+
 export async function saveCandidateAction(body: {
   action: "adopt" | "plan" | "executed" | "watch" | "observe" | "private" | "private_review" | "ignore" | "dismiss";
   symbol: string;

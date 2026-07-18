@@ -9,7 +9,10 @@ import {
   confidenceCls,
   formatPct,
   isNeutralLesson,
+  lessonHistory,
   lessonMetrics,
+  lessonTrend,
+  sparklinePoints,
 } from "./helpers";
 
 function lesson(overrides: Partial<StrategyLesson> = {}): StrategyLesson {
@@ -145,5 +148,82 @@ describe("formatPct", () => {
   });
   it("renders an em dash for null", () => {
     expect(formatPct(null)).toBe("—");
+  });
+});
+
+describe("lessonHistory", () => {
+  it("normalizes the persisted history series into typed points", () => {
+    const points = lessonHistory(
+      lesson({
+        payload: {
+          history: [
+            { date: "2026-06-01", win_rate: 0.4, lift: -0.1, n: 5 },
+            { date: "2026-06-08", avg_excess: 0.08, consistency: 0.7, n: 6 },
+          ],
+        },
+      })
+    );
+    expect(points).toHaveLength(2);
+    expect(points[0]).toEqual({
+      date: "2026-06-01",
+      winRate: 0.4,
+      lift: -0.1,
+      avgExcess: null,
+      consistency: null,
+      n: 5,
+    });
+    expect(points[1]?.avgExcess).toBeCloseTo(0.08);
+  });
+  it("returns [] when history is missing or malformed", () => {
+    expect(lessonHistory(lesson({ payload: {} }))).toEqual([]);
+    expect(lessonHistory(lesson({ payload: { history: "nope" } }))).toEqual([]);
+  });
+});
+
+describe("lessonTrend", () => {
+  it("trends mean excess for neutral lessons", () => {
+    const t = lessonTrend(
+      lesson({
+        payload: {
+          dimension: "neutral:industry=地产",
+          history: [{ date: "a", avg_excess: 0.05 }, { date: "b", avg_excess: 0.09 }],
+        },
+      })
+    );
+    expect(t.label).toBe("平均超额");
+    expect(t.signed).toBe(true);
+    expect(t.values).toEqual([0.05, 0.09]);
+  });
+  it("trends win rate for directional lessons", () => {
+    const t = lessonTrend(
+      lesson({
+        payload: {
+          dimension: "final_decision=BUY",
+          history: [{ date: "a", win_rate: 0.3 }, { date: "b", win_rate: 0.6 }],
+        },
+      })
+    );
+    expect(t.label).toBe("胜率");
+    expect(t.signed).toBe(false);
+    expect(t.values).toEqual([0.3, 0.6]);
+  });
+});
+
+describe("sparklinePoints", () => {
+  it("maps a series to scaled svg coordinates (min at bottom, max at top)", () => {
+    const path = sparklinePoints([0, 0.5, 1], 100, 20);
+    const coords = path.split(" ");
+    expect(coords).toHaveLength(3);
+    expect(coords[0]).toBe("0.0,20.0"); // min -> bottom (y=height)
+    expect(coords[2]).toBe("100.0,0.0"); // max -> top (y=0)
+  });
+  it("drops nulls and returns '' for fewer than 2 finite values", () => {
+    expect(sparklinePoints([0.5])).toBe("");
+    expect(sparklinePoints([null, 0.5])).toBe("");
+    expect(sparklinePoints([])).toBe("");
+  });
+  it("handles a flat series without dividing by zero", () => {
+    const path = sparklinePoints([0.4, 0.4], 100, 20);
+    expect(path).toBe("0.0,20.0 100.0,20.0");
   });
 });

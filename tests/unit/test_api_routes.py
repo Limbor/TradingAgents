@@ -405,3 +405,73 @@ def test_deactivate_strategy_lesson(client):
     res = client.post("/api/v1/strategy-lessons/L-unknown/deactivate")
     assert res.status_code == 200
     assert res.json()["status"] == "not_found"
+
+
+def test_list_lesson_cases_resolves_evidence(client):
+    """The lesson->cases endpoint resolves the payload's evidence_cases ids to
+    full reflection cases, skips unresolvable ids, and returns [] for unknown
+    lessons or lessons without evidence."""
+    db = client.app.state.db
+    db.save_reflection_case(
+        case_id="rc-1",
+        source_type="system_signal",
+        reflection_scope="candidate_pool",
+        eligible_for_strategy_learning=False,
+        symbol="600000.SH",
+        name="浦发银行",
+        signal_date="2026-06-01",
+        horizon_days=5,
+        status="reflected",
+    )
+    db.save_strategy_lesson(
+        lesson_id="L-ev",
+        lesson_type="cross_symbol_pattern",
+        scope="industry",
+        finding="地产观望跑赢",
+        target="地产",
+        confidence="high",
+        active=True,
+        payload={
+            "dimension": "neutral:industry=地产",
+            "evidence_cases": [
+                {"id": "rc-1", "symbol": "600000.SH"},
+                {"id": "rc-missing", "symbol": "000001.SZ"},  # unresolvable, skipped
+            ],
+        },
+    )
+
+    res = client.get("/api/v1/strategy-lessons/L-ev/cases")
+    assert res.status_code == 200
+    rows = res.json()
+    assert [r["id"] for r in rows] == ["rc-1"]
+    assert rows[0]["symbol"] == "600000.SH"
+    assert rows[0]["due_date"]  # advance_trading_days populated
+
+    # Unknown lesson and lesson without evidence both yield an empty list.
+    assert client.get("/api/v1/strategy-lessons/L-nope/cases").json() == []
+    db.save_strategy_lesson(
+        lesson_id="L-bare",
+        lesson_type="cross_symbol_pattern",
+        scope="global",
+        finding="no evidence",
+        active=True,
+    )
+    assert client.get("/api/v1/strategy-lessons/L-bare/cases").json() == []
+
+
+def test_get_strategy_lesson_roundtrip(client):
+    """get_strategy_lesson returns the decoded payload and None for unknown ids."""
+    db = client.app.state.db
+    db.save_strategy_lesson(
+        lesson_id="L-get",
+        lesson_type="cross_symbol_pattern",
+        scope="global",
+        finding="f",
+        active=True,
+        payload={"dimension": "d", "history": [{"date": "2026-06-01", "win_rate": 0.4}]},
+    )
+    lesson = db.get_strategy_lesson("L-get")
+    assert lesson is not None
+    assert lesson["payload"]["history"][0]["win_rate"] == 0.4
+    assert lesson["active"] is True
+    assert db.get_strategy_lesson("nope") is None

@@ -51,6 +51,17 @@ Breaking changes within the 0.x line are called out explicitly.
   regardless of quant rank. The default review limit was also raised from 5 to
   8 (`daily_pipeline_llm_review_limit`) to widen lesson-injection coverage.
 
+- **Lesson evidence drill-down and metric trends.** The miner now persists a
+  capped `evidence_cases` id list and a per-mining-day `history` series (win
+  rate + lift for directional lessons, mean excess + consistency for neutral)
+  into each lesson payload. The reflection page's lesson drawer renders the
+  metric as a sparkline trend and lazily loads the supporting reflection cases
+  from a new `GET /strategy-lessons/{id}/cases` endpoint (backed by a new
+  `Database.get_strategy_lesson`), letting you drill from a lesson back to the
+  cases that produced it. The directional promotion path (a significant BUY
+  pattern minted as a `scope="global"` lesson once samples suffice) now has
+  explicit regression coverage.
+
 ### Fixed
 
 - **Industry-scope lessons now actually match candidates.** Industry-scope

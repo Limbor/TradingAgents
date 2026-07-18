@@ -87,3 +87,68 @@ export function formatPct(value: number | null, digits = 2, signed = false): str
   const sign = signed && pct >= 0 ? "+" : "";
   return `${sign}${pct.toFixed(digits)}%`;
 }
+
+export interface HistoryPoint {
+  date: string;
+  winRate: number | null;
+  lift: number | null;
+  avgExcess: number | null;
+  consistency: number | null;
+  n: number | null;
+}
+
+/** Normalize the miner-persisted ``payload.history`` series (one snapshot per
+ * mining day) into typed points. Malformed / missing history yields []. */
+export function lessonHistory(lesson: Pick<StrategyLesson, "payload">): HistoryPoint[] {
+  const raw = lesson.payload?.history;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((h): h is Record<string, unknown> => typeof h === "object" && h !== null)
+    .map((h) => ({
+      date: String(h.date ?? ""),
+      winRate: numOrNull(h.win_rate),
+      lift: numOrNull(h.lift),
+      avgExcess: numOrNull(h.avg_excess),
+      consistency: numOrNull(h.consistency),
+      n: numOrNull(h.n),
+    }));
+}
+
+export interface LessonTrend {
+  label: string;
+  values: (number | null)[];
+  signed: boolean;
+}
+
+/** The primary metric to trend for a lesson: neutral lessons trend their mean
+ * excess, directional lessons trend win rate. */
+export function lessonTrend(lesson: StrategyLesson): LessonTrend {
+  const history = lessonHistory(lesson);
+  if (isNeutralLesson(lesson)) {
+    return { label: "平均超额", values: history.map((h) => h.avgExcess), signed: true };
+  }
+  return { label: "胜率", values: history.map((h) => h.winRate), signed: false };
+}
+
+/** Build an SVG polyline points string from a numeric series scaled to a
+ * width x height box. Nulls are dropped; returns "" for fewer than 2 finite
+ * values (a single point cannot form a trend line). */
+export function sparklinePoints(
+  values: (number | null)[],
+  width = 96,
+  height = 24
+): string {
+  const nums = values.filter((v): v is number => v !== null && Number.isFinite(v));
+  if (nums.length < 2) return "";
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const span = max - min || 1;
+  const step = width / (nums.length - 1);
+  return nums
+    .map((v, i) => {
+      const x = i * step;
+      const y = height - ((v - min) / span) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+}

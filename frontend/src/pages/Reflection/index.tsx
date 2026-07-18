@@ -4,6 +4,7 @@ import { Brain, ChevronDown, Lightbulb, RefreshCw, Sparkles, Target } from "luci
 import {
   deactivateLesson,
   getReflectionSummary,
+  listLessonCases,
   listReflectionCases,
   listStrategyLessons,
   minePatterns,
@@ -21,6 +22,8 @@ import {
   confidenceCls,
   formatPct,
   lessonMetrics,
+  lessonTrend,
+  sparklinePoints,
 } from "./helpers";
 
 const LOOKBACKS = [7, 30, 90] as const;
@@ -258,6 +261,13 @@ function LessonCard({
   const [open, setOpen] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const m = lessonMetrics(lesson);
+  const trend = lessonTrend(lesson);
+  const trendPath = sparklinePoints(trend.values);
+  const lessonCases = useQuery({
+    queryKey: ["lesson-cases", lesson.id],
+    queryFn: () => listLessonCases(lesson.id),
+    enabled: open,
+  });
 
   const retire = async () => {
     setRetiring(true);
@@ -313,16 +323,58 @@ function LessonCard({
       </div>
 
       {open && (
-        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-stone-500">
-          <Detail label="类型" value={lesson.lesson_type} />
-          <Detail label="样本量" value={m.sampleSize !== null ? String(m.sampleSize) : "—"} />
-          <Detail label="一致率" value={formatPct(m.consistency, 1)} />
-          <Detail label="平均超额" value={formatPct(m.avgExcess, 2, true)} />
-          <Detail label="胜率" value={formatPct(m.winRate, 1)} />
-          <Detail label="跨周数" value={m.distinctPeriods > 0 ? String(m.distinctPeriods) : "—"} />
-          {lesson.expires_at && <Detail label="失效" value={lesson.expires_at.slice(0, 10)} />}
-          <Detail label="更新" value={lesson.updated_at.slice(0, 10)} />
-        </dl>
+        <div className="mt-2 space-y-3">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-stone-500">
+            <Detail label="类型" value={lesson.lesson_type} />
+            <Detail label="样本量" value={m.sampleSize !== null ? String(m.sampleSize) : "—"} />
+            <Detail label="一致率" value={formatPct(m.consistency, 1)} />
+            <Detail label="平均超额" value={formatPct(m.avgExcess, 2, true)} />
+            <Detail label="胜率" value={formatPct(m.winRate, 1)} />
+            <Detail label="跨周数" value={m.distinctPeriods > 0 ? String(m.distinctPeriods) : "—"} />
+            {lesson.expires_at && <Detail label="失效" value={lesson.expires_at.slice(0, 10)} />}
+            <Detail label="更新" value={lesson.updated_at.slice(0, 10)} />
+          </dl>
+
+          {/* Metric trend across mining days (miner persists a history series). */}
+          <div>
+            <p className="mb-1 text-[10px] text-stone-600">{trend.label}趋势（按挖掘日）</p>
+            {trendPath ? (
+              <div className="flex items-center gap-2">
+                <svg viewBox="0 0 96 24" className="h-6 w-24 overflow-visible" preserveAspectRatio="none">
+                  <polyline
+                    points={trendPath}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    className={m.isNeutral ? "text-sky-400" : "text-amber-400"}
+                  />
+                </svg>
+                <span className="font-mono text-[10px] text-stone-500">
+                  {trend.values
+                    .filter((v): v is number => v !== null)
+                    .map((v) => formatPct(v, m.isNeutral ? 1 : 0, trend.signed))
+                    .join(" → ")}
+                </span>
+              </div>
+            ) : (
+              <p className="text-[10px] text-stone-600">样本仅一期，暂无趋势。</p>
+            )}
+          </div>
+
+          {/* Supporting evidence: the reflection cases behind this lesson. */}
+          <div>
+            <p className="mb-1 text-[10px] text-stone-600">支撑证据</p>
+            {lessonCases.isLoading && <p className="text-[10px] text-stone-600">加载中...</p>}
+            {!lessonCases.isLoading && (lessonCases.data?.length ?? 0) === 0 && (
+              <p className="text-[10px] text-stone-600">暂无关联案例（该经验早于证据追踪，或案例已清理）。</p>
+            )}
+            <div className="space-y-1.5">
+              {(lessonCases.data ?? []).map((c) => (
+                <CaseRow key={c.id} item={c} />
+              ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

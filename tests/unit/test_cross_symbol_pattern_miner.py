@@ -520,6 +520,184 @@ class TestMineEndToEnd:
         assert len(saved) >= 2
 
 
+class TestLessonEvidenceAndHistory:
+    """Lesson payloads carry supporting-case ids (drill-down) and a metrics
+    history series (trend), and the miner promotes directional BUY patterns as
+    global lessons once samples suffice (P2-5 readiness)."""
+
+    def test_evidence_cases_dedups_and_caps(self):
+        miner = CrossSymbolPatternMiner(db=MagicMock(), config={})
+        bucket = PatternBucket(dimension="x")
+        bucket.samples = [
+            {"id": "c1", "symbol": "600000.SH"},
+            {"id": "c1", "symbol": "600000.SH"},  # duplicate id dropped
+            {"id": "", "symbol": "BAD"},  # empty id dropped
+            {"id": "c2", "symbol": "000001.SZ"},
+        ]
+        cases = miner._evidence_cases(bucket, cap=10)
+        assert cases == [
+            {"id": "c1", "symbol": "600000.SH"},
+            {"id": "c2", "symbol": "000001.SZ"},
+        ]
+        capped = miner._evidence_cases(bucket, cap=1)
+        assert len(capped) == 1
+
+    def test_append_history_carries_forward_and_replaces_same_day(self):
+        miner = CrossSymbolPatternMiner(db=MagicMock(), config={})
+        prior = {"history": [{"date": "2026-06-01", "win_rate": 0.4}]}
+        # New day appends.
+        series = miner._append_history(prior, {"date": "2026-06-02", "win_rate": 0.6})
+        assert [h["date"] for h in series] == ["2026-06-01", "2026-06-02"]
+        # Same day replaces the last point rather than inflating the series.
+        again = miner._append_history(
+            {"history": series}, {"date": "2026-06-02", "win_rate": 0.7}
+        )
+        assert [h["date"] for h in again] == ["2026-06-01", "2026-06-02"]
+        assert again[-1]["win_rate"] == 0.7
+        # Cap keeps the most recent N.
+        long_prior = {"history": [{"date": f"d{i}"} for i in range(30)]}
+        capped = miner._append_history(long_prior, {"date": "new"}, cap=5)
+        assert len(capped) == 5
+        assert capped[-1]["date"] == "new"
+
+    def test_append_history_ignores_malformed_prior(self):
+        miner = CrossSymbolPatternMiner(db=MagicMock(), config={})
+        assert miner._append_history(None, {"date": "d1"}) == [{"date": "d1"}]
+        assert miner._append_history({"history": "nope"}, {"date": "d1"}) == [{"date": "d1"}]
+
+    @pytest.mark.asyncio
+    async def test_mine_persists_evidence_and_history_for_directional_lesson(self):
+        miner = CrossSymbolPatternMiner(db=MagicMock(), config={})
+        cases = []
+        for i in range(6):
+            cases.append(_make_case(
+                symbol=f"LOSE{i}", final_decision="BUY",
+                data_coverage={"valuation": "available", "flow": "missing", "quality": "available"},
+                was_correct=False, actual_return=-0.06,
+            ))
+        for i in range(6):
+            cases.append(_make_case(
+                symbol=f"WIN{i}", final_decision="BUY",
+                data_coverage={"valuation": "available", "flow": "available", "quality": "available"},
+                was_correct=True, actual_return=0.05,
+            ))
+        db = MagicMock()
+        db.list_reflection_cases = MagicMock(return_value=cases)
+        db.list_strategy_lessons = MagicMock(return_value=[])
+        saved: list[dict] = []
+        db.save_strategy_lesson = MagicMock(
+            side_effect=lambda **kw: saved.append(kw) or {"id": kw["lesson_id"]}
+        )
+        db.update_strategy_lesson = MagicMock(return_value={"id": "x"})
+        miner._db = db
+
+        await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        flow_lesson = next(
+            s for s in saved if s["payload"]["dimension"] == "data_coverage.flow=missing"
+        )
+        payload = flow_lesson["payload"]
+        # Evidence cases point back to the losing symbols' reflection case ids.
+        ev_ids = {c["id"] for c in payload["evidence_cases"]}
+        assert ev_ids == {f"case_LOSE{i}" for i in range(6)}
+        # History seeded with one point carrying the directional metrics.
+        assert len(payload["history"]) == 1
+        point = payload["history"][0]
+        assert point["n"] == 6
+        assert point["win_rate"] == 0.0
+        assert "date" in point and "lift" in point
+
+    @pytest.mark.asyncio
+    async def test_mine_carries_history_forward_on_update(self):
+        """An existing lesson's history is extended (not reset) on the next run."""
+        miner = CrossSymbolPatternMiner(db=MagicMock(), config={})
+        cases = [
+            _make_case(
+                symbol=f"LOSE{i}", final_decision="BUY",
+                data_coverage={"valuation": "available", "flow": "missing", "quality": "available"},
+                was_correct=False, actual_return=-0.06,
+            )
+            for i in range(6)
+        ] + [
+            _make_case(
+                symbol=f"WIN{i}", final_decision="BUY",
+                data_coverage={"valuation": "available", "flow": "available", "quality": "available"},
+                was_correct=True, actual_return=0.05,
+            )
+            for i in range(6)
+        ]
+        existing_lesson = {
+            "id": _lesson_id_from_finding("data_coverage.flow=missing"),
+            "lesson_type": "cross_symbol_pattern",
+            "finding": "old",
+            "payload": {
+                "dimension": "data_coverage.flow=missing",
+                "history": [{"date": "2000-01-01", "win_rate": 0.2, "lift": -0.3, "n": 5}],
+            },
+        }
+        db = MagicMock()
+        db.list_reflection_cases = MagicMock(return_value=cases)
+        db.list_strategy_lessons = MagicMock(return_value=[existing_lesson])
+        updated: list[dict] = []
+        db.update_strategy_lesson = MagicMock(
+            side_effect=lambda lid, **kw: updated.append(kw) or {"id": lid}
+        )
+        db.save_strategy_lesson = MagicMock(return_value=None)
+        miner._db = db
+
+        await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        flow_update = next(
+            u for u in updated if u["payload"]["dimension"] == "data_coverage.flow=missing"
+        )
+        history = flow_update["payload"]["history"]
+        # Old point preserved, new point appended (distinct dates → 2 entries).
+        assert len(history) == 2
+        assert history[0]["date"] == "2000-01-01"
+
+    @pytest.mark.asyncio
+    async def test_directional_buy_pattern_promoted_as_global_lesson(self):
+        """P2-5 readiness: given enough scored BUY cases, a significant
+        directional pattern is promoted as a scope="global" lesson."""
+        miner = CrossSymbolPatternMiner(db=MagicMock(), config={})
+        cases = [
+            _make_case(
+                symbol=f"LOSE{i}", final_decision="BUY",
+                data_coverage={"valuation": "available", "flow": "missing", "quality": "available"},
+                was_correct=False, actual_return=-0.06,
+            )
+            for i in range(6)
+        ] + [
+            _make_case(
+                symbol=f"WIN{i}", final_decision="BUY",
+                data_coverage={"valuation": "available", "flow": "available", "quality": "available"},
+                was_correct=True, actual_return=0.05,
+            )
+            for i in range(6)
+        ]
+        db = MagicMock()
+        db.list_reflection_cases = MagicMock(return_value=cases)
+        db.list_strategy_lessons = MagicMock(return_value=[])
+        saved: list[dict] = []
+        db.save_strategy_lesson = MagicMock(
+            side_effect=lambda **kw: saved.append(kw) or {"id": kw["lesson_id"]}
+        )
+        db.update_strategy_lesson = MagicMock(return_value={"id": "x"})
+        miner._db = db
+
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        assert result["lessons_created"] >= 1
+        flow_lesson = next(
+            s for s in saved if s["payload"]["dimension"] == "data_coverage.flow=missing"
+        )
+        assert flow_lesson["scope"] == "global"
+        assert flow_lesson["lesson_type"] == "cross_symbol_pattern"
+        assert flow_lesson["target"] == ""
+        assert flow_lesson["evidence_count"] == 6
+        assert flow_lesson["active"] is True
+
+
 # ---------------------------------------------------------------------------
 # Neutral channel (WATCHLIST/HOLD/MONITOR excess-return patterns)
 # ---------------------------------------------------------------------------

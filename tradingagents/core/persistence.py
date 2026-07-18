@@ -1594,6 +1594,22 @@ class Database:
             result.append(item)
         return result
 
+    def get_strategy_lesson(self, lesson_id: str) -> dict | None:
+        """Fetch a single strategy lesson by id with its decoded payload."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM strategy_lessons WHERE id = ?", (lesson_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["active"] = bool(item.get("active"))
+        try:
+            item["payload"] = json.loads(item.pop("payload_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            item["payload"] = {}
+        return item
+
     def update_strategy_lesson(self, lesson_id: str, **fields: Any) -> dict | None:
         """Incrementally update a strategy lesson's fields.
 
