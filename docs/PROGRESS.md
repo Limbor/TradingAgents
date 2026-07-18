@@ -133,6 +133,7 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | 跨样本中性通道自动晋级 | ✅ 2026-07-17 | CrossSymbolPatternMiner 新增中性显著性通道，与方向性胜率通道独立运行：按「平均超额幅度 + 同向一致率 + 样本量」晋级 industry/factor 级中性 lesson，`neutral:` 前缀隔离命名空间防 lesson_id 冲突；中性门槛单开 `neutral_min_samples=4`（方向性仍 5）；主开关 `cross_symbol_miner_enabled` 默认改为开启，每日 16:30 反思后常态化晋级 |
 | 中性通道板块行情护栏 | ✅ 2026-07-17 | 发现 44 条回补中性 case 全挤在 2026-07-03~10 一周内，其中 `valuation/flow 缺失` 两桶更是同一天快照（伪信号）。新增 ISO 周分散度护栏 `neutral_min_periods=2`：中性模式需跨 ≥N 个不同 ISO 周才晋级，一次性板块/单日事件不再被铸成永久经验；真实再跑 `neutral_regime_filtered:2`、`lessons_deactivated:2`，三条 → 一条（仅保留跨 2 周的地产 high）；行业指数 beta 分解仍为 TODO |
 | 行业级 lesson 注入命中修复 | ✅ 2026-07-17 | 端到端验证发现 bug：industry-scope 中性 lesson 的 target 是归一化粗分组（如 `地产`），但候选 `industry` 字段是原始行业名（`房地产`/`建筑材料`），`candidate_lesson_hits` 精确比较 → 命中 `[]`，地产 lesson 实际永远注入不进 LLM 复核 prompt。抽出共享 `industry_taxonomy.normalize_industry`（miner 与注入端唯一真值源），注入端比较前对候选行业同样归一化；真实复验 `房地产`/`建筑材料` 现命中地产 high lesson、`白酒` 正确不命中。另补停用治理回归测试：陈旧 neutral lesson 会被停用、neutral 通道关闭时不误伤 neutral lesson |
+| 前端反思闭环评测页 | ✅ 2026-07-17 | 新增 `/reflection` 页（侧边栏 Reflection），把之前只散落在 daily_review 产物里的反思闭环可视化：方向性准确率 KPI（可选 7/30/90 天）+ 策略经验库（方向/中性通道标签、置信度、scope/target、证据数、中性档显示跨 ISO 周数与平均超额）+ 反思案例（missed_upside/validated_avoidance/win/loss 归因徽章、超额收益、状态筛选）+ 手动“运行反思/挖掘规律”触发；tsc/eslint/build 均通过，实时接口形状校验一致 |
 | 前端 Portfolio 持仓页 | ✅ 初版完成 | 持仓 CRUD、P&L、建议确认调仓；Dashboard 已展示结构化风险事件 |
 | 前端 Watchlist 关注页 | ✅ 初版完成 | 手动触发 `daily_pipeline` 进入 Chat + 近期运行列表；候选明细历史化待增强 |
 | 前端 Settings MCP 配置 | ✅ 完成 | MCP URL / enabled / timeout |
@@ -550,6 +551,7 @@ Chat 层已完成四类意图分流：
 2. 为 DailyPipeline 增加可选 Top N 深度 StockAnalysisSkill 串联，并把深度结论回写 candidate payload。
 3. 扩展 StrategyBacktest 的 walk-forward/ablation 对比和执行滑点明细，不增加任意参数搜索器。
 4. 扩展 Playwright 到真实后端的预发布 smoke；CI 合约 mock 负责稳定验证前端主流程。
+5. `/reflection` 评测页已上线（KPI/经验库/案例/手动触发）；待增强：经验详情抽屉（展开支撑证据 case、lesson 历史 avg_excess/consistency 趋势）、手动停用 lesson 入口、Vitest 覆盖。
 
 ### 10.2 代码质量
 

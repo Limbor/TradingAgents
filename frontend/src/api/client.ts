@@ -92,6 +92,14 @@ export interface ReflectionCase {
   updated_at: string;
 }
 
+export interface ReflectionSummary {
+  total: number;
+  correct: number;
+  incorrect: number;
+  accuracy: number;
+  lookback_days: number;
+}
+
 export interface TradeCondition {
   kind?: string;
   description?: string;
@@ -335,6 +343,18 @@ export async function listReflectionCases(params: {
   if (params.reflection_scope) search.set("reflection_scope", params.reflection_scope);
   if (params.eligible_only !== undefined) search.set("eligible_only", String(params.eligible_only));
   return fetchJson(`${API_BASE}/reflection-cases?${search}`);
+}
+
+export async function getReflectionSummary(lookbackDays = 30): Promise<ReflectionSummary> {
+  return fetchJson(`${API_BASE}/reflections/summary?lookback_days=${lookbackDays}`);
+}
+
+export async function triggerReflection(): Promise<{ status: string; message: string }> {
+  return fetchJson(`${API_BASE}/reflections/trigger`, { method: "POST" });
+}
+
+export async function minePatterns(): Promise<{ status: string; message: string }> {
+  return fetchJson(`${API_BASE}/reflections/mine-patterns`, { method: "POST" });
 }
 
 export async function saveCandidateAction(body: {

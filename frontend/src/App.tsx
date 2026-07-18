@@ -10,6 +10,7 @@ const Portfolio = lazy(() => import("./pages/Portfolio"));
 const Library = lazy(() => import("./pages/Library"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Audit = lazy(() => import("./pages/Audit"));
+const Reflection = lazy(() => import("./pages/Reflection"));
 
 const queryClient = new QueryClient();
 
@@ -35,6 +36,7 @@ export default function App() {
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/library" element={<Library />} />
               <Route path="/audit" element={<Audit />} />
+              <Route path="/reflection" element={<Reflection />} />
               <Route path="/settings" element={<Settings />} />
               {/* Redirects for removed pages */}
               <Route path="/reports" element={<Navigate to="/library" replace />} />

@@ -16,8 +16,11 @@ export const queryKeys = {
   profile: () => ["profile"] as const,
   health: () => ["health"] as const,
   reflectionsSummary: () => ["reflections-summary"] as const,
+  reflectionSummaryFor: (days = 30) => ["reflections-summary", days] as const,
   dashboardArtifacts: () => ["dashboard-artifacts"] as const,
   strategyLessons: () => ["strategy-lessons"] as const,
+  reflectionLessons: (activeOnly = true, lessonType?: string) =>
+    ["reflection-lessons", activeOnly, lessonType ?? "all"] as const,
   riskEvents: (status = "open") => ["risk-events", status] as const,
   reflectionCases: (status = "pending") => ["reflection-cases", status] as const,
   artifacts: (type?: string, query?: string, runId?: string) =>

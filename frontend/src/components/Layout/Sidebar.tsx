@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
   BriefcaseBusiness,
+  Brain,
   FileText,
   LayoutDashboard,
   MessageSquareText,
@@ -16,6 +17,7 @@ const navItems = [
   { to: "/portfolio", label: "Portfolio", icon: BriefcaseBusiness },
   { to: "/library", label: "Library", icon: FileText },
   { to: "/audit", label: "Audit", icon: ClipboardCheck },
+  { to: "/reflection", label: "Reflection", icon: Brain },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

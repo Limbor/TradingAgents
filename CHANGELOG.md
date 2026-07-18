@@ -31,6 +31,14 @@ Breaking changes within the 0.x line are called out explicitly.
   excess/consistency bars but fail dispersion are counted in
   `neutral_regime_filtered`. (Sector-beta decomposition against an industry
   index remains a follow-up.)
+- **Reflection loop evaluation page.** A new `/reflection` route (sidebar
+  "Reflection") surfaces the closed loop that was previously only visible
+  inside daily-review artifacts: a directional-accuracy KPI (7/30/90-day
+  lookback), the mined strategy-lesson library (directional vs neutral channel
+  badges, confidence, scope/target, evidence count, and — for neutral lessons —
+  distinct ISO weeks and mean excess), and reflection cases with attribution
+  badges (missed_upside / validated_avoidance / win / loss) plus excess return.
+  Includes manual "run reflection" and "mine patterns" triggers.
 
 ### Fixed
 
