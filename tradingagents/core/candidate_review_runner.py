@@ -52,6 +52,11 @@ async def apply_llm_reviews(
     tagged ``llm_review_status="skipped_by_review_limit"`` and keep their
     quant-only fusion.
 
+    Candidates ranked beyond ``review_limit`` that match an *active* strategy
+    lesson are pulled into the review window (bounded by
+    ``daily_pipeline_llm_review_lesson_extra``) so the reflection loop's lessons
+    actually influence matching candidates regardless of quant rank.
+
     Returns ``(warnings, meta)``. ``meta`` always carries ``enabled`` and
     ``reviewed``; ``available`` is ``False`` when the reviewer could not be
     built (callers should surface ``warnings`` to the user so the degradation
@@ -90,15 +95,31 @@ async def apply_llm_reviews(
         review_limit = min(5, len(candidates))
     review_limit = max(0, min(int(review_limit or 0), len(candidates)))
 
+    lessons = strategy_lessons or []
+    # Candidates ranked beyond review_limit but matching an ACTIVE strategy
+    # lesson would otherwise be skipped before the review loop, so the lesson
+    # would never be applied. Pull a bounded number of them into the review
+    # window (rank order preserved) so the reflection loop actually bites.
+    lesson_extra_cap = max(0, int(config.get("daily_pipeline_llm_review_lesson_extra", 0) or 0))
+    forced: list[dict[str, Any]] = []
+    if lessons and lesson_extra_cap > 0 and review_limit < len(candidates):
+        for candidate in candidates[review_limit:]:
+            if len(forced) >= lesson_extra_cap:
+                break
+            if candidate_lesson_hits(candidate, lessons):
+                forced.append(candidate)
+    review_set = candidates[:review_limit] + forced
+    reviewed_ids = {id(c) for c in review_set}
+
     warnings: list[str] = []
     reviewed = 0
 
     # Enrich reviewed candidates with real-time data (news, announcements, flow).
     context_map: dict[str, CandidateContext] = {}
-    if enrich and review_limit > 0:
+    if enrich and review_set:
         try:
             context_map = await enrich_candidates(
-                candidates[:review_limit],
+                review_set,
                 trade_date,
                 config,
             )
@@ -118,7 +139,7 @@ async def apply_llm_reviews(
         except Exception as exc:
             return candidate, None, exc
 
-    results = await asyncio.gather(*[_do_review(c) for c in candidates[:review_limit]])
+    results = await asyncio.gather(*[_do_review(c) for c in review_set])
 
     for candidate, raw_review, exc in results:
         if exc is not None:
@@ -127,7 +148,7 @@ async def apply_llm_reviews(
             warnings.append(f"LLM review failed for {symbol}; kept quant-only signal.")
             continue
         review = coerce_llm_review(raw_review)
-        lesson_hits = candidate_lesson_hits(candidate, strategy_lessons or [])
+        lesson_hits = candidate_lesson_hits(candidate, lessons)
         candidate["llm_review"] = review.model_dump()
         candidate["key_catalysts"] = review.key_catalysts
         candidate["key_risks"] = review.key_risks
@@ -144,14 +165,16 @@ async def apply_llm_reviews(
         candidate["rationale"] = candidate_rationale(candidate, include_llm=True)
         reviewed += 1
 
-    for candidate in candidates[review_limit:]:
-        candidate["llm_review_status"] = "skipped_by_review_limit"
+    for candidate in candidates:
+        if id(candidate) not in reviewed_ids:
+            candidate["llm_review_status"] = "skipped_by_review_limit"
 
     return warnings, {
         "enabled": True,
         "available": True,
         "reviewed": reviewed,
         "review_limit": review_limit,
+        "lesson_forced": len(forced),
     }
 
 

@@ -62,7 +62,13 @@ def test_apply_llm_reviews_available_reuses_reviewer_and_fuses():
             review_limit=5,
             enrich=False,
         )
-        assert meta == {"enabled": True, "available": True, "reviewed": 2, "review_limit": 2}
+        assert meta == {
+            "enabled": True,
+            "available": True,
+            "reviewed": 2,
+            "review_limit": 2,
+            "lesson_forced": 0,
+        }
         assert warnings == []
         assert len(reviewer.calls) == 2
         c = candidates[0]
@@ -96,6 +102,73 @@ def test_apply_llm_reviews_review_limit_truncates():
         assert candidates[0]["llm_review"]  # reviewed
         assert candidates[2]["llm_review_status"] == "skipped_by_review_limit"
         assert "llm_review" not in candidates[2]
+
+    asyncio.run(run())
+
+
+def test_apply_llm_reviews_forces_lesson_matching_candidate_past_limit():
+    """A candidate ranked beyond review_limit but matching an active lesson is
+    pulled into the review window (bounded by lesson_extra_cap) so the
+    reflection loop actually influences it."""
+    async def run():
+        reviewer = _FakeReviewer({"llm_view": "neutral", "llm_confidence": 50, "reasoning": "中性"})
+        candidates = [_candidate(f"60000{i}.SH", 80) for i in range(4)]
+        # Rank-3 candidate (index 3, beyond review_limit=1) carries the industry
+        # that an active industry-scope lesson targets.
+        candidates[3]["industry"] = "房地产"
+        lessons = [
+            {
+                "id": "L1",
+                "lesson_type": "neutral_missed_upside",
+                "scope": "industry",
+                "target": "地产",
+                "finding": "地产板块近期超额显著",
+                "confidence": "high",
+            }
+        ]
+        warnings, meta = await apply_llm_reviews(
+            candidates,
+            config={"daily_pipeline_llm_review_lesson_extra": 4},
+            trade_date="2026-06-30",
+            style="medium_term",
+            reviewer=reviewer,
+            review_limit=1,
+            strategy_lessons=lessons,
+            enrich=False,
+        )
+        assert meta["reviewed"] == 2  # rank-0 + forced rank-3
+        assert meta["lesson_forced"] == 1
+        assert candidates[0]["llm_review"]  # in-window
+        assert candidates[3]["llm_review"]  # forced in by lesson hit
+        assert [h["id"] for h in candidates[3]["strategy_lesson_hits"]] == ["L1"]
+        # A non-matching out-of-window candidate stays skipped.
+        assert candidates[1]["llm_review_status"] == "skipped_by_review_limit"
+        assert "llm_review" not in candidates[1]
+
+    asyncio.run(run())
+
+
+def test_apply_llm_reviews_lesson_extra_disabled_keeps_truncation():
+    """With lesson_extra=0 (or unset) a lesson-matching candidate past the limit
+    is NOT forced in, preserving the strict truncation behaviour."""
+    async def run():
+        reviewer = _FakeReviewer({"llm_view": "neutral", "llm_confidence": 50, "reasoning": "中性"})
+        candidates = [_candidate(f"60000{i}.SH", 80) for i in range(4)]
+        candidates[3]["industry"] = "房地产"
+        lessons = [{"id": "L1", "scope": "industry", "target": "地产", "finding": "x"}]
+        warnings, meta = await apply_llm_reviews(
+            candidates,
+            config={},  # lesson_extra defaults to 0 in the runner
+            trade_date="2026-06-30",
+            style="medium_term",
+            reviewer=reviewer,
+            review_limit=1,
+            strategy_lessons=lessons,
+            enrich=False,
+        )
+        assert meta["reviewed"] == 1
+        assert meta["lesson_forced"] == 0
+        assert candidates[3]["llm_review_status"] == "skipped_by_review_limit"
 
     asyncio.run(run())
 

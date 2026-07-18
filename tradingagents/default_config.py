@@ -32,6 +32,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_API_AUTH_TOKEN":       "api_auth_token",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_ENABLED": "daily_pipeline_llm_review_enabled",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LIMIT": "daily_pipeline_llm_review_limit",
+    "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LESSON_EXTRA": "daily_pipeline_llm_review_lesson_extra",
     "TRADINGAGENTS_DAILY_PIPELINE_BOARD_FILTER": "daily_pipeline_board_filter",
 }
 
@@ -196,7 +197,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # quick LLM only reviews the top N candidates to keep latency and cost
     # bounded.
     "daily_pipeline_llm_review_enabled": True,
-    "daily_pipeline_llm_review_limit": 5,
+    "daily_pipeline_llm_review_limit": 8,
+    # Candidates ranked beyond the review limit but matching an ACTIVE strategy
+    # lesson are pulled into the review window (bounded by this cap) so the
+    # reflection loop's lessons actually influence matching candidates.
+    "daily_pipeline_llm_review_lesson_extra": 4,
     # all | main_board | dual_growth_only. main_board excludes STAR/ChiNext
     # to avoid repeated high-beta 双创 recommendations when the user wants
     # steadier A-share main-board candidates.
