@@ -287,8 +287,8 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* Lower grid: Timeline + Quick Actions + Reflection */}
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {/* Lower widgets: balanced masonry columns so no single column runs empty */}
+      <div className="gap-x-5 sm:columns-2 xl:columns-3 [&>*]:mb-5 [&>*]:break-inside-avoid">
         <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
           <div className="mb-4 flex items-center gap-2">
             <Clock className="h-4 w-4 text-teal-300" />
@@ -309,8 +309,7 @@ export default function Dashboard() {
           )}
         </section>
 
-        <div className="flex flex-col gap-4">
-          {/* Quick Actions */}
+        {/* Quick Actions */}
           <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
             <div className="mb-3 flex items-center gap-2">
               <Rocket className="h-4 w-4 text-teal-300" />
@@ -366,7 +365,6 @@ export default function Dashboard() {
           {/* Reflection Summary Card */}
           <ReflectionSummaryCard data={reflectionQuery.data} />
           <ReflectionQueueCard />
-        </div>
       </div>
 
       {/* Filter Modal */}
