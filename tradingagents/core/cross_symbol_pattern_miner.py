@@ -41,6 +41,11 @@ class PatternBucket:
     neutral_excesses: list[float] = field(default_factory=list)
     neutral_avg_excess: float = 0.0
     neutral_consistency: float = 0.0
+    # How many of the bucket's neutral excesses used the sector-adjusted basis
+    # (stock return minus its industry index) rather than broad-market excess.
+    # For industry-scope buckets this strips sector beta so 板块普跌/普涨 is not
+    # mistaken for stock-selection skill; 0 means a pure broad-market basis.
+    neutral_sector_adjusted_n: int = 0
     # Distinct ISO-week signal-date windows covered by the neutral cases, used
     # by the regime guardrail (a spurious one-off event clusters in one week).
     neutral_periods: set[str] = field(default_factory=set)
@@ -726,6 +731,22 @@ class CrossSymbolPatternMiner:
         iso = d.isocalendar()
         return f"{iso[0]}-W{iso[1]:02d}"
 
+    @staticmethod
+    def _neutral_basis(bucket: PatternBucket) -> str:
+        """Label how a neutral bucket's excess was measured.
+
+        ``sector_adjusted`` means every case's excess was measured against its
+        industry index (sector beta stripped); ``broad`` means broad-market
+        excess throughout; ``mixed`` means some cases lacked an industry index
+        and fell back to broad excess. Only industry-scope buckets can be
+        sector-adjusted.
+        """
+        total = len(bucket.neutral_excesses)
+        adjusted = bucket.neutral_sector_adjusted_n
+        if bucket.scope != "industry" or adjusted == 0:
+            return "broad"
+        return "sector_adjusted" if adjusted == total else "mixed"
+
     def _aggregate_neutral(self, cases: list[dict[str, Any]]) -> list[PatternBucket]:
         """Group neutral cases by injectable feature dimensions, tracking excess.
 
@@ -737,15 +758,24 @@ class CrossSymbolPatternMiner:
         for case in cases:
             outcome = self._safe_json(case.get("outcome_payload"))
             try:
-                excess = float(outcome.get("excess_return"))
+                broad_excess = float(outcome.get("excess_return"))
             except (TypeError, ValueError):
                 continue
+            sector_raw = outcome.get("sector_excess_return")
+            sector_excess = (
+                float(sector_raw) if isinstance(sector_raw, (int, float)) else None
+            )
             feats = self._extract_features(case)
             period = self._period_key(case.get("signal_date"))
             for dim_key, dim_value in feats.items():
                 scope, target = self._neutral_scope_target(dim_key, dim_value)
                 if scope is None:
                     continue
+                # For industry-scope buckets, prefer the sector-adjusted excess
+                # so a whole-sector move isn't credited to stock selection;
+                # fall back to broad excess when the industry index is missing.
+                use_sector = scope == "industry" and sector_excess is not None
+                eff_excess = sector_excess if use_sector else broad_excess
                 dimension = f"neutral:{dim_key}={dim_value}"
                 bucket = buckets.get(dimension)
                 if bucket is None:
@@ -753,7 +783,9 @@ class CrossSymbolPatternMiner:
                     bucket.scope = scope
                     bucket.target = target
                     buckets[dimension] = bucket
-                bucket.neutral_excesses.append(excess)
+                bucket.neutral_excesses.append(eff_excess)
+                if use_sector:
+                    bucket.neutral_sector_adjusted_n += 1
                 if period:
                     bucket.neutral_periods.add(period)
                 bucket.samples.append({"symbol": case.get("symbol", ""), "id": case.get("id", "")})
@@ -823,9 +855,12 @@ class CrossSymbolPatternMiner:
         avg = bucket.neutral_avg_excess
         n = len(bucket.neutral_excesses)
         cons = bucket.neutral_consistency
+        # Sector-adjusted industry buckets are measured against the industry
+        # index, so name that basis explicitly; broad buckets stay "基准".
+        ref = "行业指数" if self._neutral_basis(bucket) == "sector_adjusted" else "基准"
         if avg > 0:
             finding = (
-                f"样本期内，{base} 的观望决策平均跑赢基准 {avg:.1%}"
+                f"样本期内，{base} 的观望决策平均跑赢{ref} {avg:.1%}"
                 f"（n={n}，同向 {cons:.0%}），疑似过滤/降级过严错过机会。"
             )
             adjustment = (
@@ -833,7 +868,7 @@ class CrossSymbolPatternMiner:
             )
         else:
             finding = (
-                f"样本期内，{base} 的观望决策平均跑输基准 {abs(avg):.1%}"
+                f"样本期内，{base} 的观望决策平均跑输{ref} {abs(avg):.1%}"
                 f"（n={n}，同向 {cons:.0%}），观望规避有效。"
             )
             adjustment = (
@@ -858,6 +893,7 @@ class CrossSymbolPatternMiner:
         lesson_id = _lesson_id_from_finding(bucket.dimension)
         n = len(bucket.neutral_excesses)
         pattern = "missed_upside" if bucket.neutral_avg_excess > 0 else "validated_avoidance"
+        basis = self._neutral_basis(bucket)
         payload = {
             "dimension": bucket.dimension,
             "kind": "neutral",
@@ -868,6 +904,8 @@ class CrossSymbolPatternMiner:
             "distinct_periods": bucket.neutral_distinct_periods,
             "scope": bucket.scope,
             "target": bucket.target,
+            "basis": basis,
+            "sector_adjusted_n": bucket.neutral_sector_adjusted_n,
         }
         confidence = self._excess_to_confidence(bucket.neutral_avg_excess)
 

@@ -16,6 +16,29 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# Coarse industry group -> representative SW L1 industry index code. Used to
+# strip sector beta from a neutral case's excess so a whole-sector move
+# (板块普跌/普涨) is not mistaken for stock-selection skill. Keys mirror the
+# coarse groups produced by ``industry_taxonomy.normalize_industry``. This is a
+# best-effort approximation (some coarse groups span more than one SW L1
+# index); override or extend it via the ``reflection_industry_index_map``
+# config key.
+_DEFAULT_INDUSTRY_INDEX_MAP: dict[str, str] = {
+    "白酒": "801120.SI",   # 食品饮料
+    "新能源": "801730.SI",  # 电力设备
+    "半导体": "801080.SI",  # 电子
+    "金融": "801780.SI",   # 银行
+    "有色": "801050.SI",   # 有色金属
+    "医药": "801150.SI",   # 医药生物
+    "消费": "801120.SI",   # 食品饮料
+    "制造": "801890.SI",   # 机械设备
+    "科技": "801750.SI",   # 计算机
+    "地产": "801180.SI",   # 房地产
+    "化工": "801030.SI",   # 基础化工
+    "汽车": "801880.SI",   # 汽车
+}
+
+
 def _convert_ticker_for_yahoo(ts_code: str) -> str:
     """Convert A-share ts_code format to Yahoo Finance format.
 
@@ -244,28 +267,81 @@ class ReflectionEngine:
             or "000300.SH"
         )
         try:
-            from tradingagents.core.mcp_client import get_mcp_client
-
-            client = await get_mcp_client(self.config)
-            if client is None or not hasattr(client, "get_index_daily"):
-                return None
-            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
-            payload = await client.get_index_daily(
-                symbol, signal_date.replace("-", ""), end_dt.strftime("%Y%m%d")
-            )
-            if not isinstance(payload, dict):
-                return None
-            rows = payload.get("data") or payload.get("rows") or []
-            if not isinstance(rows, list):
-                return None
-            result = self._compute_return_from_rows(rows, signal_date, horizon_days)
-            if result:
-                result["benchmark_symbol"] = symbol
-                result["source"] = str(payload.get("source") or "mcp_index")
-            return result
+            result = await self._fetch_index_return(symbol, signal_date, horizon_days)
         except Exception as exc:
             logger.debug("Benchmark return fetch failed for %s: %s", symbol, exc)
             return None
+        if result:
+            result["benchmark_symbol"] = symbol
+        return result
+
+    async def fetch_industry_return(
+        self,
+        industry: str,
+        signal_date: str,
+        horizon_days: int,
+    ) -> dict[str, Any] | None:
+        """Fetch the industry index return over the horizon for a raw industry name.
+
+        The raw industry is normalized to a coarse group and mapped to a
+        representative SW L1 industry index. Subtracting this from a stock's
+        return isolates stock-specific selection from a broad sector move
+        (选股规避 vs 板块普跌). Best-effort: returns ``None`` when the industry has
+        no mapped index or the index tool is unavailable, so callers can keep
+        using the broad-market excess.
+        """
+        from tradingagents.core.industry_taxonomy import normalize_industry
+
+        group = normalize_industry(industry)
+        if not group:
+            return None
+        index_map = {
+            **_DEFAULT_INDUSTRY_INDEX_MAP,
+            **(self.config.get("reflection_industry_index_map") or {}),
+        }
+        code = index_map.get(group)
+        if not code:
+            return None
+        try:
+            result = await self._fetch_index_return(code, signal_date, horizon_days)
+        except Exception as exc:
+            logger.debug("Industry return fetch failed for %s (%s): %s", group, code, exc)
+            return None
+        if result:
+            result["industry_group"] = group
+            result["industry_index_symbol"] = code
+        return result
+
+    async def _fetch_index_return(
+        self,
+        symbol: str,
+        signal_date: str,
+        horizon_days: int,
+    ) -> dict[str, Any] | None:
+        """Shared index-return fetch used by benchmark and industry helpers.
+
+        Returns a dict with ``actual_return`` over the horizon (plus ``source``)
+        or ``None`` when the index tool is unavailable or returns no usable
+        rows. Callers annotate the result with their own symbol metadata.
+        """
+        from tradingagents.core.mcp_client import get_mcp_client
+
+        client = await get_mcp_client(self.config)
+        if client is None or not hasattr(client, "get_index_daily"):
+            return None
+        end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
+        payload = await client.get_index_daily(
+            symbol, signal_date.replace("-", ""), end_dt.strftime("%Y%m%d")
+        )
+        if not isinstance(payload, dict):
+            return None
+        rows = payload.get("data") or payload.get("rows") or []
+        if not isinstance(rows, list):
+            return None
+        result = self._compute_return_from_rows(rows, signal_date, horizon_days)
+        if result:
+            result["source"] = str(payload.get("source") or "mcp_index")
+        return result
 
     def evaluate_accuracy(self, original_decision: str, actual_return: float) -> bool | None:
         """Determine if the original decision was directionally correct.
@@ -588,6 +664,20 @@ class ReflectionEngine:
                         outcome["excess_return"] = round(
                             float(outcome["actual_return"]) - float(benchmark["actual_return"]), 4
                         )
+                    # Sector beta decomposition: subtracting the same-window
+                    # industry index return isolates a stock-specific move from
+                    # a whole-sector swing (选股规避 vs 板块普跌). Best-effort; the
+                    # miner falls back to broad excess when this is absent.
+                    industry = str((case.get("snapshot_payload") or {}).get("industry") or "")
+                    if industry:
+                        sector = await self.fetch_industry_return(industry, signal_date, case_horizon)
+                        if sector is not None and isinstance(sector.get("actual_return"), (int, float)):
+                            outcome["industry_group"] = sector.get("industry_group")
+                            outcome["industry_index_symbol"] = sector.get("industry_index_symbol")
+                            outcome["industry_index_return"] = sector.get("actual_return")
+                            outcome["sector_excess_return"] = round(
+                                float(outcome["actual_return"]) - float(sector["actual_return"]), 4
+                            )
                 evidence = await self.fetch_post_signal_evidence(symbol, signal_date, case_horizon)
                 attribution = await self.generate_attribution(case, outcome, evidence)
                 lesson = self.maybe_create_strategy_lesson(case, attribution)

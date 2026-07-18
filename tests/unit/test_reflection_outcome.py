@@ -254,3 +254,75 @@ def test_evaluate_accuracy_neutral_excluded_from_gate(engine, decision):
     """Neutral decisions stay None so the directional win-rate gate is unaffected."""
     assert engine.evaluate_accuracy(decision, 0.12) is None
     assert engine.evaluate_accuracy(decision, -0.12) is None
+
+
+class _FakeIndexClient:
+    """MCP client stub returning a fixed index series for get_index_daily."""
+
+    def __init__(self, ret: float = 0.10):
+        self.calls: list[str] = []
+        self._ret = ret
+
+    async def get_index_daily(self, index_code, start_date, end_date):
+        self.calls.append(index_code)
+        base = 100.0
+        return {
+            "source": "mcp_index",
+            "rows": [
+                {"trade_date": start_date, "close": base},
+                {"trade_date": end_date, "close": base * (1 + self._ret)},
+            ],
+        }
+
+
+@pytest.mark.unit
+def test_fetch_industry_return_maps_group_to_index(engine, monkeypatch):
+    """A raw industry normalizes to a coarse group and resolves to its index."""
+    client = _FakeIndexClient(ret=0.08)
+
+    async def fake_get_mcp_client(config):
+        return client
+
+    import tradingagents.core.mcp_client as mcp_client
+
+    monkeypatch.setattr(mcp_client, "get_mcp_client", fake_get_mcp_client)
+    # 房地产开发 -> coarse group 地产 -> 801180.SI
+    result = asyncio.run(engine.fetch_industry_return("房地产开发", "2026-07-03", 1))
+    assert result is not None
+    assert result["industry_group"] == "地产"
+    assert result["industry_index_symbol"] == "801180.SI"
+    assert client.calls == ["801180.SI"]
+    assert result["actual_return"] == pytest.approx(0.08, abs=1e-6)
+
+
+@pytest.mark.unit
+def test_fetch_industry_return_none_for_unmapped_industry(engine, monkeypatch):
+    """An industry with no coarse-group mapping yields None (no index call)."""
+    client = _FakeIndexClient()
+
+    async def fake_get_mcp_client(config):
+        return client
+
+    import tradingagents.core.mcp_client as mcp_client
+
+    monkeypatch.setattr(mcp_client, "get_mcp_client", fake_get_mcp_client)
+    assert asyncio.run(engine.fetch_industry_return("零号行业", "2026-07-03", 1)) is None
+    assert client.calls == []
+
+
+@pytest.mark.unit
+def test_fetch_industry_return_config_override(engine, monkeypatch):
+    """reflection_industry_index_map overrides/extends the default map."""
+    engine.config = {"reflection_industry_index_map": {"地产": "999999.SI"}}
+    client = _FakeIndexClient()
+
+    async def fake_get_mcp_client(config):
+        return client
+
+    import tradingagents.core.mcp_client as mcp_client
+
+    monkeypatch.setattr(mcp_client, "get_mcp_client", fake_get_mcp_client)
+    result = asyncio.run(engine.fetch_industry_return("地产", "2026-07-03", 1))
+    assert result is not None
+    assert result["industry_index_symbol"] == "999999.SI"
+    assert client.calls == ["999999.SI"]

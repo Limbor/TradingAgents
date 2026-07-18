@@ -710,8 +710,13 @@ def _neutral_case(
     board: str = "main",
     data_coverage: dict | None = None,
     signal_date: str = "2026-06-01",
+    sector_excess: float | None = None,
 ) -> dict:
-    """Build a reflected NEUTRAL case (was_correct=None) with an excess_return."""
+    """Build a reflected NEUTRAL case (was_correct=None) with an excess_return.
+
+    ``sector_excess`` (when given) sets ``sector_excess_return`` on the outcome,
+    the industry-index-relative excess the miner prefers for industry buckets.
+    """
     dc = data_coverage or {"valuation": "available", "flow": "available", "quality": "available"}
     snapshot = {
         "final_decision": "WATCHLIST",
@@ -728,6 +733,9 @@ def _neutral_case(
         "actual_return": excess,
         "excess_return": excess,
     }
+    if sector_excess is not None:
+        outcome["sector_excess_return"] = sector_excess
+        outcome["industry_index_symbol"] = "801050.SI"
     attribution = {
         "attribution": "validated_avoidance" if excess < 0 else "missed_upside",
         "confidence": "medium",
@@ -987,3 +995,101 @@ class TestNeutralDeactivationGovernance:
         )
         assert db._deactivated == []
         assert "lessons_deactivated" not in result
+
+
+class TestSectorBetaDecomposition:
+    """Industry buckets should prefer sector-adjusted excess over broad excess.
+
+    Separating stock selection from a whole-sector move (选股规避 vs 板块普跌): a
+    neutral bucket where every name merely tracked its sector (sector excess
+    ~0) must NOT be minted, even though the broad-market excess is large.
+    """
+
+    def test_industry_bucket_uses_sector_excess_when_present(self):
+        # Broad excess is a strong -15% but sector excess is a tiny -1%: the
+        # aggregate must reflect the sector-adjusted value, not the broad one.
+        cases = [
+            _neutral_case(f"S{i}", industry="有色", excess=-0.15,
+                          sector_excess=-0.01, signal_date=_spread(i))
+            for i in range(6)
+        ]
+        miner = CrossSymbolPatternMiner(db=_neutral_db(cases), config={})
+        buckets = {b.dimension: b for b in miner._aggregate_neutral(cases)}
+        bucket = buckets["neutral:industry=有色"]
+        assert bucket.neutral_sector_adjusted_n == 6
+        assert all(abs(e + 0.01) < 1e-9 for e in bucket.neutral_excesses)
+        assert miner._neutral_basis(bucket) == "sector_adjusted"
+
+    def test_non_industry_bucket_ignores_sector_excess(self):
+        # A factor-scope (data_coverage) bucket has no single industry index, so
+        # it must keep using broad excess even when sector_excess is present.
+        dc = {"valuation": "available", "flow": "missing", "quality": "available"}
+        cases = [
+            _neutral_case(f"F{i}", excess=-0.12, sector_excess=-0.01,
+                          data_coverage=dc, signal_date=_spread(i))
+            for i in range(6)
+        ]
+        miner = CrossSymbolPatternMiner(db=_neutral_db(cases), config={})
+        buckets = {b.dimension: b for b in miner._aggregate_neutral(cases)}
+        bucket = buckets["neutral:data_coverage.flow=missing"]
+        assert bucket.neutral_sector_adjusted_n == 0
+        assert all(abs(e + 0.12) < 1e-9 for e in bucket.neutral_excesses)
+        assert miner._neutral_basis(bucket) == "broad"
+
+    @pytest.mark.asyncio
+    async def test_sector_tracking_bucket_not_promoted(self):
+        # Whole 地产 sector fell (broad excess -15%) but each name tracked the
+        # sector (sector excess -1%): with sector adjustment the mean is below
+        # min_excess, so no stock-selection lesson is minted.
+        cases = [
+            _neutral_case(f"T{i}", industry="地产", excess=-0.15, board="",
+                          sector_excess=-0.01, signal_date=_spread(i))
+            for i in range(6)
+        ]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+        assert result["neutral_significant_buckets"] == 0
+        assert not any(
+            str(s["payload"]["dimension"]).startswith("neutral:") for s in db._saved
+        )
+
+    @pytest.mark.asyncio
+    async def test_sector_underperformer_promoted_with_sector_basis(self):
+        # Names underperformed even their own sector (sector excess -12%):
+        # genuine selection skill, promoted and labelled sector_adjusted.
+        cases = [
+            _neutral_case(f"U{i}", industry="地产", excess=-0.20, board="",
+                          sector_excess=-0.12, signal_date=_spread(i))
+            for i in range(6)
+        ]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+        assert result["neutral_significant_buckets"] >= 1
+        lesson = {s["payload"]["dimension"]: s for s in db._saved}["neutral:industry=地产"]
+        payload = lesson["payload"]
+        assert payload["basis"] == "sector_adjusted"
+        assert payload["sector_adjusted_n"] == 6
+        assert abs(payload["avg_excess"] + 0.12) < 1e-9
+        assert "行业指数" in lesson["finding"]
+
+    def test_mixed_basis_when_some_cases_lack_sector_excess(self):
+        # 4 cases carry sector excess, 2 don't (fall back to broad): the bucket
+        # basis is "mixed" and only the 4 count as sector-adjusted.
+        cases = [
+            _neutral_case(f"M{i}", industry="有色", excess=-0.15,
+                          sector_excess=-0.10, signal_date=_spread(i))
+            for i in range(4)
+        ]
+        cases += [
+            _neutral_case(f"P{i}", industry="有色", excess=-0.15, signal_date=_spread(i))
+            for i in range(2)
+        ]
+        miner = CrossSymbolPatternMiner(db=_neutral_db(cases), config={})
+        buckets = {b.dimension: b for b in miner._aggregate_neutral(cases)}
+        bucket = buckets["neutral:industry=有色"]
+        assert bucket.neutral_sector_adjusted_n == 4
+        assert len(bucket.neutral_excesses) == 6
+        assert miner._neutral_basis(bucket) == "mixed"
+

@@ -10,6 +10,18 @@ Breaking changes within the 0.x line are called out explicitly.
 
 ### Added
 
+- **Sector-beta decomposition for neutral excess.** The reflection engine now
+  computes a `sector_excess_return` for neutral cases (stock return minus the
+  same-window industry index return); the raw industry is normalized to a
+  coarse group and mapped to a representative SW L1 industry index
+  (`reflection_industry_index_map` overrides the default). `CrossSymbolPatternMiner`
+  prefers this sector-adjusted excess for industry-scope buckets (falling back
+  to broad-market excess per case when the index is missing) and records the
+  `basis` (`sector_adjusted`/`mixed`/`broad`) plus `sector_adjusted_n` in the
+  lesson payload. A whole-sector move where every name merely tracks its sector
+  (sector excess ≈ 0) is no longer minted as a stock-selection lesson—only
+  names that underperform their own sector qualify. Best-effort: with no mapped
+  index or a failed fetch it degrades to the previous broad-market behavior.
 - **Neutral-decision reflection attribution.** WATCHLIST/HOLD/MONITOR calls
   (whose `was_correct` is `None`) are now scored by excess return over the
   benchmark: a positive excess yields a `missed_upside` lesson (filter too
