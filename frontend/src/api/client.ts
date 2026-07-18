@@ -357,6 +357,14 @@ export async function minePatterns(): Promise<{ status: string; message: string 
   return fetchJson(`${API_BASE}/reflections/mine-patterns`, { method: "POST" });
 }
 
+export async function deactivateLesson(
+  lessonId: string
+): Promise<{ status: string; lesson_id: string; message: string }> {
+  return fetchJson(`${API_BASE}/strategy-lessons/${encodeURIComponent(lessonId)}/deactivate`, {
+    method: "POST",
+  });
+}
+
 export async function saveCandidateAction(body: {
   action: "adopt" | "plan" | "executed" | "watch" | "observe" | "private" | "private_review" | "ignore" | "dismiss";
   symbol: string;

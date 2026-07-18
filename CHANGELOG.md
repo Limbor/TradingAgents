@@ -38,7 +38,18 @@ Breaking changes within the 0.x line are called out explicitly.
   badges, confidence, scope/target, evidence count, and — for neutral lessons —
   distinct ISO weeks and mean excess), and reflection cases with attribution
   badges (missed_upside / validated_avoidance / win / loss) plus excess return.
-  Includes manual "run reflection" and "mine patterns" triggers.
+  Includes manual "run reflection" and "mine patterns" triggers. Each lesson
+  card now expands to a detail drawer (type, sample size, consistency, mean
+  excess, win rate, distinct weeks, expiry) and active lessons can be manually
+  retired via a new `POST /strategy-lessons/{id}/deactivate` endpoint so a bad
+  lesson stops being injected without waiting for the deactivation sweep.
+
+- **Lesson-priority LLM review.** Candidates ranked beyond the daily-pipeline
+  review limit but matching an *active* strategy lesson are now pulled into the
+  review window (bounded by `daily_pipeline_llm_review_lesson_extra`, default
+  4), so the reflection loop's lessons actually influence matching candidates
+  regardless of quant rank. The default review limit was also raised from 5 to
+  8 (`daily_pipeline_llm_review_limit`) to widen lesson-injection coverage.
 
 ### Fixed
 

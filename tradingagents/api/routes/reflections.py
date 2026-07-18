@@ -38,6 +38,12 @@ class TriggerResponse(BaseModel):
     message: str
 
 
+class LessonDeactivateResponse(BaseModel):
+    status: str
+    lesson_id: str
+    message: str
+
+
 class ReflectionCaseItem(BaseModel):
     id: str
     source_type: str
@@ -161,6 +167,25 @@ async def list_strategy_lessons(
         limit=limit,
     )
     return [StrategyLessonItem(**row) for row in rows]
+
+
+@router.post("/strategy-lessons/{lesson_id}/deactivate", response_model=LessonDeactivateResponse)
+async def deactivate_strategy_lesson(request: Request, lesson_id: str):
+    """Manually retire a strategy lesson (sets active=0) so it stops being
+    injected into future candidate reviews. Returns ``status="not_found"`` only
+    when no lesson row matches the id."""
+    updated = request.app.state.db.deactivate_strategy_lesson(lesson_id)
+    if updated:
+        return LessonDeactivateResponse(
+            status="ok",
+            lesson_id=lesson_id,
+            message="Lesson deactivated; it will no longer be injected.",
+        )
+    return LessonDeactivateResponse(
+        status="not_found",
+        lesson_id=lesson_id,
+        message="No active lesson matched the given id.",
+    )
 
 
 @router.post("/candidate-actions", response_model=CandidateActionResponse)

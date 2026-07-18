@@ -551,7 +551,8 @@ Chat 层已完成四类意图分流：
 2. 为 DailyPipeline 增加可选 Top N 深度 StockAnalysisSkill 串联，并把深度结论回写 candidate payload。
 3. 扩展 StrategyBacktest 的 walk-forward/ablation 对比和执行滑点明细，不增加任意参数搜索器。
 4. 扩展 Playwright 到真实后端的预发布 smoke；CI 合约 mock 负责稳定验证前端主流程。
-5. `/reflection` 评测页已上线（KPI/经验库/案例/手动触发）；待增强：经验详情抽屉（展开支撑证据 case、lesson 历史 avg_excess/consistency 趋势）、手动停用 lesson 入口、Vitest 覆盖。
+5. `/reflection` 评测页已上线（KPI/经验库/案例/手动触发），并已增强：经验详情抽屉（类型/样本量/一致率/平均超额/胜率/跨周数/失效）、手动停用 lesson 入口（`POST /strategy-lessons/{id}/deactivate`）、helpers 抽出并加 13 条 Vitest 覆盖。**待增强**：经验历史趋势图（avg_excess/consistency 随时间）、按支撑证据反查 case。
+6. **DailyPipeline 复核扩容已落地**：`daily_pipeline_llm_review_limit` 5→8，且新增 lesson 优先复核——排名超限但命中活跃 lesson 的候选被有界拉入复核窗（`daily_pipeline_llm_review_lesson_extra`，默认 4），使刚修复的注入链路对高排名之外的候选也真正生效。
 
 ### 10.2 代码质量
 

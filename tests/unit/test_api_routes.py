@@ -375,3 +375,33 @@ def test_timeline_endpoint(client):
     res = client.get("/api/v1/timeline?since=today&limit=5")
     assert res.status_code == 200
     assert isinstance(res.json(), list)
+
+
+def test_deactivate_strategy_lesson(client):
+    """Manual lesson retirement flips active=0 and drops it from the active list."""
+    db = client.app.state.db
+    db.save_strategy_lesson(
+        lesson_id="L-manual",
+        lesson_type="neutral_missed_upside",
+        scope="industry",
+        finding="地产板块超额",
+        target="地产",
+        confidence="high",
+        active=True,
+    )
+    # Visible in the active list before retirement.
+    res = client.get("/api/v1/strategy-lessons?active_only=true")
+    assert any(row["id"] == "L-manual" for row in res.json())
+
+    res = client.post("/api/v1/strategy-lessons/L-manual/deactivate")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+    # Gone from the active list after retirement.
+    res = client.get("/api/v1/strategy-lessons?active_only=true")
+    assert all(row["id"] != "L-manual" for row in res.json())
+
+    # An unknown id reports not_found (the UPDATE matches no row).
+    res = client.post("/api/v1/strategy-lessons/L-unknown/deactivate")
+    assert res.status_code == 200
+    assert res.json()["status"] == "not_found"

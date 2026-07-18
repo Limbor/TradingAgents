@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Brain, Lightbulb, RefreshCw, Sparkles, Target } from "lucide-react";
+import { Brain, ChevronDown, Lightbulb, RefreshCw, Sparkles, Target } from "lucide-react";
 import {
+  deactivateLesson,
   getReflectionSummary,
   listReflectionCases,
   listStrategyLessons,
@@ -12,6 +13,15 @@ import {
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { displayNameOf } from "@/components/common/StockName";
+import {
+  attributionMeta,
+  caseAttribution,
+  caseExcess,
+  caseOriginalDecision,
+  confidenceCls,
+  formatPct,
+  lessonMetrics,
+} from "./helpers";
 
 const LOOKBACKS = [7, 30, 90] as const;
 const CASE_STATUSES = [
@@ -70,6 +80,21 @@ export default function Reflection() {
     qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
     qc.invalidateQueries({ queryKey: ["reflection-cases"] });
     qc.invalidateQueries({ queryKey: ["reflections-summary"] });
+  };
+
+  const handleDeactivate = async (id: string) => {
+    setError(null); setNotice(null);
+    try {
+      const res = await deactivateLesson(id);
+      if (res.status === "ok") {
+        setNotice("经验已停用，后续复核不再注入。");
+        qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
+      } else {
+        setError("未找到该经验，可能已被移除。");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "停用经验失败");
+    }
   };
 
   const s = summary.data;
@@ -168,7 +193,7 @@ export default function Reflection() {
         )}
         <div className="grid gap-2 md:grid-cols-2">
           {(lessons.data ?? []).map((lesson) => (
-            <LessonCard key={lesson.id} lesson={lesson} />
+            <LessonCard key={lesson.id} lesson={lesson} onDeactivate={handleDeactivate} />
           ))}
         </div>
       </section>
@@ -223,18 +248,32 @@ export default function Reflection() {
   );
 }
 
-function LessonCard({ lesson }: { lesson: StrategyLesson }) {
-  const dimension = String((lesson.payload?.dimension as string) ?? "");
-  const isNeutral = dimension.startsWith("neutral:");
-  const distinctPeriods = Number(lesson.payload?.distinct_periods ?? 0);
-  const avgExcess = lesson.payload?.avg_excess;
-  const winRate = lesson.payload?.win_rate;
+function LessonCard({
+  lesson,
+  onDeactivate,
+}: {
+  lesson: StrategyLesson;
+  onDeactivate: (id: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [retiring, setRetiring] = useState(false);
+  const m = lessonMetrics(lesson);
+
+  const retire = async () => {
+    setRetiring(true);
+    try {
+      await onDeactivate(lesson.id);
+    } finally {
+      setRetiring(false);
+    }
+  };
+
   return (
     <div className={`rounded-lg border p-3 ${lesson.active ? "border-stone-800 bg-stone-950" : "border-stone-800/60 bg-stone-950/40 opacity-70"}`}>
       <div className="mb-1.5 flex items-center gap-2">
         <ConfidenceBadge confidence={lesson.confidence} />
-        <span className={`rounded px-1.5 py-0.5 text-[10px] ${isNeutral ? "border border-sky-500/30 text-sky-300" : "border border-amber-500/30 text-amber-300"}`}>
-          {isNeutral ? "中性通道" : "方向通道"}
+        <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.isNeutral ? "border border-sky-500/30 text-sky-300" : "border border-amber-500/30 text-amber-300"}`}>
+          {m.isNeutral ? "中性通道" : "方向通道"}
         </span>
         {lesson.scope !== "global" && (
           <span className="rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-400">
@@ -249,24 +288,59 @@ function LessonCard({ lesson }: { lesson: StrategyLesson }) {
         <p className="mt-1 text-xs text-stone-400">建议：{lesson.suggested_adjustment}</p>
       )}
       <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-stone-500">
-        {isNeutral && distinctPeriods > 0 && <span>跨 {distinctPeriods} 个 ISO 周</span>}
-        {typeof avgExcess === "number" && <span>平均超额 {(avgExcess * 100).toFixed(2)}%</span>}
-        {typeof winRate === "number" && <span>胜率 {(winRate * 100).toFixed(1)}%</span>}
+        {m.isNeutral && m.distinctPeriods > 0 && <span>跨 {m.distinctPeriods} 个 ISO 周</span>}
+        {m.avgExcess !== null && <span>平均超额 {formatPct(m.avgExcess, 2, true)}</span>}
+        {m.winRate !== null && <span>胜率 {formatPct(m.winRate, 1)}</span>}
       </div>
+
+      <div className="mt-2 flex items-center gap-3 border-t border-stone-800/70 pt-2">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-1 text-[10px] text-stone-500 transition hover:text-stone-300"
+        >
+          <ChevronDown className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`} />
+          {open ? "收起详情" : "展开详情"}
+        </button>
+        {lesson.active && (
+          <button
+            onClick={retire}
+            disabled={retiring}
+            className="ml-auto rounded border border-stone-700 px-2 py-0.5 text-[10px] text-stone-400 transition hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
+          >
+            {retiring ? "停用中..." : "停用"}
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-stone-500">
+          <Detail label="类型" value={lesson.lesson_type} />
+          <Detail label="样本量" value={m.sampleSize !== null ? String(m.sampleSize) : "—"} />
+          <Detail label="一致率" value={formatPct(m.consistency, 1)} />
+          <Detail label="平均超额" value={formatPct(m.avgExcess, 2, true)} />
+          <Detail label="胜率" value={formatPct(m.winRate, 1)} />
+          <Detail label="跨周数" value={m.distinctPeriods > 0 ? String(m.distinctPeriods) : "—"} />
+          {lesson.expires_at && <Detail label="失效" value={lesson.expires_at.slice(0, 10)} />}
+          <Detail label="更新" value={lesson.updated_at.slice(0, 10)} />
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <dt className="text-stone-600">{label}</dt>
+      <dd className="font-mono text-stone-400">{value}</dd>
     </div>
   );
 }
 
 function CaseRow({ item }: { item: ReflectionCase }) {
-  const attribution = String((item.attribution_payload?.attribution as string) ?? "");
-  const excess =
-    (item.attribution_payload?.excess_return as number | undefined) ??
-    (item.outcome_payload?.excess_return as number | undefined);
-  const original = String(
-    (item.snapshot_payload?.final_decision as string) ??
-      (item.snapshot_payload?.quant_decision as string) ??
-      item.source_type
-  );
+  const attribution = caseAttribution(item);
+  const excess = caseExcess(item);
+  const original = caseOriginalDecision(item);
   return (
     <div className="flex items-center justify-between gap-3 rounded border border-stone-800 bg-stone-950 px-3 py-2">
       <div className="min-w-0">
@@ -282,9 +356,9 @@ function CaseRow({ item }: { item: ReflectionCase }) {
           {item.status === "pending" && <span className="ml-1 text-amber-400/80">待反思</span>}
         </div>
       </div>
-      {typeof excess === "number" && (
+      {excess !== null && (
         <span className={`shrink-0 font-mono text-xs ${excess >= 0 ? "text-emerald-300" : "text-red-300"}`}>
-          超额 {excess >= 0 ? "+" : ""}{(excess * 100).toFixed(2)}%
+          超额 {formatPct(excess, 2, true)}
         </span>
       )}
     </div>
@@ -296,24 +370,12 @@ function AttributionBadge({ attribution, status }: { attribution: string; status
     if (status === "pending") return null;
     return <span className="rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-400">已复盘</span>;
   }
-  const map: Record<string, { label: string; cls: string }> = {
-    missed_upside: { label: "机会错失", cls: "border-amber-500/30 text-amber-300" },
-    validated_avoidance: { label: "规避有效", cls: "border-teal-500/30 text-teal-300" },
-    win: { label: "判断正确", cls: "border-emerald-500/30 text-emerald-300" },
-    loss: { label: "判断错误", cls: "border-red-500/30 text-red-300" },
-  };
-  const meta = map[attribution] ?? { label: attribution, cls: "border-stone-700 text-stone-400" };
+  const meta = attributionMeta(attribution);
   return <span className={`rounded border px-1.5 py-0.5 text-[10px] ${meta.cls}`}>{meta.label}</span>;
 }
 
 function ConfidenceBadge({ confidence }: { confidence: string }) {
-  const cls =
-    confidence === "high"
-      ? "border-emerald-500/40 text-emerald-300"
-      : confidence === "medium"
-      ? "border-amber-500/40 text-amber-300"
-      : "border-stone-600 text-stone-400";
-  return <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${cls}`}>{confidence}</span>;
+  return <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${confidenceCls(confidence)}`}>{confidence}</span>;
 }
 
 function Kpi({ label, value, tone = "stone" }: { label: string; value: string; tone?: "stone" | "teal" | "emerald" | "red" }) {
