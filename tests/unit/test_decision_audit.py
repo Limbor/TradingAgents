@@ -11,7 +11,10 @@ from tradingagents.api.app import create_app
 from tradingagents.core.decision_audit import DecisionAuditEngine, audit_summary
 from tradingagents.core.persistence import Database
 from tradingagents.core.reflection import ReflectionEngine
-from tradingagents.core.strategy_backtest import audit_backtest_result
+from tradingagents.core.strategy_backtest import (
+    audit_backtest_result,
+    summarize_walk_forward,
+)
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.skills.decision_audit.skill import DecisionAuditInput, DecisionAuditSkill
 from tradingagents.skills.strategy_backtest.skill import (
@@ -293,6 +296,112 @@ def test_backtest_gate_rejects_missing_provenance_and_lookahead_evidence():
     assert result["validation"]["production_gate_passed"] is False
     assert result["validation"]["missing_provenance"] == ["source", "data_version"]
     assert result["validation"]["lookahead_bias_check_passed"] is False
+
+
+def test_summarize_walk_forward_from_fold_sharpes():
+    """Per-fold sharpes drive consistency + weakest-fold + OOS-decay summary."""
+    summary = summarize_walk_forward(
+        {
+            "mean_sharpe": 0.9,
+            "fold_sharpes": [1.2, 0.8, 0.4, 1.0, 0.6],
+            "is_sharpe": 1.3,
+            "oos_sharpe": 0.9,
+        }
+    )
+    assert summary["available"] is True
+    assert summary["n_folds"] == 5
+    assert summary["positive_fold_ratio"] == 1.0
+    assert summary["min_fold_sharpe"] == 0.4
+    assert summary["consistent"] is True
+    assert summary["oos_decay"] == 0.4
+
+
+def test_summarize_walk_forward_flags_inconsistent_folds():
+    """A negative fold makes the walk-forward inconsistent (informational only)."""
+    summary = summarize_walk_forward(
+        {"splits": [{"oos_sharpe": 1.1}, {"sharpe": -0.3}, {"oos_sharpe": 0.5}]}
+    )
+    assert summary["n_folds"] == 3
+    assert summary["positive_fold_ratio"] == round(2 / 3, 4)
+    assert summary["consistent"] is False
+
+
+def test_summarize_walk_forward_graceful_without_folds():
+    """No per-fold detail -> available False so the UI can degrade."""
+    summary = summarize_walk_forward({"mean_sharpe": 0.9})
+    assert summary["available"] is False
+    assert summary["n_folds"] == 0
+
+
+def test_audit_attaches_walk_forward_slippage_and_ablation():
+    """When the result carries trades and the config declares ablations, the
+    audit surfaces execution slippage + ablation contribution alongside the
+    walk-forward summary — without gating production readiness on them."""
+    calls: dict[str, object] = {}
+
+    class MCP:
+        async def compute_purged_cv_sharpe(self, equity_curve, n_splits, purge_days):
+            return {"mean_sharpe": 0.9, "fold_sharpes": [1.0, 0.8, 0.6]}
+
+        async def analyze_execution_slippage(self, trades, participation_rates=None):
+            calls["slippage_trades"] = len(trades)
+            calls["participation"] = participation_rates
+            return {"avg_slippage_bps": 7.5, "total_cost": 1234.0}
+
+        async def run_ablation_study(self, base_experiment, ablations):
+            calls["ablations"] = list(ablations)
+            return {"base": {"sharpe": 1.0}, "variants": [{"name": "no_momentum", "sharpe": 0.4}]}
+
+    result = asyncio.run(audit_backtest_result(
+        MCP(),
+        {"total_return": 0.1, "max_drawdown": -0.1, "sharpe": 1.0,
+         "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
+         "data_version": "v1", "lookahead_bias_check_passed": True,
+         "survivorship_bias_check_passed": True,
+         "transaction_cost_bps": 10, "slippage_bps": 5,
+         "equity_curve": [{"date": "2024-01-01", "value": 1.0}],
+         "trades": [{"symbol": "600519.SH", "side": "buy", "qty": 100}]},
+        {"transaction_cost_bps": 10, "slippage_bps": 5,
+         "participation_rates": [0.1, 0.2],
+         "backtest_base_experiment": {"strategy": "ff_residual"},
+         "backtest_ablations": [{"disable": "momentum"}]},
+    ))
+    validation = result["validation"]
+    assert validation["production_gate_passed"] is True
+    assert validation["walk_forward"]["consistent"] is True
+    assert validation["execution_slippage"]["available"] is True
+    assert validation["execution_slippage"]["avg_slippage_bps"] == 7.5
+    assert validation["execution_slippage"]["trade_count"] == 1
+    assert validation["ablation_study"]["available"] is True
+    assert validation["ablation_study"]["n_ablations"] == 1
+    assert calls["slippage_trades"] == 1
+    assert calls["participation"] == [0.1, 0.2]
+    assert calls["ablations"] == [{"disable": "momentum"}]
+
+
+def test_audit_skips_addons_without_inputs_or_support():
+    """No trades / no declared ablations -> add-ons report unavailable and the
+    core gate is unaffected (backward compatible with plain MCP mocks)."""
+    class MCP:
+        async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
+            return {"mean_sharpe": 1.0}
+
+    result = asyncio.run(audit_backtest_result(
+        MCP(),
+        {"total_return": 0.1, "max_drawdown": -0.1, "sharpe": 1.0,
+         "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
+         "data_version": "v1", "lookahead_bias_check_passed": True,
+         "survivorship_bias_check_passed": True,
+         "transaction_cost_bps": 10, "slippage_bps": 5,
+         "equity_curve": [{"date": "2024-01-01", "value": 1.0}]},
+        {"transaction_cost_bps": 10, "slippage_bps": 5},
+    ))
+    validation = result["validation"]
+    assert validation["production_gate_passed"] is True
+    assert validation["execution_slippage"]["available"] is False
+    assert validation["execution_slippage"]["reason"] == "no_trades"
+    assert validation["ablation_study"]["available"] is False
+    assert validation["ablation_study"]["reason"] == "no_base_experiment"
 
 
 def test_decision_audit_skill_writes_report_artifact(tmp_path):

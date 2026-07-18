@@ -10,6 +10,35 @@ Breaking changes within the 0.x line are called out explicitly.
 
 ### Added
 
+- **Optional Top-N deep-analysis chaining in DailyPipeline.** After quant
+  ranking + LLM review, the pipeline can run the heavyweight multi-agent
+  `StockAnalysisSkill` on the Top N candidates and write its
+  `structured_conclusion` (rating/target_price/confidence/reasons/plan) back onto
+  the candidate payload under `deep_analysis`, so the signal row, screening card,
+  and reflection snapshot all carry the deep verdict. The quant+LLM selection is
+  handed off as `selection_context` so the deep pass sees why the name was
+  picked. Off by default (`daily_pipeline_deep_analysis_enabled`, limit
+  `daily_pipeline_deep_analysis_limit=1`) because each run drives the full agent
+  graph (minutes + tokens per stock); best-effort, so a failed/empty deep run
+  never blocks the pipeline.
+- **Walk-forward / ablation / execution-slippage detail in backtest auditing.**
+  `audit_backtest_result` now attaches three read-only, non-gating,
+  best-effort blocks to `validation`: a `walk_forward` stability summary
+  (pure post-processing of the purged CV — per-fold sharpe consistency,
+  positive-fold ratio, in-sample→out-of-sample decay; runs no extra backtests
+  and searches no parameters), an `execution_slippage` breakdown (opt-in MCP
+  call, only when the result carries a trade blotter), and an `ablation_study`
+  contribution table (runs only an **explicitly declared** base experiment +
+  ablation set — not a parameter sweep). Each degrades to an
+  `{"available": false, ...}` marker when its inputs are absent.
+- **Real-backend pre-release Playwright smoke.** A new env-gated smoke
+  (`E2E_REAL_BACKEND=1`, `frontend/e2e/*.smoke.ts`, `npm run test:e2e:smoke`)
+  boots the actual FastAPI server (throwaway DB, MCP degraded) alongside the
+  vite dev server via the Playwright webServer and asserts the app shell talks
+  to it end-to-end (health probe + shell render + route navigation). The default
+  `npm run test:e2e` still runs only the mocked `*.spec.ts` contract, which
+  remains the stable frontend-flow verifier; a dedicated `e2e-smoke` CI job runs
+  the real-backend pass.
 - **Sector-beta decomposition for neutral excess.** The reflection engine now
   computes a `sector_excess_return` for neutral cases (stock return minus the
   same-window industry index return); the raw industry is normalized to a

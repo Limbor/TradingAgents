@@ -181,6 +181,25 @@ class DailyPipelineSkill(BaseSkill):
             progress_pct=78,
         )
         warnings = [*warnings, *review_warnings]
+        deep_warnings, deep_meta = await _apply_deep_analysis(
+            input_params,
+            config,
+            profile,
+            candidates,
+        )
+        warnings = [*warnings, *deep_warnings]
+        if deep_meta.get("enabled"):
+            yield skill_progress(
+                stage_id="deep_analysis",
+                stage_label="Top N 深度分析",
+                status="completed",
+                detail=(
+                    f"深度分析 {deep_meta.get('analyzed', 0)} 只，"
+                    f"失败 {deep_meta.get('failed', 0)} 只"
+                ),
+                agent="Deep Analyst",
+                progress_pct=84,
+            )
         strategy_meta = quant_meta.get("strategy_meta") or {}
         quant_candidates = _candidate_cards(candidates, include_llm=False)
         reviewed_candidates = _candidate_cards(candidates, include_llm=True)
@@ -202,6 +221,7 @@ class DailyPipelineSkill(BaseSkill):
                 "quant_meta": quant_meta,
                 "strategy_meta": strategy_meta,
                 "review_meta": review_meta,
+                "deep_meta": deep_meta,
                 "profile": profile,
                 "candidates": candidates,
                 "quant_candidates": quant_candidates,
@@ -283,6 +303,7 @@ class DailyPipelineSkill(BaseSkill):
                 "quant_meta": quant_meta,
                 "strategy_meta": strategy_meta,
                 "review_meta": review_meta,
+                "deep_meta": deep_meta,
                 "quant_candidates": quant_candidates,
                 "reviewed_candidates": reviewed_candidates,
                 "decision_pack": decision_pack,
@@ -766,6 +787,7 @@ def _reflection_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
         "rationale",
         "strategy_lesson_hits",
         "lesson_adjustment_reason",
+        "deep_analysis",
     ]
     snapshot = {key: candidate.get(key) for key in keys if key in candidate}
     snapshot["candidate"] = {key: value for key, value in candidate.items() if key not in {"raw_payload"}}
@@ -914,6 +936,110 @@ async def _apply_llm_reviews(
     )
 
 
+async def _apply_deep_analysis(
+    input_params: DailyPipelineInput,
+    config: dict[str, Any],
+    profile: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, Any]]:
+    """Optionally run the heavyweight StockAnalysisSkill on the Top N candidates.
+
+    Off by default (``daily_pipeline_deep_analysis_enabled``) because it runs the
+    full multi-agent graph per stock. When enabled, each analyzed candidate's
+    structured conclusion (rating/target_price/confidence/reasons/plan) is written
+    back onto the candidate payload under ``deep_analysis`` so the signal row,
+    Library artifact, and reflection snapshot all carry the deep view. The prior
+    quant+LLM selection is handed off as ``selection_context`` so the deep pass
+    reconciles with — rather than re-derives — the pipeline's conclusion.
+    """
+    enabled = bool(config.get("daily_pipeline_deep_analysis_enabled", False))
+    limit = int(config.get("daily_pipeline_deep_analysis_limit", 1) or 0)
+    meta: dict[str, Any] = {
+        "enabled": enabled,
+        "limit": limit,
+        "analyzed": 0,
+        "failed": 0,
+        "symbols": [],
+    }
+    if not enabled or limit <= 0 or not candidates:
+        return [], meta
+
+    analysis_skill = config.get("daily_pipeline_deep_analysis_skill")
+    if analysis_skill is None:
+        from tradingagents.skills.stock_analysis.skill import StockAnalysisSkill
+
+        analysis_skill = StockAnalysisSkill()
+
+    warnings: list[str] = []
+    for candidate in candidates[:limit]:
+        symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "").strip()
+        if not symbol:
+            continue
+        selection_context = _selection_context_for(candidate, input_params.trade_date)
+        try:
+            conclusion = await _run_deep_analysis_once(
+                analysis_skill, symbol, input_params.trade_date, selection_context, config
+            )
+        except Exception as exc:  # best-effort: one failure must not abort the batch
+            meta["failed"] = int(meta["failed"]) + 1
+            warnings.append(f"Deep analysis failed for {symbol}: {exc}")
+            logger.warning("Daily pipeline deep analysis failed for %s: %s", symbol, exc)
+            continue
+        if conclusion:
+            candidate["deep_analysis"] = conclusion
+            meta["analyzed"] = int(meta["analyzed"]) + 1
+            meta["symbols"].append(symbol)
+    meta["available"] = int(meta["analyzed"]) > 0
+    return warnings, meta
+
+
+async def _run_deep_analysis_once(
+    analysis_skill: Any,
+    symbol: str,
+    trade_date: str,
+    selection_context: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Drive one StockAnalysisSkill run to completion and return its conclusion.
+
+    Consumes the skill's event stream and extracts ``structured_conclusion`` from
+    the terminal ``skill_complete`` event. Returns ``{}`` when the run yields no
+    conclusion.
+    """
+    from tradingagents.skills.stock_analysis.skill import StockAnalysisInput
+
+    params = StockAnalysisInput(
+        ticker=symbol,
+        analysis_date=trade_date,
+        selection_context=selection_context,
+    )
+    conclusion: dict[str, Any] = {}
+    async for event in analysis_skill.execute(params, config):
+        if event.event_type == "skill_complete":
+            conclusion = event.data.get("structured_conclusion") or {}
+    return conclusion
+
+
+def _selection_context_for(candidate: dict[str, Any], trade_date: str) -> dict[str, Any]:
+    """Build the selection handoff the deep analysis reconciles against.
+
+    Mirrors the fields ``stock_analysis._format_selection_context`` reads, sourced
+    from the pipeline's quant+LLM candidate.
+    """
+    action_plan = candidate.get("action_plan") or {}
+    return {
+        "final_decision": candidate.get("final_decision") or candidate.get("signal"),
+        "display_score": candidate.get("display_score") or candidate.get("final_score"),
+        "quant_score": candidate.get("quant_score"),
+        "entry_zone": action_plan.get("entry_zone"),
+        "stop_loss": action_plan.get("stop_loss"),
+        "targets": action_plan.get("targets"),
+        "action_plan": action_plan,
+        "reasoning": candidate.get("reasoning") or candidate.get("rationale"),
+        "trade_date": candidate.get("price_trade_date") or trade_date,
+    }
+
+
 def _attach_payload_meta(candidate: dict[str, Any], payload: dict[str, Any] | None) -> None:
     payload = payload or {}
     candidate["strategy_meta"] = payload.get("strategy_meta") or {}
@@ -959,6 +1085,7 @@ def _candidate_cards(candidates: list[dict[str, Any]], *, include_llm: bool) -> 
                     "strategy_lesson_hits": item.get("strategy_lesson_hits") or [],
                     "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
                     "reasoning": item.get("reasoning"),
+                    "deep_analysis": item.get("deep_analysis"),
                 }
             )
         cards.append(card)
@@ -980,6 +1107,7 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "strategy_lesson_hits": item.get("strategy_lesson_hits") or [],
             "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
             "decision_id": item.get("decision_id"),
+            "deep_analysis": item.get("deep_analysis"),
         }
         for item in candidates
     ]

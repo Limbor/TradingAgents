@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:smoke": "E2E_REAL_BACKEND=1 playwright test"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",

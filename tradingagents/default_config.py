@@ -34,6 +34,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LIMIT": "daily_pipeline_llm_review_limit",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LESSON_EXTRA": "daily_pipeline_llm_review_lesson_extra",
     "TRADINGAGENTS_DAILY_PIPELINE_BOARD_FILTER": "daily_pipeline_board_filter",
+    "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_ENABLED": "daily_pipeline_deep_analysis_enabled",
+    "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_LIMIT": "daily_pipeline_deep_analysis_limit",
 }
 
 
@@ -206,6 +208,15 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # to avoid repeated high-beta 双创 recommendations when the user wants
     # steadier A-share main-board candidates.
     "daily_pipeline_board_filter": "all",
+    # Optional deep-analysis chaining: after quant ranking + LLM review, run the
+    # heavyweight multi-agent StockAnalysisSkill on the Top N candidates and
+    # write its structured conclusion back onto the candidate payload under
+    # ``deep_analysis``. Off by default because it runs the full agent graph
+    # per stock (minutes + tokens each); enable for a nightly deep pass on the
+    # very top names. The limit is intentionally small (1) so latency/cost stay
+    # bounded even when enabled.
+    "daily_pipeline_deep_analysis_enabled": False,
+    "daily_pipeline_deep_analysis_limit": 1,
     # LLM-based intent routing (Phase 3). When enabled, messages that don't
     # match regex patterns with high confidence are forwarded to LLM for
     # tool_use-based intent recognition. Disabled by default.

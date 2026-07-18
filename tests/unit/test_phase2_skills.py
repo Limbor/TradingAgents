@@ -212,6 +212,102 @@ def test_daily_pipeline_uses_mcp_quant_rank(monkeypatch, tmp_path):
     asyncio.run(run())
 
 
+def test_daily_pipeline_deep_analysis_writes_back_conclusion(tmp_path):
+    """When enabled, the Top N candidates get a StockAnalysisSkill conclusion
+    written back onto the candidate payload (and persisted signal row)."""
+    from tradingagents.skills.base import SkillEvent
+
+    class FakeDeepSkill:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def execute(self, params, config):
+            self.calls.append(
+                {"ticker": params.ticker, "selection_context": params.selection_context}
+            )
+            yield SkillEvent(event_type="skill_start", data={"ticker": params.ticker})
+            yield SkillEvent(
+                event_type="skill_complete",
+                data={
+                    "status": "success",
+                    "structured_conclusion": {
+                        "rating": "Buy",
+                        "target_price": "120.0",
+                        "confidence": 72,
+                        "reasons": ["deep reason A", "deep reason B"],
+                        "plan": {"entry_zone": [100.0, 105.0]},
+                        "symbol": params.ticker,
+                    },
+                },
+            )
+
+    async def run():
+        db = Database(tmp_path / "daily-deep.db")
+        deep_skill = FakeDeepSkill()
+        skill = DailyPipelineSkill()
+        events = [
+            event
+            async for event in skill.execute(
+                DailyPipelineInput(limit=3, candidate_limit=5),
+                {
+                    "db": db,
+                    "stockmanager_mcp_enabled": False,
+                    "daily_pipeline_demo_fallback": True,
+                    "daily_pipeline_deep_analysis_enabled": True,
+                    "daily_pipeline_deep_analysis_limit": 2,
+                    "daily_pipeline_deep_analysis_skill": deep_skill,
+                },
+            )
+        ]
+
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidates = complete.data["candidates"]
+        # Only the Top 2 were deep-analyzed; the 3rd carries no deep_analysis.
+        assert len(deep_skill.calls) == 2
+        assert candidates[0]["deep_analysis"]["rating"] == "Buy"
+        assert candidates[1]["deep_analysis"]["confidence"] == 72
+        assert "deep_analysis" not in candidates[2]
+        # The selection handoff carried the pipeline's own decision.
+        assert deep_skill.calls[0]["selection_context"]["final_decision"] is not None
+        deep_meta = complete.data["deep_meta"]
+        assert deep_meta["enabled"] is True
+        assert deep_meta["analyzed"] == 2
+        assert deep_meta["failed"] == 0
+        # Deep conclusion is persisted on the signal payload for later reflection.
+        signals = db.list_signals(trade_date=complete.data["trade_date"])
+        top = [s for s in signals if s["payload"].get("deep_analysis")]
+        assert len(top) == 2
+        # The progress stream surfaced the deep-analysis stage.
+        assert "deep_analysis" in _progress_stage_ids(events)
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_deep_analysis_disabled_by_default(tmp_path):
+    """Deep analysis stays off unless explicitly enabled; no deep_analysis field."""
+
+    async def run():
+        db = Database(tmp_path / "daily-nodeep.db")
+        skill = DailyPipelineSkill()
+        events = [
+            event
+            async for event in skill.execute(
+                DailyPipelineInput(limit=2, candidate_limit=5),
+                {
+                    "db": db,
+                    "stockmanager_mcp_enabled": False,
+                    "daily_pipeline_demo_fallback": True,
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        assert all("deep_analysis" not in c for c in complete.data["candidates"])
+        assert complete.data["deep_meta"]["enabled"] is False
+        assert "deep_analysis" not in _progress_stage_ids(events)
+
+    asyncio.run(run())
+
+
 def test_daily_pipeline_can_exclude_dual_growth_boards(monkeypatch, tmp_path):
     calls = []
 

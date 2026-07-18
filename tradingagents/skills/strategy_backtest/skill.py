@@ -96,6 +96,7 @@ class StrategyBacktestSkill(BaseSkill):
                              end_date=values.end_date, config=payload, status=status,
                              result=stored_result)
         report = f"## 候选量化规则回测\n\n- 策略：{values.strategy_name}\n- 配置：{values.config_name}\n- 区间：{values.start_date} → {values.end_date}\n- 状态：{status}\n\n> 该结果验证 MCP 注册的量化规则，不等同于复现包含 LLM 复核的完整 DailyPipeline。"
+        report += _render_validation_section(stored_result)
         save_skill_artifact(
             config, skill_id="strategy_backtest", artifact_type="backtest_report",
             artifact_id=f"backtest:{backtest_id}", title="候选量化规则回测",
@@ -111,3 +112,38 @@ class StrategyBacktestSkill(BaseSkill):
 
     async def cancel(self) -> None:
         return None
+
+
+def _render_validation_section(stored_result: dict[str, Any]) -> str:
+    """Append a walk-forward / slippage / ablation summary when available.
+
+    All three are informational (they never gate the run); each renders only
+    when its underlying data is present so submitted (async) runs and add-on-less
+    results stay unchanged.
+    """
+    validation = stored_result.get("validation") if isinstance(stored_result, dict) else None
+    if not isinstance(validation, dict):
+        return ""
+    lines: list[str] = []
+    wf = validation.get("walk_forward") or {}
+    if wf.get("available"):
+        consistent = "一致" if wf.get("consistent") else "不一致"
+        lines.append(
+            f"- Walk-forward：{wf.get('n_folds')} 折，正收益折比 "
+            f"{wf.get('positive_fold_ratio')}，最弱折 Sharpe {wf.get('min_fold_sharpe')}（{consistent}）"
+        )
+        if wf.get("oos_decay") is not None:
+            lines.append(f"- 样本内→外 Sharpe 衰减：{wf.get('oos_decay')}")
+    slippage = validation.get("execution_slippage") or {}
+    if slippage.get("available"):
+        avg_bps = slippage.get("avg_slippage_bps") or slippage.get("mean_slippage_bps")
+        lines.append(
+            f"- 执行滑点：{slippage.get('trade_count')} 笔交易"
+            + (f"，均滑点 {avg_bps} bps" if avg_bps is not None else "")
+        )
+    ablation = validation.get("ablation_study") or {}
+    if ablation.get("available"):
+        lines.append(f"- Ablation 对比：{ablation.get('n_ablations')} 个声明变体已跑完")
+    if not lines:
+        return ""
+    return "\n\n### 验证明细\n\n" + "\n".join(lines) + "\n"
