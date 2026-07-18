@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,10 @@ class PatternBucket:
     neutral_excesses: list[float] = field(default_factory=list)
     neutral_avg_excess: float = 0.0
     neutral_consistency: float = 0.0
+    # Distinct ISO-week signal-date windows covered by the neutral cases, used
+    # by the regime guardrail (a spurious one-off event clusters in one week).
+    neutral_periods: set[str] = field(default_factory=set)
+    neutral_distinct_periods: int = 0
     # Injection scope derived from the bucket dimension (neutral channel only;
     # directional lessons stay scope="global").
     scope: str = "global"
@@ -87,6 +92,9 @@ class CrossSymbolPatternMiner:
         - ``significant_buckets``: number of statistically significant buckets
         - ``neutral_significant_buckets``: significant neutral (excess-return)
           buckets (present only when the neutral channel ran)
+        - ``neutral_regime_filtered``: neutral buckets that cleared the
+          excess/consistency bars but were dropped for spanning too few ISO
+          weeks (present only when >0)
         - ``lessons_created``: count of new lessons
         - ``lessons_updated``: count of merged/updated lessons
         """
@@ -694,6 +702,23 @@ class CrossSymbolPatternMiner:
             return "factor", dim_key.split(".", 1)[1]
         return None, ""
 
+    @staticmethod
+    def _period_key(signal_date: Any) -> str:
+        """ISO year-week key for a signal date; ``""`` when unparseable.
+
+        Cases sharing an ISO week count as one time window for the regime
+        guardrail, so a single sector event or one-day batch does not look like
+        a recurring pattern regardless of how many symbols it touched.
+        """
+        if not signal_date:
+            return ""
+        try:
+            d = date.fromisoformat(str(signal_date)[:10])
+        except ValueError:
+            return ""
+        iso = d.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+
     def _aggregate_neutral(self, cases: list[dict[str, Any]]) -> list[PatternBucket]:
         """Group neutral cases by injectable feature dimensions, tracking excess.
 
@@ -709,6 +734,7 @@ class CrossSymbolPatternMiner:
             except (TypeError, ValueError):
                 continue
             feats = self._extract_features(case)
+            period = self._period_key(case.get("signal_date"))
             for dim_key, dim_value in feats.items():
                 scope, target = self._neutral_scope_target(dim_key, dim_value)
                 if scope is None:
@@ -721,6 +747,8 @@ class CrossSymbolPatternMiner:
                     bucket.target = target
                     buckets[dimension] = bucket
                 bucket.neutral_excesses.append(excess)
+                if period:
+                    bucket.neutral_periods.add(period)
                 bucket.samples.append({"symbol": case.get("symbol", ""), "id": case.get("id", "")})
         return sorted(buckets.values(), key=lambda b: len(b.neutral_excesses), reverse=True)
 
@@ -730,9 +758,14 @@ class CrossSymbolPatternMiner:
         """Find neutral buckets with a consistent, material excess-over-benchmark.
 
         A bucket qualifies when it has ``>= cross_symbol_miner_neutral_min_samples``
-        cases, an absolute mean excess ``>= cross_symbol_miner_min_excess``, and a
-        same-sign consistency ``>= cross_symbol_miner_min_consistency``. The sign
-        of the mean excess decides the pattern: positive => missed_upside (filter
+        cases, an absolute mean excess ``>= cross_symbol_miner_min_excess``, a
+        same-sign consistency ``>= cross_symbol_miner_min_consistency``, and its
+        signal dates span ``>= cross_symbol_miner_neutral_min_periods`` distinct
+        ISO weeks. The last check is a regime guardrail: a single sector-wide
+        selloff or a one-day batch yields a strong-but-spurious excess bunched
+        in one window, so requiring recurrence across multiple weeks stops
+        market/sector-regime episodes from being minted as lessons. The sign of
+        the mean excess decides the pattern: positive => missed_upside (filter
         too strict), negative => validated_avoidance (caution paid off).
         """
         result["neutral_significant_buckets"] = 0
@@ -744,7 +777,9 @@ class CrossSymbolPatternMiner:
             return []
         min_excess = float(self._config.get("cross_symbol_miner_min_excess", 0.05))
         min_consistency = float(self._config.get("cross_symbol_miner_min_consistency", 0.6))
+        min_periods = int(self._config.get("cross_symbol_miner_neutral_min_periods", 2))
         significant: list[PatternBucket] = []
+        regime_filtered = 0
         for bucket in self._aggregate_neutral(cases):
             excesses = bucket.neutral_excesses
             n = len(excesses)
@@ -756,12 +791,23 @@ class CrossSymbolPatternMiner:
             else:
                 same = sum(1 for e in excesses if e < 0)
             consistency = same / n
+            n_periods = len(bucket.neutral_periods)
             bucket.n = n
             bucket.neutral_avg_excess = avg
             bucket.neutral_consistency = consistency
-            if abs(avg) >= min_excess and consistency >= min_consistency:
-                significant.append(bucket)
+            bucket.neutral_distinct_periods = n_periods
+            if abs(avg) < min_excess or consistency < min_consistency:
+                continue
+            if n_periods < min_periods:
+                # Passes magnitude/consistency but is concentrated in too few
+                # time windows — likely a one-off market/sector move, not a
+                # recurring edge. Skip promotion.
+                regime_filtered += 1
+                continue
+            significant.append(bucket)
         result["neutral_significant_buckets"] = len(significant)
+        if regime_filtered:
+            result["neutral_regime_filtered"] = regime_filtered
         return significant
 
     def _template_explain_neutral(self, bucket: PatternBucket) -> tuple[str, str]:
@@ -812,6 +858,7 @@ class CrossSymbolPatternMiner:
             "n": n,
             "avg_excess": round(bucket.neutral_avg_excess, 4),
             "consistency": round(bucket.neutral_consistency, 4),
+            "distinct_periods": bucket.neutral_distinct_periods,
             "scope": bucket.scope,
             "target": bucket.target,
         }

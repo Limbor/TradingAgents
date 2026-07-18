@@ -531,6 +531,7 @@ def _neutral_case(
     excess: float = -0.15,
     board: str = "main",
     data_coverage: dict | None = None,
+    signal_date: str = "2026-06-01",
 ) -> dict:
     """Build a reflected NEUTRAL case (was_correct=None) with an excess_return."""
     dc = data_coverage or {"valuation": "available", "flow": "available", "quality": "available"}
@@ -557,12 +558,23 @@ def _neutral_case(
         "id": f"case_{symbol}",
         "symbol": symbol,
         "name": symbol,
-        "signal_date": "2026-06-01",
+        "signal_date": signal_date,
         "status": "reflected",
         "snapshot_payload": snapshot,
         "outcome_payload": outcome,
         "attribution_payload": attribution,
     }
+
+
+# Two ISO weeks (2026-W23 and 2026-W25) so neutral buckets built by cycling
+# these dates span >= cross_symbol_miner_neutral_min_periods (2) distinct
+# weeks and clear the regime guardrail.
+_TWO_WEEK_DATES = ["2026-06-01", "2026-06-02", "2026-06-15", "2026-06-16"]
+
+
+def _spread(i: int) -> str:
+    """Signal date for the i-th case, cycling across two distinct ISO weeks."""
+    return _TWO_WEEK_DATES[i % len(_TWO_WEEK_DATES)]
 
 
 def _neutral_db(cases: list[dict]) -> MagicMock:
@@ -583,7 +595,10 @@ class TestNeutralChannel:
 
     @pytest.mark.asyncio
     async def test_validated_avoidance_promoted_with_industry_scope(self):
-        cases = [_neutral_case(f"N{i}", industry="有色", excess=-0.15) for i in range(6)]
+        cases = [
+            _neutral_case(f"N{i}", industry="有色", excess=-0.15, signal_date=_spread(i))
+            for i in range(6)
+        ]
         db = _neutral_db(cases)
         miner = CrossSymbolPatternMiner(db=db, config={})
         result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
@@ -603,7 +618,10 @@ class TestNeutralChannel:
 
     @pytest.mark.asyncio
     async def test_missed_upside_promoted(self):
-        cases = [_neutral_case(f"P{i}", industry="白酒", excess=0.12) for i in range(6)]
+        cases = [
+            _neutral_case(f"P{i}", industry="白酒", excess=0.12, signal_date=_spread(i))
+            for i in range(6)
+        ]
         db = _neutral_db(cases)
         miner = CrossSymbolPatternMiner(db=db, config={})
         await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
@@ -615,7 +633,10 @@ class TestNeutralChannel:
     @pytest.mark.asyncio
     async def test_factor_scope_from_missing_coverage(self):
         dc = {"valuation": "available", "flow": "missing", "quality": "available"}
-        cases = [_neutral_case(f"F{i}", excess=-0.12, data_coverage=dc) for i in range(6)]
+        cases = [
+            _neutral_case(f"F{i}", excess=-0.12, data_coverage=dc, signal_date=_spread(i))
+            for i in range(6)
+        ]
         db = _neutral_db(cases)
         miner = CrossSymbolPatternMiner(db=db, config={})
         await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
@@ -677,8 +698,12 @@ class TestNeutralChannel:
     @pytest.mark.asyncio
     async def test_neutral_min_samples_config_honoured(self):
         # 4 consistent neutral cases: promoted at neutral_min_samples=4 but not
-        # at 5, independent of the directional min_samples argument.
-        cases = [_neutral_case(f"N{i}", industry="有色", excess=-0.15) for i in range(4)]
+        # at 5, independent of the directional min_samples argument. Dates span
+        # two ISO weeks so the regime guardrail does not filter the bucket.
+        cases = [
+            _neutral_case(f"N{i}", industry="有色", excess=-0.15, signal_date=_spread(i))
+            for i in range(4)
+        ]
         db = _neutral_db(cases)
         miner = CrossSymbolPatternMiner(
             db=db, config={"cross_symbol_miner_neutral_min_samples": 4}
@@ -693,3 +718,47 @@ class TestNeutralChannel:
         )
         result2 = await miner2.mine(lookback_days=30, min_samples=5, min_lift=0.15)
         assert result2["neutral_significant_buckets"] == 0
+
+    @pytest.mark.asyncio
+    async def test_single_period_regime_filtered(self):
+        # 6 strong, perfectly consistent cases but ALL on one signal date: this
+        # clears the excess/consistency bars yet is a one-off sector/market
+        # episode, so the ISO-week regime guardrail must drop it.
+        cases = [
+            _neutral_case(f"R{i}", industry="地产", excess=-0.15, signal_date="2026-06-04")
+            for i in range(6)
+        ]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        assert result["neutral_significant_buckets"] == 0
+        assert result.get("neutral_regime_filtered", 0) >= 1
+        assert not any(
+            str(s["payload"]["dimension"]).startswith("neutral:") for s in db._saved
+        )
+
+    @pytest.mark.asyncio
+    async def test_neutral_min_periods_config_honoured(self):
+        # 6 consistent cases spanning exactly two ISO weeks: promoted at
+        # min_periods=2 but filtered at min_periods=3.
+        cases = [
+            _neutral_case(f"W{i}", industry="地产", excess=-0.15, signal_date=_spread(i))
+            for i in range(6)
+        ]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(
+            db=db, config={"cross_symbol_miner_neutral_min_periods": 2}
+        )
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+        assert result["neutral_significant_buckets"] >= 1
+        lesson = {s["payload"]["dimension"]: s for s in db._saved}["neutral:industry=地产"]
+        assert lesson["payload"]["distinct_periods"] == 2
+
+        db2 = _neutral_db(cases)
+        miner2 = CrossSymbolPatternMiner(
+            db=db2, config={"cross_symbol_miner_neutral_min_periods": 3}
+        )
+        result2 = await miner2.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+        assert result2["neutral_significant_buckets"] == 0
+        assert result2.get("neutral_regime_filtered", 0) >= 1

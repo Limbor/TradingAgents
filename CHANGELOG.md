@@ -24,6 +24,13 @@ Breaking changes within the 0.x line are called out explicitly.
   with a `neutral:` prefix to avoid `lesson_id` collisions, and use a separate
   `cross_symbol_miner_neutral_min_samples` (default 4) while the directional
   channel stays at `cross_symbol_miner_min_samples` (5).
+- **Regime guardrail for neutral promotion.** A neutral pattern must now span
+  at least `cross_symbol_miner_neutral_min_periods` distinct ISO weeks (default
+  2) of signal dates to promote, so a single sector-wide selloff or a one-day
+  batch no longer mints a permanent lesson. Buckets that clear the
+  excess/consistency bars but fail dispersion are counted in
+  `neutral_regime_filtered`. (Sector-beta decomposition against an industry
+  index remains a follow-up.)
 
 ### Changed
 

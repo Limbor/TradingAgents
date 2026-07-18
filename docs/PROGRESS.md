@@ -130,7 +130,8 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | 真实闭环 smoke | ✅ 2026-07-12 | 原库备份后幂等迁移出 152 条审计决策；真实 MCP 23 tools、策略/config SHA 目录、回测提交及跨进程 job 恢复通过 |
 | 反思取价链路打通 | ✅ 2026-07-17 | 确认 MCP `get_stock_daily` 正常返回股票日线（无需改动 StockManager 任何代码）；修复 `run_reflection_batch` pending 回退未传 `due_only=True` 导致抓最新未到期 case 而 `processed:0` 的 bug；实跑消化 59 条到期 case→reflected（真实 `source=mcp` outcome，0 error）；当前 reflected 60 条但方向性（BUY/SELL）已实现样本仅 3 条，门禁 `strategy_claims_allowed=false` 保持关闭，需随每日运行继续积累方向决策至 ≥20 |
 | 中性决策反思归因 | ✅ 2026-07-17 | WATCHLIST/HOLD/MONITOR 中性决策改用相对基准超额归因（`_neutral_attribution`），正超额→`missed_upside`（过滤过严错过机会）、负超额→`validated_avoidance`（观望规避有效）；44 条历史中性 case 一次性回补真实 `excess_return`（`scripts/backfill_neutral_reflection.py`，幂等） |
-| 跨样本中性通道自动晋级 | ✅ 2026-07-17 | CrossSymbolPatternMiner 新增中性显著性通道，与方向性胜率通道独立运行：按「平均超额幅度 + 同向一致率 + 样本量」晋级 industry/factor 级中性 lesson，`neutral:` 前缀隔离命名空间防 lesson_id 冲突；中性门槛单开 `neutral_min_samples=4`（方向性仍 5）；主开关 `cross_symbol_miner_enabled` 默认改为开启，每日 16:30 反思后常态化晋级；实跑已自动晋级 3 条（地产 high / 估值缺失 · 资金流缺失 medium）active lesson 并回注 daily_pipeline 复核 |
+| 跨样本中性通道自动晋级 | ✅ 2026-07-17 | CrossSymbolPatternMiner 新增中性显著性通道，与方向性胜率通道独立运行：按「平均超额幅度 + 同向一致率 + 样本量」晋级 industry/factor 级中性 lesson，`neutral:` 前缀隔离命名空间防 lesson_id 冲突；中性门槛单开 `neutral_min_samples=4`（方向性仍 5）；主开关 `cross_symbol_miner_enabled` 默认改为开启，每日 16:30 反思后常态化晋级 |
+| 中性通道板块行情护栏 | ✅ 2026-07-17 | 发现 44 条回补中性 case 全挤在 2026-07-03~10 一周内，其中 `valuation/flow 缺失` 两桶更是同一天快照（伪信号）。新增 ISO 周分散度护栏 `neutral_min_periods=2`：中性模式需跨 ≥N 个不同 ISO 周才晋级，一次性板块/单日事件不再被铸成永久经验；真实再跑 `neutral_regime_filtered:2`、`lessons_deactivated:2`，三条 → 一条（仅保留跨 2 周的地产 high）；行业指数 beta 分解仍为 TODO |
 | 前端 Portfolio 持仓页 | ✅ 初版完成 | 持仓 CRUD、P&L、建议确认调仓；Dashboard 已展示结构化风险事件 |
 | 前端 Watchlist 关注页 | ✅ 初版完成 | 手动触发 `daily_pipeline` 进入 Chat + 近期运行列表；候选明细历史化待增强 |
 | 前端 Settings MCP 配置 | ✅ 完成 | MCP URL / enabled / timeout |
@@ -543,7 +544,7 @@ Chat 层已完成四类意图分流：
 
 ### 10.1 下一阶段优先推进
 
-0. **中性通道加「板块性行情」护栏**：跨样本中性晋级现按相对基准超额判定，但单行业小样本（如 `industry=地产 n=4`）可能只是同期整个板块普跌而非选股逻辑功劳（伪 `validated_avoidance`）。需在中性显著性判定中剔除同期板块/基准 beta，或对疑似 `market_regime` 的桶降置信/打标，避免把宏观行情当经验沉淀。
+0. ~~**中性通道加「板块性行情」护栏**~~ 已实现时间分散度护栏（`neutral_min_periods=2`，跨 ISO 周才晋级，已滤掉单日 valuation/flow 伪信号）。**剩余 TODO：行业指数 beta 分解**——单行业桶（如 `industry=地产`）即使跨多周仍可能只是板块相对大盘持续走弱，需在超额中扣除同期行业指数收益（需接入行业指数日线）才能分离“选股规避”与“板块普跌”。
 1. ~~修复/补齐 StockManager `get_stock_daily` 的股票历史覆盖~~ 已确认 `get_stock_daily` 本身正常（真实返回股票日线，无需改 StockManager）；真正卡点是 `run_reflection_batch` pending 回退未用 `due_only`，已修复。**当前待推进：门禁需 ≥20 条方向性（BUY/SELL）已实现样本，现仅 3 条**——依赖 DailyPipeline 持续产出方向决策 + 每日反思批处理积累，非代码问题；门禁保持关闭直至样本足够且方向收益显著。
 2. 为 DailyPipeline 增加可选 Top N 深度 StockAnalysisSkill 串联，并把深度结论回写 candidate payload。
 3. 扩展 StrategyBacktest 的 walk-forward/ablation 对比和执行滑点明细，不增加任意参数搜索器。

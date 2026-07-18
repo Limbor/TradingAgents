@@ -227,4 +227,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # sample count than the directional win-rate channel (which stays at
     # cross_symbol_miner_min_samples).
     "cross_symbol_miner_neutral_min_samples": 4,
+    # Regime guardrail: a neutral pattern must span at least this many distinct
+    # ISO weeks of signal dates to promote. A single sector-wide selloff or a
+    # one-day batch produces a strong-but-spurious excess concentrated in one
+    # window; requiring recurrence across >=N weeks keeps market/sector-regime
+    # episodes from being minted as permanent lessons. (Sector-beta
+    # decomposition against an industry index is a further TODO.)
+    "cross_symbol_miner_neutral_min_periods": 2,
 })
