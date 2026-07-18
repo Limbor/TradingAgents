@@ -25,6 +25,7 @@ _ENV_OVERRIDES = {
     "STOCKMANAGER_MCP_TIMEOUT":           "stockmanager_mcp_timeout",
     "TRADINGAGENTS_SCHEDULER_ENABLED":    "scheduler_enabled",
     "TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED": "cross_symbol_miner_enabled",
+    "TRADINGAGENTS_CROSS_SYMBOL_MINER_NEUTRAL_ENABLED": "cross_symbol_miner_neutral_enabled",
     "TRADINGAGENTS_TICKER_NAME_BACKFILL_ENABLED": "ticker_name_backfill_enabled",
     "TRADINGAGENTS_MCP_STOCKMANAGER_DIR": "mcp_stockmanager_dir",
     "TRADINGAGENTS_INVESTMENT_STYLE":     "investment_style",
@@ -207,8 +208,23 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Cross-symbol pattern mining. When enabled, the reflection batch runs a
     # statistical pattern discovery step after processing pending cases.
     # Patterns are saved as strategy_lessons with lesson_type="cross_symbol_pattern".
-    "cross_symbol_miner_enabled": False,
+    # Enabled by default so high-confidence patterns auto-promote after the
+    # daily 16:30 reflection batch; override with
+    # TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED=false to disable.
+    "cross_symbol_miner_enabled": True,
     "cross_symbol_miner_min_samples": 5,
     "cross_symbol_miner_min_lift": 0.15,
     "cross_symbol_miner_lookback_days": 30,
+    # Neutral channel of the miner: promotes WATCHLIST/HOLD/MONITOR patterns
+    # by consistent excess-over-benchmark return (the win-rate gate cannot see
+    # neutral cases because was_correct is None). Only runs when the master
+    # cross_symbol_miner switch above is enabled.
+    "cross_symbol_miner_neutral_enabled": True,
+    "cross_symbol_miner_min_excess": 0.05,
+    "cross_symbol_miner_min_consistency": 0.6,
+    # Neutral patterns are coarser (industry/factor level) and already gated by
+    # excess magnitude + same-sign consistency, so they use a lower minimum
+    # sample count than the directional win-rate channel (which stays at
+    # cross_symbol_miner_min_samples).
+    "cross_symbol_miner_neutral_min_samples": 4,
 })

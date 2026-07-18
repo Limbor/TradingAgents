@@ -224,6 +224,49 @@ class ReflectionEngine:
             "source": "mcp",
         }
 
+    async def fetch_benchmark_return(
+        self,
+        signal_date: str,
+        horizon_days: int,
+        benchmark_symbol: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Fetch the benchmark index return over the same horizon.
+
+        Expressing a neutral decision's outcome as excess-over-benchmark keeps a
+        broad market rally/selloff from being mistaken for stock-specific
+        signal. Best-effort: returns ``None`` when the index tool is unavailable
+        so callers can degrade gracefully.
+        """
+        symbol = (
+            benchmark_symbol
+            or self.config.get("reflection_benchmark")
+            or self.config.get("decision_audit_benchmark")
+            or "000300.SH"
+        )
+        try:
+            from tradingagents.core.mcp_client import get_mcp_client
+
+            client = await get_mcp_client(self.config)
+            if client is None or not hasattr(client, "get_index_daily"):
+                return None
+            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
+            payload = await client.get_index_daily(
+                symbol, signal_date.replace("-", ""), end_dt.strftime("%Y%m%d")
+            )
+            if not isinstance(payload, dict):
+                return None
+            rows = payload.get("data") or payload.get("rows") or []
+            if not isinstance(rows, list):
+                return None
+            result = self._compute_return_from_rows(rows, signal_date, horizon_days)
+            if result:
+                result["benchmark_symbol"] = symbol
+                result["source"] = str(payload.get("source") or "mcp_index")
+            return result
+        except Exception as exc:
+            logger.debug("Benchmark return fetch failed for %s: %s", symbol, exc)
+            return None
+
     def evaluate_accuracy(self, original_decision: str, actual_return: float) -> bool | None:
         """Determine if the original decision was directionally correct.
 
@@ -311,12 +354,24 @@ class ReflectionEngine:
         case: dict[str, Any],
         attribution: dict[str, Any],
     ) -> dict[str, Any]:
-        """Persist a reusable lesson only for actionable ex-ante misses."""
+        """Persist a reusable lesson for actionable misses or neutral learnings."""
+        label = attribution.get("attribution")
+        confidence_ok = str(attribution.get("confidence") or "low") in {"medium", "high"}
+
+        # Neutral-decision lessons (missed_upside / validated_avoidance) are about
+        # filter/gate calibration, so they apply to candidate-pool cases too and
+        # are intentionally NOT gated on eligible_for_strategy_learning (which
+        # only tracks directional decisions for the win-rate gate).
+        if label in {"missed_upside", "validated_avoidance"}:
+            if not confidence_ok:
+                return {}
+            return self._create_neutral_lesson(case, attribution)
+
         if not case.get("eligible_for_strategy_learning"):
             return {}
-        if attribution.get("attribution") != "ex_ante_miss":
+        if label != "ex_ante_miss":
             return {}
-        if str(attribution.get("confidence") or "low") not in {"medium", "high"}:
+        if not confidence_ok:
             return {}
 
         snapshot = case.get("snapshot_payload") or {}
@@ -368,6 +423,59 @@ class ReflectionEngine:
             )
         except Exception as exc:
             logger.warning("Failed to save strategy lesson for %s: %s", symbol, exc)
+        return lesson
+
+    def _create_neutral_lesson(
+        self,
+        case: dict[str, Any],
+        attribution: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a lesson for a neutral decision with a large post-signal move.
+
+        missed_upside -> opportunity_cost (filter may be too conservative);
+        validated_avoidance -> risk_avoidance (caution paid off, reinforce it).
+        """
+        label = attribution.get("attribution")
+        snapshot = case.get("snapshot_payload") or {}
+        symbol = case.get("symbol") or ""
+        industry = snapshot.get("industry") or (snapshot.get("candidate") or {}).get("industry") or ""
+        scope = "industry" if industry else "global"
+        lesson_type = "opportunity_cost" if label == "missed_upside" else "risk_avoidance"
+        finding = attribution.get("strategy_lesson") or attribution.get("risk_monitor_lesson") or (
+            f"{symbol} 中性观望后出现显著超额波动。"
+        )
+        suggested = attribution.get("suggested_adjustment") or (
+            "复核该类候选的过滤条件与风险标签处理。"
+        )
+        lesson = {
+            "id": str(uuid.uuid4()),
+            "lesson_type": lesson_type,
+            "scope": scope,
+            "target": str(industry or ""),
+            "finding": finding,
+            "suggested_adjustment": suggested,
+            "evidence_count": 1,
+            "confidence": str(attribution.get("confidence") or "medium"),
+            "case_id": case.get("id"),
+            "symbol": symbol,
+            "missed_evidence": attribution.get("missed_evidence") or [],
+            "governance_status": "candidate",
+        }
+        try:
+            self.db.save_strategy_lesson(
+                lesson_id=lesson["id"],
+                lesson_type=lesson["lesson_type"],
+                scope=lesson["scope"],
+                target=lesson["target"],
+                finding=lesson["finding"],
+                suggested_adjustment=lesson["suggested_adjustment"],
+                evidence_count=lesson["evidence_count"],
+                confidence=lesson["confidence"],
+                active=False,
+                payload=lesson,
+            )
+        except Exception as exc:
+            logger.warning("Failed to save neutral strategy lesson for %s: %s", symbol, exc)
         return lesson
 
     async def generate_reflection(
@@ -428,8 +536,12 @@ class ReflectionEngine:
             )
             remaining = max(0, max_per_run - len(pending_cases))
             if remaining:
+                # due_only=True here too: without it the pending fallback
+                # orders newest-first and stalls on cases whose horizon has
+                # not elapsed yet (fetch_outcome returns None), so the batch
+                # never reaches the older, actually-due pending cases.
                 pending_cases.extend(self.db.list_reflection_cases(
-                    status="pending", limit=remaining,
+                    status="pending", limit=remaining, due_only=True,
                 ))
 
         pending = self.memory_log.get_pending_entries() if self.memory_log is not None else []
@@ -463,6 +575,19 @@ class ReflectionEngine:
                 original_decision = _case_original_decision(case)
                 was_correct = self.evaluate_accuracy(original_decision, outcome["actual_return"])
                 outcome["was_correct"] = was_correct
+                if was_correct is None:
+                    # Neutral calls (WATCHLIST/HOLD/MONITOR) carry no directional
+                    # right/wrong, but a large move vs the benchmark is still
+                    # learning material (missed upside / validated caution).
+                    # Enrich with excess-over-benchmark so attribution can tell
+                    # a stock-specific move from a broad market swing.
+                    benchmark = await self.fetch_benchmark_return(signal_date, case_horizon)
+                    if benchmark is not None and isinstance(benchmark.get("actual_return"), (int, float)):
+                        outcome["benchmark_symbol"] = benchmark.get("benchmark_symbol")
+                        outcome["benchmark_return"] = benchmark.get("actual_return")
+                        outcome["excess_return"] = round(
+                            float(outcome["actual_return"]) - float(benchmark["actual_return"]), 4
+                        )
                 evidence = await self.fetch_post_signal_evidence(symbol, signal_date, case_horizon)
                 attribution = await self.generate_attribution(case, outcome, evidence)
                 lesson = self.maybe_create_strategy_lesson(case, attribution)
@@ -664,6 +789,11 @@ A 股典型判定示例：
 - ex_post_shock：信号后新增「业绩预亏/立案调查/减持公告/停牌/ST 处理」
 - market_regime_shift：benchmark {benchmark} 同期跌幅 > 个股跌幅，且无个股级利空
 
+【中性决策特判】若 final_decision 为 WATCHLIST/HOLD/MONITOR（无方向），不要用 ex_ante_miss/noise，而是根据 outcome.excess_return（相对基准超额，若缺失则退而看绝对 actual_return）判定：
+- 超额 ≥ +5% → missed_upside：观望过于保守，漏掉正向机会，复核过滤/降级条件
+- 超额 ≤ -5% → validated_avoidance：观望规避得当，沉淀当时生效的风险标签
+- 波动不足 → inconclusive
+
 【T+1/涨跌停注意】A 股 T+1 且涨跌停限制下，理论收益≠实际可成交收益：
 - 若信号日一字涨停（开盘即涨停且全天未开板），实际无法买入，不应归因于选股逻辑
 - 若持仓日跌停无法卖出，实际收益劣于理论收益，属流动性冲击
@@ -682,7 +812,7 @@ Post-signal evidence（信号后新增信息，仅用于 ex_post_shock 判定）
 
 请输出严格 JSON：
 {{
-  "attribution": "ex_ante_miss|ex_post_shock|market_regime_shift|noise|inconclusive",
+  "attribution": "ex_ante_miss|ex_post_shock|market_regime_shift|noise|inconclusive|missed_upside|validated_avoidance",
   "confidence": "low|medium|high",
   "was_in_original_inputs": true,
   "missed_evidence": ["..."],
@@ -715,7 +845,7 @@ def _parse_attribution_payload(text: str) -> dict[str, Any]:
             "suggested_adjustment": "",
         }
     attribution = str(parsed.get("attribution") or "inconclusive")
-    if attribution not in {"ex_ante_miss", "ex_post_shock", "market_regime_shift", "noise", "inconclusive"}:
+    if attribution not in {"ex_ante_miss", "ex_post_shock", "market_regime_shift", "noise", "inconclusive", "missed_upside", "validated_avoidance"}:
         attribution = "inconclusive"
     confidence = str(parsed.get("confidence") or "low")
     if confidence not in {"low", "medium", "high"}:
@@ -733,6 +863,11 @@ def _heuristic_attribution(
     outcome: dict[str, Any],
     post_signal_evidence: dict[str, Any],
 ) -> dict[str, Any]:
+    if outcome.get("was_correct") is None:
+        # Neutral decision (WATCHLIST/HOLD/MONITOR): no directional right/wrong,
+        # so route to the opportunity-cost / risk-validation track instead of
+        # the down-move-centric logic below.
+        return _neutral_attribution(case, outcome, post_signal_evidence)
     actual_return = float(outcome.get("actual_return") or 0)
     was_correct = bool(outcome.get("was_correct"))
     snapshot = case.get("snapshot_payload") or {}
@@ -776,15 +911,87 @@ def _heuristic_attribution(
     }
 
 
+_NEUTRAL_MOVE_THRESHOLD = 0.05
+
+
+def _neutral_attribution(
+    case: dict[str, Any],
+    outcome: dict[str, Any],
+    post_signal_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Attribute neutral decisions (WATCHLIST/HOLD/MONITOR) by post-signal move.
+
+    Neutral calls have no directional right/wrong, so they stay out of the
+    win-rate gate. But a large move relative to the benchmark still teaches us
+    something: a strong outperformance means the filter may have been too
+    conservative (``missed_upside``); a strong underperformance means the caution
+    was validated (``validated_avoidance``). Excess-over-benchmark is preferred;
+    absolute return is a low-confidence fallback when the benchmark is missing.
+    """
+    actual_return = float(outcome.get("actual_return") or 0)
+    excess = outcome.get("excess_return")
+    has_excess = isinstance(excess, (int, float))
+    metric = float(excess) if has_excess else actual_return
+    confidence = "medium" if has_excess else "low"
+    basis = "excess_over_benchmark" if has_excess else "absolute_return"
+
+    snapshot = case.get("snapshot_payload") or {}
+    gate_reasons = snapshot.get("gate_reasons") or snapshot.get("quant_gate_reasons") or []
+    risk_flags = snapshot.get("risk_flags") or []
+    data_coverage = snapshot.get("data_coverage") or (snapshot.get("candidate") or {}).get("data_coverage") or {}
+    missing = [
+        key for key, value in data_coverage.items()
+        if str(value).lower() == "missing"
+    ] if isinstance(data_coverage, dict) else []
+
+    if metric >= _NEUTRAL_MOVE_THRESHOLD:
+        attribution = "missed_upside"
+        lesson = (
+            "中性观望后个股显著跑赢基准，复核当时的过滤/降级条件是否过于保守，"
+            "确认是否漏掉了可支持进攻的正向信号。"
+        )
+        suggested = "回看该候选被降级为观望的 gate_reasons，评估相关阈值是否需要放宽。"
+    elif metric <= -_NEUTRAL_MOVE_THRESHOLD:
+        attribution = "validated_avoidance"
+        lesson = (
+            "中性观望后个股显著跑输基准，观望判断得到验证，记录当时起作用的风险标签，"
+            "以强化同类信号的规避逻辑。"
+        )
+        suggested = "沉淀本次生效的风险标签/gate_reasons，作为同类候选优先降级的依据。"
+    else:
+        attribution = "inconclusive"
+        confidence = "low"
+        lesson = ""
+        suggested = ""
+
+    return {
+        "attribution": attribution,
+        "confidence": confidence,
+        "was_in_original_inputs": False,
+        "missed_evidence": [*missing, *[str(x) for x in gate_reasons], *[str(x) for x in risk_flags]],
+        "new_information": [],
+        "strategy_lesson": lesson if attribution == "missed_upside" else "",
+        "risk_monitor_lesson": lesson if attribution == "validated_avoidance" else "",
+        "suggested_adjustment": suggested,
+        "basis": basis,
+    }
+
+
 def _reflection_text_from_attribution(attribution: dict[str, Any], outcome: dict[str, Any]) -> str:
     label = attribution.get("attribution", "inconclusive")
     ret = float(outcome.get("actual_return") or 0)
+    excess = outcome.get("excess_return")
+    excess_str = f"，超额 {float(excess):.2%}" if isinstance(excess, (int, float)) else ""
     if label == "ex_ante_miss":
         return f"归因为信号时点误判，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。{attribution.get('strategy_lesson') or '应复核当时已有证据。'}"
     if label == "ex_post_shock":
         return f"归因为信号后新增信息冲击，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。{attribution.get('risk_monitor_lesson') or '应加强持仓后风险监控。'}"
     if label == "market_regime_shift":
         return f"归因为市场或行业环境变化，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。"
+    if label == "missed_upside":
+        return f"中性观望后显著跑赢，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}{excess_str}，疑似过滤过严错过机会。{attribution.get('strategy_lesson') or ''}".rstrip()
+    if label == "validated_avoidance":
+        return f"中性观望后显著跑输，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}{excess_str}，观望判断得到验证。{attribution.get('risk_monitor_lesson') or ''}".rstrip()
     if label == "noise":
         return f"结果未显示需要调整策略，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。"
     return f"证据不足，暂不进入策略学习，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。"

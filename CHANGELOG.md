@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- **Neutral-decision reflection attribution.** WATCHLIST/HOLD/MONITOR calls
+  (whose `was_correct` is `None`) are now scored by excess return over the
+  benchmark: a positive excess yields a `missed_upside` lesson (filter too
+  strict) and a negative excess yields a `validated_avoidance` lesson (caution
+  paid off). A one-off, idempotent backfill
+  (`scripts/backfill_neutral_reflection.py`) re-scored 44 historical neutral
+  cases with real `excess_return`.
+- **Cross-symbol neutral promotion channel.** `CrossSymbolPatternMiner` runs a
+  neutral significance channel alongside the directional win-rate channel,
+  promoting industry/factor-level neutral lessons by mean excess magnitude,
+  same-sign consistency, and sample count. Neutral dimensions are namespaced
+  with a `neutral:` prefix to avoid `lesson_id` collisions, and use a separate
+  `cross_symbol_miner_neutral_min_samples` (default 4) while the directional
+  channel stays at `cross_symbol_miner_min_samples` (5).
+
+### Changed
+
+- **`cross_symbol_miner_enabled` now defaults to `True`,** so high-confidence
+  patterns auto-promote after the daily 16:30 reflection batch. Override with
+  `TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED=false` to disable.
+- **Dashboard lower widgets use a balanced masonry layout** (`columns-2/3`),
+  so no single column runs empty on wide viewports.
+
 ## [0.2.5] — 2026-05-11
 
 ### Added

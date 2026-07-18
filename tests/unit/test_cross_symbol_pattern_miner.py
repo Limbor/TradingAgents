@@ -518,3 +518,178 @@ class TestMineEndToEnd:
         assert "data_coverage.flow=missing" in dimensions_saved
         assert "risk_assessment=high" in dimensions_saved
         assert len(saved) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Neutral channel (WATCHLIST/HOLD/MONITOR excess-return patterns)
+# ---------------------------------------------------------------------------
+
+
+def _neutral_case(
+    symbol: str,
+    industry: str = "有色",
+    excess: float = -0.15,
+    board: str = "main",
+    data_coverage: dict | None = None,
+) -> dict:
+    """Build a reflected NEUTRAL case (was_correct=None) with an excess_return."""
+    dc = data_coverage or {"valuation": "available", "flow": "available", "quality": "available"}
+    snapshot = {
+        "final_decision": "WATCHLIST",
+        "quant_score": 70,
+        "industry": industry,
+        "board": board,
+        "data_coverage": dc,
+        "risk_flags": [],
+        "catalyst_strength": "speculative",
+        "risk_assessment": "high",
+    }
+    outcome = {
+        "was_correct": None,
+        "actual_return": excess,
+        "excess_return": excess,
+    }
+    attribution = {
+        "attribution": "validated_avoidance" if excess < 0 else "missed_upside",
+        "confidence": "medium",
+    }
+    return {
+        "id": f"case_{symbol}",
+        "symbol": symbol,
+        "name": symbol,
+        "signal_date": "2026-06-01",
+        "status": "reflected",
+        "snapshot_payload": snapshot,
+        "outcome_payload": outcome,
+        "attribution_payload": attribution,
+    }
+
+
+def _neutral_db(cases: list[dict]) -> MagicMock:
+    db = MagicMock()
+    db.list_reflection_cases = MagicMock(return_value=cases)
+    db.list_strategy_lessons = MagicMock(return_value=[])
+    saved: list[dict] = []
+    db.save_strategy_lesson = MagicMock(
+        side_effect=lambda **kw: saved.append(kw) or {"id": kw["lesson_id"]}
+    )
+    db.update_strategy_lesson = MagicMock(return_value={"id": "x"})
+    db._saved = saved
+    return db
+
+
+class TestNeutralChannel:
+    """Neutral cases (was_correct=None) promote by consistent excess return."""
+
+    @pytest.mark.asyncio
+    async def test_validated_avoidance_promoted_with_industry_scope(self):
+        cases = [_neutral_case(f"N{i}", industry="有色", excess=-0.15) for i in range(6)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        # Directional channel sees no scored cases (all was_correct=None).
+        assert result["significant_buckets"] == 0
+        assert result["neutral_significant_buckets"] >= 1
+        by_dim = {s["payload"]["dimension"]: s for s in db._saved}
+        assert "neutral:industry=有色" in by_dim
+        lesson = by_dim["neutral:industry=有色"]
+        assert lesson["scope"] == "industry"
+        assert lesson["target"] == "有色"
+        assert lesson["active"] is True
+        assert lesson["payload"]["kind"] == "neutral"
+        assert lesson["payload"]["pattern"] == "validated_avoidance"
+        assert lesson["confidence"] == "high"  # |avg_excess| 0.15 >= 0.10
+
+    @pytest.mark.asyncio
+    async def test_missed_upside_promoted(self):
+        cases = [_neutral_case(f"P{i}", industry="白酒", excess=0.12) for i in range(6)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        by_dim = {s["payload"]["dimension"]: s for s in db._saved}
+        assert "neutral:industry=白酒" in by_dim
+        assert by_dim["neutral:industry=白酒"]["payload"]["pattern"] == "missed_upside"
+
+    @pytest.mark.asyncio
+    async def test_factor_scope_from_missing_coverage(self):
+        dc = {"valuation": "available", "flow": "missing", "quality": "available"}
+        cases = [_neutral_case(f"F{i}", excess=-0.12, data_coverage=dc) for i in range(6)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        by_dim = {s["payload"]["dimension"]: s for s in db._saved}
+        assert "neutral:data_coverage.flow=missing" in by_dim
+        factor_lesson = by_dim["neutral:data_coverage.flow=missing"]
+        assert factor_lesson["scope"] == "factor"
+        assert factor_lesson["target"] == "flow"
+
+    @pytest.mark.asyncio
+    async def test_inconsistent_direction_not_promoted(self):
+        # 3× +0.30, 3× -0.05 → avg +0.125 (>=0.05) but same-sign consistency
+        # is only 3/6=0.5 (< 0.6) → must NOT promote.
+        cases = [_neutral_case(f"A{i}", industry="有色", excess=0.30) for i in range(3)]
+        cases += [_neutral_case(f"B{i}", industry="有色", excess=-0.05) for i in range(3)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        assert result.get("neutral_significant_buckets", 0) == 0
+        assert not any(
+            str(s["payload"]["dimension"]).startswith("neutral:") for s in db._saved
+        )
+
+    @pytest.mark.asyncio
+    async def test_below_excess_threshold_not_promoted(self):
+        # Consistent sign but |avg_excess| 0.02 < 0.05 → not material enough.
+        cases = [_neutral_case(f"S{i}", industry="有色", excess=-0.02) for i in range(6)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        assert result.get("neutral_significant_buckets", 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_neutral_disabled_skips_channel(self):
+        cases = [_neutral_case(f"N{i}", industry="有色", excess=-0.15) for i in range(6)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(
+            db=db, config={"cross_symbol_miner_neutral_enabled": False}
+        )
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        assert "neutral_significant_buckets" not in result
+        assert not any(
+            str(s["payload"]["dimension"]).startswith("neutral:") for s in db._saved
+        )
+
+    @pytest.mark.asyncio
+    async def test_too_few_neutral_cases_not_promoted(self):
+        cases = [_neutral_case(f"N{i}", industry="有色", excess=-0.15) for i in range(4)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+
+        assert result["neutral_significant_buckets"] == 0
+
+    @pytest.mark.asyncio
+    async def test_neutral_min_samples_config_honoured(self):
+        # 4 consistent neutral cases: promoted at neutral_min_samples=4 but not
+        # at 5, independent of the directional min_samples argument.
+        cases = [_neutral_case(f"N{i}", industry="有色", excess=-0.15) for i in range(4)]
+        db = _neutral_db(cases)
+        miner = CrossSymbolPatternMiner(
+            db=db, config={"cross_symbol_miner_neutral_min_samples": 4}
+        )
+        result = await miner.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+        assert result["neutral_significant_buckets"] >= 1
+        assert "neutral:industry=有色" in {s["payload"]["dimension"] for s in db._saved}
+
+        db2 = _neutral_db(cases)
+        miner2 = CrossSymbolPatternMiner(
+            db=db2, config={"cross_symbol_miner_neutral_min_samples": 5}
+        )
+        result2 = await miner2.mine(lookback_days=30, min_samples=5, min_lift=0.15)
+        assert result2["neutral_significant_buckets"] == 0

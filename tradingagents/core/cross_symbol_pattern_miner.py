@@ -33,6 +33,15 @@ class PatternBucket:
     avg_return: float = 0.0
     baseline_win_rate: float = 0.0
     lift: float = 0.0
+    # Neutral channel (WATCHLIST/HOLD/MONITOR cases; was_correct is None).
+    # These accumulate excess-over-benchmark returns instead of a win_rate.
+    neutral_excesses: list[float] = field(default_factory=list)
+    neutral_avg_excess: float = 0.0
+    neutral_consistency: float = 0.0
+    # Injection scope derived from the bucket dimension (neutral channel only;
+    # directional lessons stay scope="global").
+    scope: str = "global"
+    target: str = ""
 
 
 class CrossSymbolPatternMiner:
@@ -76,6 +85,8 @@ class CrossSymbolPatternMiner:
         - ``total_cases``: number of reflected cases loaded
         - ``buckets_evaluated``: number of feature buckets evaluated
         - ``significant_buckets``: number of statistically significant buckets
+        - ``neutral_significant_buckets``: significant neutral (excess-return)
+          buckets (present only when the neutral channel ran)
         - ``lessons_created``: count of new lessons
         - ``lessons_updated``: count of merged/updated lessons
         """
@@ -88,50 +99,60 @@ class CrossSymbolPatternMiner:
             "lessons_updated": 0,
         }
 
-        # 1. Load reflected cases
+        neutral_enabled = bool(self._config.get("cross_symbol_miner_neutral_enabled", True))
+        active_dimensions: set[str] = set()
+
+        # ---- Directional channel: win-rate lift over eligible cases ----
         cases = self._load_reflected_cases(lookback_days)
         result["total_cases"] = len(cases)
-        if len(cases) < min_samples:
+        significant: list[PatternBucket] = []
+        if len(cases) >= min_samples:
+            features = [self._extract_features(c) for c in cases]
+            baseline = self._compute_baseline(cases)
+            buckets = self._aggregate(cases, features)
+            result["buckets_evaluated"] = len(buckets)
+            significant = self._filter_significant(buckets, min_samples, min_lift, baseline)
+            result["significant_buckets"] = len(significant)
+            for bucket in significant:
+                finding, adjustment = await self._explain_bucket(bucket)
+                lesson = self._save_or_update_lesson(bucket, finding, adjustment, result)
+                if lesson:
+                    result["new_lessons"].append(lesson)
+                active_dimensions.add(bucket.dimension)
+        else:
             logger.info(
-                "CrossSymbolMiner: only %d reflected cases in last %d days (need >=%d); skipping",
+                "CrossSymbolMiner: only %d eligible reflected cases in last %d days "
+                "(need >=%d); skipping directional channel",
                 len(cases), lookback_days, min_samples,
             )
-            return result
 
-        # 2. Extract features for all cases
-        features = [self._extract_features(c) for c in cases]
+        # ---- Neutral channel: excess-return consistency over WATCHLIST/HOLD/
+        # MONITOR cases (was_correct is None), which the win-rate gate cannot
+        # see. Loaded independently so it works even when eligible directional
+        # cases are too few for the directional channel.
+        neutral_sig: list[PatternBucket] = []
+        if neutral_enabled:
+            neutral_sig = self._mine_neutral(lookback_days, min_samples, result)
+            for bucket in neutral_sig:
+                finding, adjustment = self._template_explain_neutral(bucket)
+                lesson = self._save_or_update_neutral_lesson(bucket, finding, adjustment, result)
+                if lesson:
+                    result["new_lessons"].append(lesson)
+                active_dimensions.add(bucket.dimension)
 
-        # 3. Compute baseline win_rate across all cases
-        baseline = self._compute_baseline(cases)
-
-        # 4. Aggregate into buckets
-        buckets = self._aggregate(cases, features)
-        result["buckets_evaluated"] = len(buckets)
-
-        # 5. Filter for statistical significance
-        significant = self._filter_significant(buckets, min_samples, min_lift, baseline)
-        result["significant_buckets"] = len(significant)
-        if not significant:
-            return result
-
-        # 6. Generate findings (LLM or template)
-        for bucket in significant:
-            finding, adjustment = await self._explain_bucket(bucket)
-            lesson = self._save_or_update_lesson(bucket, finding, adjustment, result)
-            if lesson:
-                result["new_lessons"].append(lesson)
-
-        # 7. Deactivate cross_symbol_pattern lessons whose dimension is no
-        # longer significant this run, so stale patterns stop being injected
-        # into the daily_pipeline LLM review prompt.
-        self._deactivate_stale_lessons(
-            {b.dimension for b in significant}, result
-        )
+        # ---- Deactivate patterns no longer significant this run, so stale
+        # lessons stop being injected into the daily_pipeline LLM review prompt.
+        # Skip deactivation on a fully empty run to avoid nuking everything on a
+        # transient data gap.
+        if significant or neutral_sig:
+            self._deactivate_stale_lessons(
+                active_dimensions, result, include_neutral=neutral_enabled
+            )
 
         return result
 
     def _deactivate_stale_lessons(
-        self, active_dimensions: set[str], result: dict[str, Any]
+        self, active_dimensions: set[str], result: dict[str, Any], *, include_neutral: bool = True
     ) -> None:
         """Deactivate cross_symbol_pattern lessons not in ``active_dimensions``.
 
@@ -139,6 +160,11 @@ class CrossSymbolPatternMiner:
         recur this run is marked ``active=0`` so it stops being injected into
         the candidate review prompt. Lessons whose dimension still appears in
         this run are left active (they were just updated).
+
+        Neutral-channel lessons carry a ``neutral:`` dimension prefix. When the
+        neutral channel did not run this call (``include_neutral=False``), those
+        lessons are left untouched so a disabled neutral channel does not
+        silently deactivate them.
         """
         try:
             existing = self._db.list_strategy_lessons(
@@ -154,7 +180,11 @@ class CrossSymbolPatternMiner:
             if not isinstance(payload, dict):
                 continue
             dimension = payload.get("dimension")
-            if dimension and dimension not in active_dimensions:
+            if not dimension:
+                continue
+            if str(dimension).startswith("neutral:") and not include_neutral:
+                continue
+            if dimension not in active_dimensions:
                 try:
                     self._db.deactivate_strategy_lesson(lesson["id"])
                     deactivated += 1
@@ -611,6 +641,233 @@ class CrossSymbolPatternMiner:
             if payload.get("dimension") == dimension:
                 return e
         return None
+
+    # ------------------------------------------------------------------
+    # Neutral channel (WATCHLIST/HOLD/MONITOR excess-return patterns)
+    # ------------------------------------------------------------------
+
+    def _load_neutral_cases(self, lookback_days: int) -> list[dict[str, Any]]:
+        """Load reflected neutral cases (was_correct is None) with excess return.
+
+        Neutral decisions are ``eligible_for_strategy_learning=False``, so the
+        directional loader (``eligible_only=True``) skips them entirely. This
+        loads with ``eligible_only=False`` and keeps only neutral cases that
+        carry a numeric ``excess_return`` in their outcome payload.
+        """
+        try:
+            cases = self._db.list_reflection_cases(
+                limit=500,
+                status="reflected",
+                eligible_only=False,
+                lookback_days=lookback_days,
+            )
+        except Exception as exc:
+            logger.warning("CrossSymbolMiner: failed to load neutral cases: %s", exc)
+            return []
+        neutral: list[dict[str, Any]] = []
+        for case in cases:
+            outcome = self._safe_json(case.get("outcome_payload"))
+            if outcome.get("was_correct") is not None:
+                continue
+            if not isinstance(outcome.get("excess_return"), (int, float)):
+                continue
+            neutral.append(case)
+        return neutral
+
+    @staticmethod
+    def _neutral_scope_target(dim_key: str, dim_value: str) -> tuple[str | None, str]:
+        """Map a feature dimension to an injectable (scope, target).
+
+        Only dimensions the daily-pipeline injection can precisely match are
+        kept, so neutral lessons target the right candidates instead of being
+        broadcast globally:
+        - ``industry=X``            -> ("industry", X)
+        - ``board=X``               -> ("board", X)
+        - ``data_coverage.f=missing`` -> ("factor", f)
+        Any other dimension returns ``(None, "")`` and is skipped.
+        """
+        if dim_key == "industry":
+            return "industry", dim_value
+        if dim_key == "board":
+            return "board", dim_value
+        if dim_key.startswith("data_coverage.") and dim_value == "missing":
+            return "factor", dim_key.split(".", 1)[1]
+        return None, ""
+
+    def _aggregate_neutral(self, cases: list[dict[str, Any]]) -> list[PatternBucket]:
+        """Group neutral cases by injectable feature dimensions, tracking excess.
+
+        Each bucket dimension is prefixed with ``neutral:`` to keep a separate
+        lesson-ID namespace from the directional channel (a directional and a
+        neutral bucket may share the same base feature, e.g. ``industry=有色``).
+        """
+        buckets: dict[str, PatternBucket] = {}
+        for case in cases:
+            outcome = self._safe_json(case.get("outcome_payload"))
+            try:
+                excess = float(outcome.get("excess_return"))
+            except (TypeError, ValueError):
+                continue
+            feats = self._extract_features(case)
+            for dim_key, dim_value in feats.items():
+                scope, target = self._neutral_scope_target(dim_key, dim_value)
+                if scope is None:
+                    continue
+                dimension = f"neutral:{dim_key}={dim_value}"
+                bucket = buckets.get(dimension)
+                if bucket is None:
+                    bucket = PatternBucket(dimension=dimension)
+                    bucket.scope = scope
+                    bucket.target = target
+                    buckets[dimension] = bucket
+                bucket.neutral_excesses.append(excess)
+                bucket.samples.append({"symbol": case.get("symbol", ""), "id": case.get("id", "")})
+        return sorted(buckets.values(), key=lambda b: len(b.neutral_excesses), reverse=True)
+
+    def _mine_neutral(
+        self, lookback_days: int, min_samples: int, result: dict[str, Any]
+    ) -> list[PatternBucket]:
+        """Find neutral buckets with a consistent, material excess-over-benchmark.
+
+        A bucket qualifies when it has ``>= cross_symbol_miner_neutral_min_samples``
+        cases, an absolute mean excess ``>= cross_symbol_miner_min_excess``, and a
+        same-sign consistency ``>= cross_symbol_miner_min_consistency``. The sign
+        of the mean excess decides the pattern: positive => missed_upside (filter
+        too strict), negative => validated_avoidance (caution paid off).
+        """
+        result["neutral_significant_buckets"] = 0
+        neutral_min_samples = int(
+            self._config.get("cross_symbol_miner_neutral_min_samples", min_samples)
+        )
+        cases = self._load_neutral_cases(lookback_days)
+        if len(cases) < neutral_min_samples:
+            return []
+        min_excess = float(self._config.get("cross_symbol_miner_min_excess", 0.05))
+        min_consistency = float(self._config.get("cross_symbol_miner_min_consistency", 0.6))
+        significant: list[PatternBucket] = []
+        for bucket in self._aggregate_neutral(cases):
+            excesses = bucket.neutral_excesses
+            n = len(excesses)
+            if n < neutral_min_samples:
+                continue
+            avg = sum(excesses) / n
+            if avg >= 0:
+                same = sum(1 for e in excesses if e > 0)
+            else:
+                same = sum(1 for e in excesses if e < 0)
+            consistency = same / n
+            bucket.n = n
+            bucket.neutral_avg_excess = avg
+            bucket.neutral_consistency = consistency
+            if abs(avg) >= min_excess and consistency >= min_consistency:
+                significant.append(bucket)
+        result["neutral_significant_buckets"] = len(significant)
+        return significant
+
+    def _template_explain_neutral(self, bucket: PatternBucket) -> tuple[str, str]:
+        """Human-readable finding/adjustment for a significant neutral bucket."""
+        base = bucket.dimension.replace("neutral:", "", 1)
+        avg = bucket.neutral_avg_excess
+        n = len(bucket.neutral_excesses)
+        cons = bucket.neutral_consistency
+        if avg > 0:
+            finding = (
+                f"样本期内，{base} 的观望决策平均跑赢基准 {avg:.1%}"
+                f"（n={n}，同向 {cons:.0%}），疑似过滤/降级过严错过机会。"
+            )
+            adjustment = (
+                f"复核 {base} 类候选被降级为观望的 gate_reasons/阈值，评估是否放宽。"
+            )
+        else:
+            finding = (
+                f"样本期内，{base} 的观望决策平均跑输基准 {abs(avg):.1%}"
+                f"（n={n}，同向 {cons:.0%}），观望规避有效。"
+            )
+            adjustment = (
+                f"沉淀 {base} 作为同类候选优先降级/加强风控的依据。"
+            )
+        return finding, adjustment
+
+    def _save_or_update_neutral_lesson(
+        self,
+        bucket: PatternBucket,
+        finding: str,
+        adjustment: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Persist a neutral pattern lesson with a precise injection scope.
+
+        Shares ``lesson_type="cross_symbol_pattern"`` (so it flows through the
+        same injection/deactivation machinery) but uses the bucket's derived
+        scope/target and an excess-based confidence. The ``neutral:`` dimension
+        prefix keeps its lesson ID from colliding with directional lessons.
+        """
+        lesson_id = _lesson_id_from_finding(bucket.dimension)
+        n = len(bucket.neutral_excesses)
+        pattern = "missed_upside" if bucket.neutral_avg_excess > 0 else "validated_avoidance"
+        payload = {
+            "dimension": bucket.dimension,
+            "kind": "neutral",
+            "pattern": pattern,
+            "n": n,
+            "avg_excess": round(bucket.neutral_avg_excess, 4),
+            "consistency": round(bucket.neutral_consistency, 4),
+            "scope": bucket.scope,
+            "target": bucket.target,
+        }
+        confidence = self._excess_to_confidence(bucket.neutral_avg_excess)
+
+        try:
+            existing = self._db.list_strategy_lessons(
+                limit=100, active_only=False, lesson_type="cross_symbol_pattern"
+            )
+        except Exception:
+            existing = []
+
+        merged = self._find_and_merge(existing, lesson_id, bucket.dimension)
+        if merged:
+            try:
+                updated = self._db.update_strategy_lesson(
+                    merged["id"],
+                    finding=finding,
+                    suggested_adjustment=adjustment,
+                    evidence_count=n,
+                    confidence=confidence,
+                    payload=payload,
+                )
+                result["lessons_updated"] += 1
+                return updated
+            except Exception as exc:
+                logger.warning("CrossSymbolMiner: failed to update neutral lesson: %s", exc)
+                return None
+
+        try:
+            self._db.save_strategy_lesson(
+                lesson_id=lesson_id,
+                lesson_type="cross_symbol_pattern",
+                scope=bucket.scope,
+                finding=finding,
+                suggested_adjustment=adjustment,
+                target=bucket.target,
+                evidence_count=n,
+                confidence=confidence,
+                active=True,
+                payload=payload,
+            )
+            result["lessons_created"] += 1
+            return {"id": lesson_id, "finding": finding, "adjustment": adjustment}
+        except Exception as exc:
+            logger.warning("CrossSymbolMiner: failed to save neutral lesson: %s", exc)
+            return None
+
+    def _excess_to_confidence(self, avg_excess: float) -> str:
+        """Map mean excess-return magnitude to a confidence level."""
+        a = abs(avg_excess)
+        if a >= 0.10:
+            return "high"
+        if a >= 0.05:
+            return "medium"
+        return "low"
 
     def _lift_to_confidence(self, lift: float) -> str:
         """Map lift magnitude to confidence level."""
