@@ -96,7 +96,10 @@ def _extract_fold_sharpes(cv: dict[str, Any]) -> list[float]:
             vals: list[float] = []
             for item in raw:
                 if isinstance(item, dict):
-                    fold = _as_float(item.get("oos_sharpe")) or _as_float(item.get("sharpe"))
+                    # `is not None` (not truthiness) so a genuine 0.0 fold is kept.
+                    fold = _as_float(item.get("oos_sharpe"))
+                    if fold is None:
+                        fold = _as_float(item.get("sharpe"))
                     if fold is not None:
                         vals.append(fold)
             if vals:
@@ -119,8 +122,13 @@ def summarize_walk_forward(cv: dict[str, Any]) -> dict[str, Any]:
         (v for v in (_as_float(cv.get(k)) for k in ("oos_sharpe", "mean_sharpe", "cv_sharpe", "median_sharpe", "sharpe")) if v is not None),
         None,
     )
-    is_sharpe = _as_float(cv.get("is_sharpe")) or _as_float(cv.get("in_sample_sharpe"))
-    oos_sharpe = _as_float(cv.get("oos_sharpe")) or _as_float(cv.get("out_of_sample_sharpe"))
+    # `is not None` fallbacks: 0.0 is a valid sharpe and must not be dropped.
+    is_sharpe = _as_float(cv.get("is_sharpe"))
+    if is_sharpe is None:
+        is_sharpe = _as_float(cv.get("in_sample_sharpe"))
+    oos_sharpe = _as_float(cv.get("oos_sharpe"))
+    if oos_sharpe is None:
+        oos_sharpe = _as_float(cv.get("out_of_sample_sharpe"))
     summary: dict[str, Any] = {
         "available": bool(fold_sharpes),
         "n_folds": len(fold_sharpes),
@@ -140,6 +148,21 @@ def summarize_walk_forward(cv: dict[str, Any]) -> dict[str, Any]:
         summary["oos_sharpe"] = round(oos_sharpe, 4)
         summary["oos_decay"] = round(is_sharpe - oos_sharpe, 4)
     return summary
+
+
+def _addon_result(result: Any, success_extra: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a best-effort add-on MCP result into an availability marker.
+
+    A non-dict return (or a dict with ``status == "error"``) degrades to
+    ``{"available": False, ...}`` without ever raising, so a misbehaving MCP
+    response cannot break the surrounding audit. ``str(result)`` is used for the
+    non-dict case because such a value has no ``.get`` to read an error from.
+    """
+    if not isinstance(result, dict):
+        return {"available": False, "reason": "error", "error": str(result)}
+    if result.get("status") == "error":
+        return {"available": False, "reason": "error", "error": result.get("error")}
+    return {"available": True, **success_extra, **result}
 
 
 async def analyze_execution_slippage(
@@ -164,9 +187,7 @@ async def analyze_execution_slippage(
         )
     except Exception as exc:  # best-effort add-on
         return {"available": False, "reason": "error", "error": str(exc)}
-    if not isinstance(result, dict) or result.get("status") == "error":
-        return {"available": False, "reason": "error", "error": (result or {}).get("error")}
-    return {"available": True, "trade_count": len(trades), **result}
+    return _addon_result(result, {"trade_count": len(trades)})
 
 
 async def run_declared_ablations(client: Any, config: dict[str, Any]) -> dict[str, Any]:
@@ -191,6 +212,4 @@ async def run_declared_ablations(client: Any, config: dict[str, Any]) -> dict[st
         result = await method(base_experiment, ablations)
     except Exception as exc:  # best-effort add-on
         return {"available": False, "reason": "error", "error": str(exc)}
-    if not isinstance(result, dict) or result.get("status") == "error":
-        return {"available": False, "reason": "error", "error": (result or {}).get("error")}
-    return {"available": True, "n_ablations": len(ablations), **result}
+    return _addon_result(result, {"n_ablations": len(ablations)})

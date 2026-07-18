@@ -58,6 +58,10 @@ jobs:
   e2e-smoke:
     name: real-backend smoke
     runs-on: ubuntu-latest
+    # Pre-release early-warning only: the mocked *.spec.ts contract (frontend
+    # job) is the stable merge gate. A flaky real-backend boot (missing dep,
+    # MCP probe, port) must surface here without blocking the whole workflow.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

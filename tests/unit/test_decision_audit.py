@@ -404,6 +404,56 @@ def test_audit_skips_addons_without_inputs_or_support():
     assert validation["ablation_study"]["reason"] == "no_base_experiment"
 
 
+def test_audit_addons_degrade_on_non_dict_mcp_result():
+    """A misbehaving MCP that returns a non-dict (truthy) value must degrade to
+    available=False instead of raising AttributeError on (result or {}).get()."""
+    class MCP:
+        async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
+            return {"mean_sharpe": 1.0}
+
+        async def analyze_execution_slippage(self, trades, participation_rates=None):
+            return "ok"  # not a dict
+
+        async def run_ablation_study(self, base_experiment, ablations):
+            return ["unexpected"]  # not a dict
+
+    result = asyncio.run(audit_backtest_result(
+        MCP(),
+        {"total_return": 0.1, "max_drawdown": -0.1, "sharpe": 1.0,
+         "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
+         "data_version": "v1", "lookahead_bias_check_passed": True,
+         "survivorship_bias_check_passed": True,
+         "transaction_cost_bps": 10, "slippage_bps": 5,
+         "equity_curve": [{"date": "2024-01-01", "value": 1.0}],
+         "trades": [{"symbol": "600519.SH", "side": "buy", "qty": 100}]},
+        {"transaction_cost_bps": 10, "slippage_bps": 5,
+         "backtest_base_experiment": {"strategy": "ff_residual"},
+         "backtest_ablations": [{"disable": "momentum"}]},
+    ))
+    validation = result["validation"]
+    # No exception, add-ons marked unavailable, core gate untouched.
+    assert validation["production_gate_passed"] is True
+    assert validation["execution_slippage"]["available"] is False
+    assert validation["execution_slippage"]["reason"] == "error"
+    assert validation["ablation_study"]["available"] is False
+    assert validation["ablation_study"]["reason"] == "error"
+
+
+def test_summarize_walk_forward_keeps_zero_fold():
+    """A genuine 0.0 out-of-sample sharpe fold must be counted, not dropped by a
+    truthiness fallback."""
+    summary = summarize_walk_forward(
+        {"folds": [{"oos_sharpe": 0.0}, {"oos_sharpe": 0.8}], "is_sharpe": 0.0, "oos_sharpe": 0.0}
+    )
+    assert summary["available"] is True
+    assert summary["n_folds"] == 2
+    assert summary["fold_sharpes"] == [0.0, 0.8]
+    assert summary["positive_fold_ratio"] == round(1 / 2, 4)
+    # is_sharpe == oos_sharpe == 0.0 must still populate the decay block.
+    assert summary["is_sharpe"] == 0.0
+    assert summary["oos_decay"] == 0.0
+
+
 def test_decision_audit_skill_writes_report_artifact(tmp_path):
     db = Database(tmp_path / "audit-skill.db")
     seed_decision(db, day="2025-01-02")
