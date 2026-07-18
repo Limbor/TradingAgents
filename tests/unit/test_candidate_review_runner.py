@@ -196,3 +196,20 @@ def test_candidate_lesson_hits_scope_matching():
     ids = [h["id"] for h in hits]
     assert 1 in ids and 2 in ids and 4 in ids and 3 not in ids
     assert candidate_lesson_hits(cand, []) == []
+
+
+def test_candidate_lesson_hits_industry_normalized():
+    # Industry-scope lessons are keyed by the coarse taxonomy group (e.g. the
+    # miner stores target="地产"), but candidates carry a raw industry like
+    # "房地产". The match must normalize the candidate industry, or the lesson
+    # would never fire.
+    lessons = [
+        {"scope": "industry", "target": "地产", "finding": "neutral", "id": 10},
+    ]
+    for raw in ("房地产", "房地产开发", "建筑"):
+        cand = {"symbol": "000002.SZ", "industry": raw, "data_coverage": {}}
+        ids = [h["id"] for h in candidate_lesson_hits(cand, lessons)]
+        assert 10 in ids, f"expected 地产 lesson to match raw industry {raw!r}"
+    # A different coarse group must NOT match.
+    other = {"symbol": "600519.SH", "industry": "白酒", "data_coverage": {}}
+    assert candidate_lesson_hits(other, lessons) == []

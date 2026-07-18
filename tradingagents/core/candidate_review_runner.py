@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from tradingagents.core.candidate_enrichment import CandidateContext, enrich_candidates
+from tradingagents.core.industry_taxonomy import normalize_industry
 from tradingagents.core.llm_candidate_review import (
     CandidateLLMReview,
     build_candidate_reviewer,
@@ -171,6 +172,10 @@ def candidate_lesson_hits(candidate: dict[str, Any], lessons: list[dict[str, Any
         return []
     symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
     industry = str(candidate.get("industry") or "")
+    # Industry-scope lessons are keyed by the coarse taxonomy group, so the
+    # candidate's raw industry must be normalized the same way before an exact
+    # comparison (otherwise e.g. target "地产" never matches raw "房地产").
+    industry_group = normalize_industry(industry)
     board = str(candidate.get("board") or "")
     data_coverage = candidate.get("data_coverage") or {}
     missing_keys = {
@@ -183,7 +188,9 @@ def candidate_lesson_hits(candidate: dict[str, Any], lessons: list[dict[str, Any
         target = str(lesson.get("target") or "")
         matched = scope == "global"
         matched = matched or (scope == "symbol" and target == symbol)
-        matched = matched or (scope == "industry" and target and target == industry)
+        matched = matched or (
+            scope == "industry" and target and target in (industry, industry_group)
+        )
         matched = matched or (scope == "board" and target and target == board)
         matched = matched or (scope == "factor" and target in missing_keys)
         if matched:

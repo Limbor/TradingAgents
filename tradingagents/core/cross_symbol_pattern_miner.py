@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from tradingagents.core.industry_taxonomy import normalize_industry
+
 logger = logging.getLogger(__name__)
 
 
@@ -331,13 +333,8 @@ class CrossSymbolPatternMiner:
         return feats
 
     def _normalize_industry(self, industry: str) -> str:
-        """Normalize industry names to a coarse grouping."""
-        industry_lower = industry.lower()
-        # Map to coarse groups
-        for coarse, keywords in _INDUSTRY_GROUPS.items():
-            if any(kw in industry_lower for kw in keywords):
-                return coarse
-        return industry
+        """Normalize industry names to a coarse grouping (shared taxonomy)."""
+        return normalize_industry(industry)
 
     # ------------------------------------------------------------------
     # Aggregation
@@ -939,26 +936,6 @@ class CrossSymbolPatternMiner:
             except (json.JSONDecodeError, TypeError):
                 return {}
         return {}
-
-
-# ---------------------------------------------------------------------------
-# Industry normalization groups
-# ---------------------------------------------------------------------------
-
-_INDUSTRY_GROUPS: dict[str, list[str]] = {
-    "白酒": ["白酒", "酒"],
-    "新能源": ["新能源", "电池", "锂电", "光伏", "风电", "储能"],
-    "半导体": ["半导体", "芯片", "集成电路"],
-    "金融": ["银行", "证券", "保险", "金融"],
-    "有色": ["有色", "黄金", "铜", "铝", "稀土", "矿业"],
-    "医药": ["医药", "生物", "医疗", "制药"],
-    "消费": ["消费", "食品", "饮料", "家电", "零售"],
-    "制造": ["制造", "机械", "重工", "装备"],
-    "科技": ["科技", "软件", "计算机", "通信", "电子"],
-    "地产": ["地产", "房地产", "建筑"],
-    "化工": ["化工", "化学"],
-    "汽车": ["汽车", "整车", "零部件"],
-}
 
 
 # ---------------------------------------------------------------------------

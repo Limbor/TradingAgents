@@ -32,6 +32,19 @@ Breaking changes within the 0.x line are called out explicitly.
   `neutral_regime_filtered`. (Sector-beta decomposition against an industry
   index remains a follow-up.)
 
+### Fixed
+
+- **Industry-scope lessons now actually match candidates.** Industry-scope
+  neutral lessons are keyed by the coarse taxonomy group (e.g. `地产`), but
+  candidates carry a raw `industry` string (e.g. `房地产`, `建筑材料`), so the
+  exact comparison in `candidate_lesson_hits` never fired and the lesson was
+  never injected into the LLM review prompt. The coarse taxonomy is extracted
+  into `tradingagents.core.industry_taxonomy.normalize_industry` (a single
+  source of truth shared by the miner and the review runner), and the runner
+  normalizes the candidate industry before matching. Stale-lesson deactivation
+  now has regression coverage confirming neutral lessons are retired when they
+  stop recurring and left untouched when the neutral channel is disabled.
+
 ### Changed
 
 - **`cross_symbol_miner_enabled` now defaults to `True`,** so high-confidence

@@ -762,3 +762,50 @@ class TestNeutralChannel:
         result2 = await miner2.mine(lookback_days=30, min_samples=5, min_lift=0.15)
         assert result2["neutral_significant_buckets"] == 0
         assert result2.get("neutral_regime_filtered", 0) >= 1
+
+
+def _governance_db(existing: list[dict]) -> MagicMock:
+    db = MagicMock()
+    db.list_strategy_lessons = MagicMock(return_value=existing)
+    deactivated: list = []
+    db.deactivate_strategy_lesson = MagicMock(side_effect=deactivated.append)
+    db._deactivated = deactivated
+    return db
+
+
+class TestNeutralDeactivationGovernance:
+    """Stale-lesson deactivation must respect the neutral namespace."""
+
+    def test_stale_neutral_and_directional_deactivated(self):
+        # Only the 地产 neutral bucket + BUY directional bucket recurred this
+        # run; the stale 有色 neutral lesson must be deactivated.
+        existing = [
+            {"id": "d1", "payload": {"dimension": "final_decision=BUY"}},
+            {"id": "n1", "payload": {"dimension": "neutral:industry=地产"}},
+            {"id": "n2", "payload": {"dimension": "neutral:industry=有色"}},
+        ]
+        db = _governance_db(existing)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result: dict = {}
+        miner._deactivate_stale_lessons(
+            {"final_decision=BUY", "neutral:industry=地产"}, result, include_neutral=True
+        )
+        assert db._deactivated == ["n2"]
+        assert result["lessons_deactivated"] == 1
+
+    def test_neutral_untouched_when_channel_disabled(self):
+        # When the neutral channel did not run this call, neutral: lessons must
+        # NOT be deactivated even though they are absent from active_dimensions
+        # — a disabled channel should not silently retire them.
+        existing = [
+            {"id": "d1", "payload": {"dimension": "final_decision=BUY"}},
+            {"id": "n1", "payload": {"dimension": "neutral:industry=地产"}},
+        ]
+        db = _governance_db(existing)
+        miner = CrossSymbolPatternMiner(db=db, config={})
+        result: dict = {}
+        miner._deactivate_stale_lessons(
+            {"final_decision=BUY"}, result, include_neutral=False
+        )
+        assert db._deactivated == []
+        assert "lessons_deactivated" not in result
