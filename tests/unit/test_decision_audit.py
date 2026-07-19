@@ -241,6 +241,79 @@ def test_backtest_job_submission_and_recovery(tmp_path, monkeypatch):
         assert artifacts[0]["payload"]["id"] == item["id"]
 
 
+def test_backtest_recovery_pending_stays_running(tmp_path, monkeypatch):
+    """A still-queued job stays 'running' on refresh: get_job_result is not
+    fetched and no report artifact is emitted until it completes."""
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "backtest-pending.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    result_calls = {"count": 0}
+
+    class MCP:
+        async def list_strategies_and_configs(self):
+            return {"strategies": [{"name": "ff_residual_csi800_main", "sha1": "s1"}],
+                    "configs": [{"name": "prod_ff_residual_csi800_tv15", "sha1": "c1"}]}
+
+        async def run_backtest(self, **_kwargs):
+            return {"job_id": "job-pending", "status": "queued"}
+
+        async def get_job_status(self, job_id):
+            return {"status": "running"}
+
+        async def get_job_result(self, job_id):
+            result_calls["count"] += 1
+            return {}
+
+    async def get_client(_config):
+        return MCP()
+
+    monkeypatch.setattr("tradingagents.api.routes.decision_audit.get_mcp_client", get_client)
+    with TestClient(create_app()) as client:
+        item = client.post("/api/v1/backtests", json={
+            "start_date": "2024-01-01", "end_date": "2025-01-01",
+            "transaction_cost_bps": 12, "slippage_bps": 6,
+        }).json()
+        assert item["status"] == "submitted"
+        recovered = client.get(f"/api/v1/backtests/{item['id']}")
+        assert recovered.json()["status"] == "running"
+        assert result_calls["count"] == 0
+        assert client.app.state.db.list_artifacts(artifact_type="backtest_report") == []
+
+
+def test_backtest_recovery_marks_failed(tmp_path, monkeypatch):
+    """A job that fails remotely is recorded as failed with the backend error,
+    and no report artifact is written."""
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "backtest-failed.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+
+    class MCP:
+        async def list_strategies_and_configs(self):
+            return {"strategies": [{"name": "ff_residual_csi800_main", "sha1": "s1"}],
+                    "configs": [{"name": "prod_ff_residual_csi800_tv15", "sha1": "c1"}]}
+
+        async def run_backtest(self, **_kwargs):
+            return {"job_id": "job-failed", "status": "queued"}
+
+        async def get_job_status(self, job_id):
+            return {"status": "failed", "error": "data gap in universe"}
+
+    async def get_client(_config):
+        return MCP()
+
+    monkeypatch.setattr("tradingagents.api.routes.decision_audit.get_mcp_client", get_client)
+    with TestClient(create_app()) as client:
+        item = client.post("/api/v1/backtests", json={
+            "start_date": "2024-01-01", "end_date": "2025-01-01",
+            "transaction_cost_bps": 12, "slippage_bps": 6,
+        }).json()
+        assert item["status"] == "submitted"
+        recovered = client.get(f"/api/v1/backtests/{item['id']}").json()
+        assert recovered["status"] == "failed"
+        assert "data gap in universe" in str(recovered.get("error"))
+        assert client.app.state.db.list_artifacts(artifact_type="backtest_report") == []
+
+
 def test_strategy_backtest_skill_persists_audited_sync_result(tmp_path, monkeypatch):
     db = Database(tmp_path / "skill-backtest.db")
 

@@ -4,10 +4,11 @@ All tests mock the LLM to return controlled responses so we do not need an
 actual LLM provider or API key to verify the routing logic.
 """
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from tradingagents.core.chat_agent import ChatAgent
 from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
@@ -267,3 +268,149 @@ class TestChatAgentMultiTurnContext:
         assert any("茅台是贵州茅台" in c for c in assistant_contents), (
             "second turn did not see the first assistant reply — multi-turn context broken"
         )
+
+    @pytest.mark.asyncio
+    async def test_clarify_then_ticker_resolves_to_skill_run(self, chat_agent):
+        """Chinese two-turn flow: '分析一下' clarifies, then the follow-up naming
+        the stock resolves to skill_run; turn 2 must see turn 1's user text and
+        the clarify reply in the message list."""
+        clarify_resp = MagicMock()
+        clarify_resp.content = ""
+        clarify_resp.tool_calls = []
+        skill_resp = MagicMock()
+        skill_resp.content = ""
+        skill_resp.tool_calls = [{"name": "stock_analysis", "args": {"ticker": "600519.SH"}}]
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=[clarify_resp, skill_resp])
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            first = await chat_agent.handle("分析一下", session_id="cn1")
+            assert first.intent == "clarify"
+            second = await chat_agent.handle("就茅台 600519.SH", session_id="cn1")
+            assert second.intent == "skill_run"
+            assert second.skill_id == "stock_analysis"
+
+        second_msgs = mock_llm.ainvoke.await_args_list[1].args[0]
+        humans = [m.content for m in second_msgs if isinstance(m, HumanMessage)]
+        ais = [m.content for m in second_msgs if isinstance(m, AIMessage)]
+        assert any("分析一下" in c for c in humans)
+        assert any("茅台 600519.SH" in c for c in humans)
+        assert any("请问您需要什么帮助" in c for c in ais)
+
+    @pytest.mark.asyncio
+    async def test_tool_answer_records_synthesized_turn(self, chat_agent):
+        """A tool_answer has empty content; a synthesized note must be written to
+        the buffer so the next turn knows a tool was already queried."""
+        resp = MagicMock()
+        resp.content = ""
+        resp.tool_calls = [{"name": "get_portfolio_summary", "args": {}}]
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=resp)
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            await chat_agent.handle("我的持仓怎么样", session_id="cn2")
+
+        buf = chat_agent._buffers["cn2"]
+        assert buf[-1]["role"] == "assistant"
+        assert "get_portfolio_summary" in buf[-1]["content"]
+
+
+class TestChatAgentErrorRouting:
+    """Regression coverage for degraded / malformed routing paths."""
+
+    @pytest.mark.asyncio
+    async def test_lightweight_tool_handler_exception_degrades(self, chat_agent):
+        """A tool handler that raises degrades to a tool_answer error payload
+        instead of crashing the turn."""
+        boom = LightweightTool(
+            name="get_factor_snapshot",
+            description="factor snapshot",
+            parameters={"type": "object", "properties": {}},
+            handler=AsyncMock(side_effect=RuntimeError("mcp down")),
+            display="table",
+        )
+        chat_agent._tool_registry.register(boom)
+        chat_agent._lightweight_names.add(boom.name)
+        resp = MagicMock()
+        resp.content = ""
+        resp.tool_calls = [{"name": "get_factor_snapshot", "args": {}}]
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=resp)
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await chat_agent.handle("看下茅台的因子")
+
+        assert result.intent == "tool_answer"
+        assert result.tool_result["error"] == "mcp down"
+        assert "出错" in result.content
+
+    @pytest.mark.asyncio
+    async def test_empty_tool_name_falls_back_to_chat(self, chat_agent):
+        """A malformed tool_call with no resolvable name routes to chat_answer."""
+        resp = MagicMock()
+        resp.content = ""
+        resp.tool_calls = [{"args": {"ticker": "600519.SH"}}]
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=resp)
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await chat_agent.handle("随便跑个东西")
+
+        assert result.intent == "chat_answer"
+        assert "不认识" in result.content
+
+    @pytest.mark.asyncio
+    async def test_tool_args_json_string_is_parsed(self, chat_agent):
+        """Providers that return tool args as a JSON string still yield a parsed
+        dict for skill_params."""
+        resp = MagicMock()
+        resp.content = ""
+        resp.tool_calls = [{"name": "stock_analysis", "args": '{"ticker": "000001.SZ"}'}]
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=resp)
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await chat_agent.handle("分析平安银行")
+
+        assert result.intent == "skill_run"
+        assert result.skill_params == {"ticker": "000001.SZ"}
+
+    @pytest.mark.asyncio
+    async def test_lightweight_name_missing_from_registry_is_unavailable(self, chat_agent):
+        """If a name is advertised as lightweight but the registry lacks it, the
+        turn reports the tool unavailable rather than raising."""
+        chat_agent._lightweight_names.add("ghost_tool")
+        resp = MagicMock()
+        resp.content = ""
+        resp.tool_calls = [{"name": "ghost_tool", "args": {}}]
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=resp)
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await chat_agent.handle("调用幽灵工具")
+
+        assert result.intent == "chat_answer"
+        assert "不可用" in result.content
+
+
+class TestChatAgentSessionEviction:
+    """Session buffer TTL + LRU eviction (mirrors LLMRouter)."""
+
+    def test_stale_session_is_evicted(self, chat_agent):
+        chat_agent._buffers["old"] = [{"role": "user", "content": "hi"}]
+        chat_agent._buffer_ts["old"] = time.monotonic() - (chat_agent._session_ttl + 10)
+
+        chat_agent._evict_stale_sessions()
+        assert "old" not in chat_agent._buffers
+        assert "old" not in chat_agent._buffer_ts
+
+    def test_lru_eviction_when_over_capacity(self, chat_agent):
+        chat_agent._max_sessions = 2
+        now = time.monotonic()
+        for i, sid in enumerate(["a", "b", "c"]):
+            chat_agent._buffers[sid] = [{"role": "user", "content": sid}]
+            chat_agent._buffer_ts[sid] = now + i  # 'a' is the oldest
+
+        chat_agent._evict_stale_sessions()
+        assert "a" not in chat_agent._buffers
+        assert set(chat_agent._buffers) == {"b", "c"}

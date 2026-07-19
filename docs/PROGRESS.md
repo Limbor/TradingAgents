@@ -554,12 +554,12 @@ Chat 层已完成四类意图分流：
 5. `/reflection` 评测页已上线（KPI/经验库/案例/手动触发），并持续增强：经验详情抽屉（类型/样本量/一致率/平均超额/胜率/跨周数/失效）、手动停用 lesson 入口（`POST /strategy-lessons/{id}/deactivate`）、**经验历史趋势 sparkline**（miner 每次挖掘写入 `payload.history`，方向档 win_rate、中性档 avg_excess 随挖掘日演化）、**按支撑证据反查 case**（miner 写入 `payload.evidence_cases`，抽屉懒加载 `GET /strategy-lessons/{id}/cases`）；helpers 抽出并加 20 条 Vitest 覆盖。
 6. **DailyPipeline 复核扩容已落地**：`daily_pipeline_llm_review_limit` 5→8，且新增 lesson 优先复核——排名超限但命中活跃 lesson 的候选被有界拉入复核窗（`daily_pipeline_llm_review_lesson_extra`，默认 4），使刚修复的注入链路对高排名之外的候选也真正生效。
 
-### 10.2 代码质量
+### 10.2 代码质量 ✅ 已完成（2026-07-17）
 
-1. 扩展前端 Vitest — 已覆盖 Chat store、Portfolio utils、ToolCard 和建议确认；下一步覆盖 WebSocket 重连和 Query invalidation
-2. 扩展浏览器 E2E — 已覆盖 Dashboard 风险、Chat 工具与持仓建议、Analysis 实时更新、Library 产物；下一步增加真实后端预发布 smoke
-3. MCP Client 合约测试 — 已覆盖错误信封、非法返回和超时重连；下一步覆盖异步 job 恢复
-4. ChatAgent 评测集 — 在现有四类与多工具聚合单元测试基础上增加中文多轮与错误路由回归样本
+1. ~~扩展前端 Vitest — 覆盖 WebSocket 重连和 Query invalidation~~ **已实现**——新增 `frontend/src/api/ws.test.ts`（9 测试）用可控 `FakeWebSocket` + fake timers 驱动重连状态机：run 流 unclean close 指数退避重连 / clean close 不重连 / maxReconnectAttempts=5 上限；chat 流非手动 close 重连 / disconnect 不重连 / 已 open 去重 / onerror→close / send 未连抛错 / malformed 帧忽略。新增 `frontend/src/pages/Chat/hooks.test.tsx`（5 测试）用 `vi.mock` 替换 ws/client 并捕获回调，断言 `run_complete`→失效 runs/dashboard-artifacts/holdings、`error`/`run_cancelled`→失效 runs、reconnect onOpen 恢复终态 run。
+2. ~~扩展浏览器 E2E — 增加真实后端预发布 smoke~~ **已实现**（见 10.1 第 4 条）——env 门控 `E2E_REAL_BACKEND=1` + `frontend/e2e/*.smoke.ts` + `test:e2e:smoke`（cross-env 跨平台），Playwright webServer 同起真实 FastAPI + vite dev，端到端断言健康探针 + 外壳渲染 + 路由跳转；独立 `e2e-smoke` CI job（continue-on-error 预警）。
+3. ~~MCP Client 合约测试 — 覆盖异步 job 恢复~~ **已实现**——`tests/unit/test_mcp_contract.py` 新增 5 个异步 job 传输合约测试（run_backtest/get_job_status/get_job_result/run_ablation_study 走统一错误信封、isError→mcp_tool_error、非法 JSON 拒绝、poll timeout→None + 标记重连）；`tests/unit/test_decision_audit.py` 新增 running 态保持 + failed 态落库两个恢复回归（补齐既有仅覆盖 completed happy path 的缺口）。
+4. ~~ChatAgent 评测集 — 中文多轮与错误路由回归~~ **已实现**——`tests/unit/test_chat_agent.py` 扩展：中文多轮上下文（clarify→ticker 晋级 skill_run、tool_answer 合成回合写入 buffer）、错误路由回归（handler 异常降级、空 tool name 回退 chat、args JSON 字符串解析、registry 缺失名标记不可用）、会话淘汰（TTL 过期删除、LRU 超容量删最旧）。
 
 ### 10.3 后续规划
 
