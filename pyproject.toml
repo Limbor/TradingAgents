@@ -55,6 +55,11 @@ api = [
 mcp = [
     "mcp>=1.0.0",
 ]
+# Desktop packaging: freezes the API server into a self-contained binary that
+# the Tauri shell launches as a sidecar. pip install "tradingagents[desktop]".
+desktop = [
+    "pyinstaller>=6.0",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"

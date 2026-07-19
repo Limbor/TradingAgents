@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:tauri": "tsc -b && vite build --mode tauri",
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:smoke": "cross-env E2E_REAL_BACKEND=1 playwright test"
+    "test:e2e:smoke": "cross-env E2E_REAL_BACKEND=1 playwright test",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
@@ -36,6 +38,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.61.1",
+    "@tauri-apps/cli": "^2.1.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^18.3.18",

@@ -564,5 +564,5 @@ Chat 层已完成四类意图分流：
 ### 10.3 后续规划
 
 1. Phase 4: 历史样本积累 + walk-forward/ablation 验证 + lesson 晋级治理
-2. Phase 5: Tauri 桌面打包
+2. ~~Phase 5: Tauri 桌面打包~~ **脚手架已落地（2026-07-17，macOS 优先）**——自包含方案：FastAPI 后端经 PyInstaller 冻结为单文件二进制，作为 Tauri sidecar 被 Rust 壳（`src-tauri/src/main.rs`）在 `setup` 拉起、退出时 kill，绑定 `127.0.0.1:8422`；前端 `vite build --mode tauri` 经 `frontend/.env.tauri` 注入绝对后端地址，web 构建不受影响；数据仍写 `~/.tradingagents`，桌面/CLI/dev 共享状态。产出 `src-tauri/`（Cargo.toml/tauri.conf.json/main.rs/capabilities）、`packaging/`（backend_entry.py + PyInstaller spec）、`scripts/build_desktop.sh` 一键编排、`docs/DESKTOP_PACKAGING.md`。**待有 Rust 工具链的机器执行 `scripts/build_desktop.sh` 产出 `.app`/`.dmg`**；代码签名/公证、Windows/Linux 交叉构建、自动更新为后续增量。
 3. 继续增强 Orchestrator/ChatAgent：更多中文股票别名、参数澄清、多轮上下文

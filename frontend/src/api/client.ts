@@ -1,6 +1,14 @@
 import { authHeaders } from "./auth";
 
-const API_BASE = "/api/v1";
+// Origin of the backend. Empty in dev/web builds so requests stay relative
+// (`/api/v1`) and flow through the Vite dev proxy or a same-origin deploy.
+// The Tauri build bakes in an absolute origin (see frontend/.env.tauri) since
+// the packaged frontend is served from a custom protocol, not the backend.
+const API_ORIGIN = (
+  (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+    ?.VITE_API_BASE_URL ?? ""
+).replace(/\/$/, "");
+const API_BASE = `${API_ORIGIN}/api/v1`;
 
 export interface SkillInfo {
   id: string;
