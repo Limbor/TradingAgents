@@ -17,6 +17,23 @@ def _write_cache(path, days):
     pd.DataFrame({"trade_date": [d.isoformat() for d in days]}).to_csv(path, index=False)
 
 
+@pytest.fixture(autouse=True)
+def _block_network(monkeypatch):
+    """Force all calendar lookups to rely on the seeded on-disk cache.
+
+    The seeded fixtures use fixed 2026 dates, so ``_ensure_loaded``'s staleness
+    check (latest date > 7 days ago) trips and would otherwise hit the network
+    (East Money / akshare), overwriting the test cache with real data. Making
+    both fetchers raise forces the deterministic "keep the on-disk cache"
+    fallback, keeping these tests offline and hermetic.
+    """
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("network disabled in tests")
+
+    monkeypatch.setattr(cal, "_fetch_from_eastmoney", _raise)
+    monkeypatch.setattr(cal, "_fetch_from_akshare", _raise)
+
+
 @pytest.fixture()
 def tmp_calendar(tmp_path, monkeypatch):
     """Seed the calendar with a known two-week stretch of trading days.
