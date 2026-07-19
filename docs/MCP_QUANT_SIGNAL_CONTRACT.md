@@ -555,6 +555,18 @@ MCP 侧必须保证：
 
 TradingAgents 前期只展示 `recommendations`，不自动改生产权重。
 
+### 6.4 可选审计增强工具（best-effort，非门禁）
+
+以下方法均为**可选**：TradingAgents 的 `audit_backtest_result` 仅在满足前置条件时调用，任何一个缺失、抛错或返回非 dict/`status==error` 时都会降级为 `{"available": false, "reason": ...}` 挂到 `validation` 上，**不影响** `production_gate_passed`（该门禁只看必需指标、provenance、前视/幸存者偏差、成本声明与 purged CV）。这些块用于展示，不参与生产就绪判定，也**不做参数搜索**。
+
+| 方法 | 触发条件 | 语义 |
+| --- | --- | --- |
+| `compute_purged_cv_sharpe(equity_curve, n_splits, purge_days)` | 结果带非空 `equity_curve`/`curve` | Purged K-fold CV，TradingAgents 再纯后处理为 `walk_forward` 折次一致性摘要（不跑额外回测） |
+| `analyze_execution_slippage(trades, participation_rates=None)` | 结果带非空 `trades` 且 MCP 暴露该方法 | 按成交明细拆解执行滑点/成本；出参回显在 `validation.execution_slippage` |
+| `run_ablation_study(base_experiment, ablations)` | 调用方**显式声明** `backtest_base_experiment` + `backtest_ablations` 列表 | 对显式声明的「关闭某因子」变体各跑一次，返回 base-vs-ablation 贡献表；**不是**参数搜索器 |
+
+出参约定：成功返回 `dict`（可含 `status: "success"`）；失败返回 `{"status": "error", "error": "..."}`。TradingAgents 会把非 dict 返回值 `str()` 化后记入 `error` 字段，绝不抛异常。
+
 ## 7. TradingAgents 消费方式
 
 ### 7.1 DailyPipeline / MarketScanner
@@ -575,6 +587,8 @@ rank_factor_candidates
 - 不使用 hash-based pseudo factor。
 - UI 和报告提示：`StockManager quant ranking unavailable`。
 - 允许用户选择 demo fallback，但必须显式标记 `demo/placeholder`。
+
+**候选 payload 可选字段 `deep_analysis`**：当 `daily_pipeline_deep_analysis_enabled=true` 时，量化排名 + LLM 复核后会对 Top N（`daily_pipeline_deep_analysis_limit`，默认 1）候选串行跑重量级多智能体 `StockAnalysisSkill`，把其 `structured_conclusion`（`rating`/`target_price`/`confidence`/`reasons`/`plan`）回写到候选 payload 的 `deep_analysis` 字段（signal 行、选股卡片、反思快照一并携带）。默认关闭（每只跑完整 agent graph，分钟级 + token 成本）；best-effort——深度分析失败或为空不阻断流水线，该字段缺省即视为未增强。
 
 ### 7.2 Agent Prompt 注入
 

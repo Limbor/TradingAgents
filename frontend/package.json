@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:smoke": "E2E_REAL_BACKEND=1 playwright test"
+    "test:e2e:smoke": "cross-env E2E_REAL_BACKEND=1 playwright test"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
@@ -42,6 +42,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "cross-env": "^10.1.0",
     "eslint": "^10.7.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",

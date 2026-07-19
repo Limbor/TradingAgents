@@ -40,8 +40,9 @@ async def audit_backtest_result(client: Any, result: dict[str, Any],
     )
     # Walk-forward stability is a pure post-processing summary of the purged CV
     # (per-fold sharpe consistency / out-of-sample decay); it runs no extra
-    # backtests and searches no parameters.
-    walk_forward = summarize_walk_forward(cv) if isinstance(cv, dict) else {}
+    # backtests and searches no parameters. summarize_walk_forward tolerates a
+    # None / non-dict cv and returns a uniform {"available": False} marker.
+    walk_forward = summarize_walk_forward(cv)
     # Execution slippage + ablation contribution are opt-in, best-effort MCP
     # calls that only fire when the caller supplies the required inputs (a trade
     # blotter / an explicitly declared ablation set). Neither sweeps parameters.
@@ -107,7 +108,7 @@ def _extract_fold_sharpes(cv: dict[str, Any]) -> list[float]:
     return []
 
 
-def summarize_walk_forward(cv: dict[str, Any]) -> dict[str, Any]:
+def summarize_walk_forward(cv: Any) -> dict[str, Any]:
     """Summarize walk-forward stability from the purged-CV result.
 
     Returns fold-consistency metrics (how many out-of-sample folds stayed
