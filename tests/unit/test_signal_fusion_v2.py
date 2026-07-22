@@ -290,6 +290,70 @@ class TestFusionFormula:
         result = fuse_candidate_signal(candidate, "medium_term", assessment)
         assert result["catalyst_score"] == 60.0
 
+    def test_alpha_override_none_matches_static_style(self):
+        """alpha_override=None must be byte-for-byte identical to current behavior."""
+        candidate = {
+            "quant_score": 78.0,
+            "tradability": {"is_tradable": True},
+            "risk_flags": [],
+            "factor_snapshot": {"close": 50.0},
+        }
+        assessment = {
+            "llm_confidence": 70.0,
+            "catalyst_score": 15.0,
+            "llm_view": "negative",
+            "catalyst_strength": "none",
+            "risk_override": False,
+            "invalidates_quant": False,
+            "risk_flags": [],
+        }
+        baseline = fuse_candidate_signal(candidate, "medium_term", assessment)
+        explicit_none = fuse_candidate_signal(candidate, "medium_term", assessment, alpha_override=None)
+        assert explicit_none == baseline
+        assert baseline["alpha_weight"] == {"quant": 0.55, "llm": 0.45}
+
+    def test_alpha_override_changes_weight_and_score(self):
+        """A provided alpha_override replaces the static STYLE_ALPHA quant weight."""
+        candidate = {
+            "quant_score": 78.0,
+            "tradability": {"is_tradable": True},
+            "risk_flags": [],
+            "factor_snapshot": {"close": 50.0},
+        }
+        assessment = {
+            "llm_confidence": 70.0,
+            "catalyst_score": 15.0,  # -3 penalty
+            "llm_view": "negative",
+            "catalyst_strength": "none",
+            "risk_override": False,
+            "invalidates_quant": False,
+            "risk_flags": [],
+        }
+        result = fuse_candidate_signal(candidate, "medium_term", assessment, alpha_override=0.8)
+        assert result["alpha_weight"] == {"quant": 0.8, "llm": 0.2}
+        # 0.8*78 + 0.2*70 - 3 = 62.4 + 14 - 3 = 73.4
+        assert result["final_score"] == 73.4
+
+    def test_alpha_override_clamped_to_unit_interval(self):
+        """Out-of-range overrides are clamped into [0, 1]."""
+        candidate = {
+            "quant_score": 78.0,
+            "tradability": {"is_tradable": True},
+            "risk_flags": [],
+            "factor_snapshot": {"close": 50.0},
+        }
+        assessment = {
+            "llm_confidence": 70.0,
+            "catalyst_score": 60.0,
+            "risk_override": False,
+            "invalidates_quant": False,
+            "risk_flags": [],
+        }
+        high = fuse_candidate_signal(candidate, "medium_term", assessment, alpha_override=1.5)
+        assert high["alpha_weight"] == {"quant": 1.0, "llm": 0.0}
+        low = fuse_candidate_signal(candidate, "medium_term", assessment, alpha_override=-0.5)
+        assert low["alpha_weight"] == {"quant": 0.0, "llm": 1.0}
+
 
 class TestDecisionStateMachine:
     def test_quant_buy_llm_positive_likely_buys(self):

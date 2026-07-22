@@ -28,6 +28,8 @@ class ScheduledTask:
     task: asyncio.Task | None = None
     last_run_at: str | None = None
     error: str | None = None
+    last_scheduled_date: str | None = None
+    status: str = "idle"
 
 
 class Scheduler:
@@ -38,12 +40,20 @@ class Scheduler:
     crash the server.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db: Any | None = None) -> None:
         self._tasks: dict[str, ScheduledTask] = {}
         self._stopped = asyncio.Event()
+        self._db = db
 
     def register_daily(self, name: str, run_at: time, job: ScheduledJob) -> None:
-        self._tasks[name] = ScheduledTask(name=name, run_at=run_at, job=job)
+        item = ScheduledTask(name=name, run_at=run_at, job=job)
+        state = self._job_state(name)
+        if state:
+            item.last_run_at = state.get("last_completed_at")
+            item.error = state.get("error")
+            item.last_scheduled_date = state.get("last_scheduled_date")
+            item.status = str(state.get("status") or "idle")
+        self._tasks[name] = item
 
     def register_interval(self, name: str, interval_seconds: float, job: ScheduledJob) -> None:
         """Register a job that repeats every *interval_seconds*.
@@ -88,6 +98,8 @@ class Scheduler:
                 "run_at": item.run_at.isoformat(timespec="minutes"),
                 "last_run_at": item.last_run_at,
                 "error": item.error,
+                "status": item.status,
+                "last_scheduled_date": item.last_scheduled_date,
                 "running": bool(item.task and not item.task.done()),
             }
             for item in self._tasks.values()
@@ -95,6 +107,11 @@ class Scheduler:
 
     async def _run_daily(self, item: ScheduledTask) -> None:
         while not self._stopped.is_set():
+            now = datetime.now(SHANGHAI_TZ)
+            state = self._job_state(item.name)
+            if _should_catch_up(item.run_at, now, state):
+                await self._execute_job(item, scheduled_date=now.date().isoformat())
+                continue
             delay = _seconds_until(item.run_at)
             try:
                 await asyncio.wait_for(self._stopped.wait(), timeout=delay)
@@ -102,13 +119,8 @@ class Scheduler:
             except asyncio.TimeoutError:
                 pass
 
-            try:
-                await item.job()
-                item.last_run_at = datetime.now(timezone.utc).isoformat()
-                item.error = None
-            except Exception as exc:
-                item.error = f"{type(exc).__name__}: {exc}"
-                logger.exception("Scheduled job %s failed", item.name)
+            scheduled_date = datetime.now(SHANGHAI_TZ).date().isoformat()
+            await self._execute_job(item, scheduled_date=scheduled_date)
 
 
     async def _run_interval(self, item: ScheduledTask) -> None:
@@ -120,13 +132,63 @@ class Scheduler:
             except asyncio.TimeoutError:
                 pass
 
-            try:
-                await item.job()
-                item.last_run_at = datetime.now(timezone.utc).isoformat()
-                item.error = None
-            except Exception as exc:
-                item.error = f"{type(exc).__name__}: {exc}"
-                logger.exception("Scheduled interval job %s failed", item.name)
+            await self._execute_job(item, scheduled_date=None)
+
+    def _job_state(self, name: str) -> dict[str, Any] | None:
+        if self._db is not None and hasattr(self._db, "get_scheduler_job_state"):
+            persisted = self._db.get_scheduler_job_state(name)
+            if persisted:
+                return persisted
+        item = self._tasks.get(name)
+        if item and item.last_scheduled_date:
+            return {
+                "last_scheduled_date": item.last_scheduled_date,
+                "status": item.status,
+            }
+        return None
+
+    async def _execute_job(
+        self, item: ScheduledTask, *, scheduled_date: str | None
+    ) -> None:
+        started_at = datetime.now(timezone.utc).isoformat()
+        item.last_scheduled_date = scheduled_date or item.last_scheduled_date
+        item.status = "running"
+        if self._db is not None and hasattr(self._db, "save_scheduler_job_state"):
+            self._db.save_scheduler_job_state(
+                item.name, scheduled_date=scheduled_date, status="running",
+                started_at=started_at, error=None,
+            )
+        try:
+            await item.job()
+            item.last_run_at = datetime.now(timezone.utc).isoformat()
+            item.error = None
+            item.status = "completed"
+            if self._db is not None and hasattr(self._db, "save_scheduler_job_state"):
+                self._db.save_scheduler_job_state(
+                    item.name, scheduled_date=scheduled_date, status="completed",
+                    completed_at=item.last_run_at, error=None,
+                )
+        except Exception as exc:
+            item.error = f"{type(exc).__name__}: {exc}"
+            item.status = "failed"
+            if self._db is not None and hasattr(self._db, "save_scheduler_job_state"):
+                self._db.save_scheduler_job_state(
+                    item.name, scheduled_date=scheduled_date, status="failed",
+                    completed_at=datetime.now(timezone.utc).isoformat(), error=item.error,
+                )
+            logger.exception("Scheduled job %s failed", item.name)
+
+
+def _should_catch_up(target: time, now: datetime, state: dict[str, Any] | None) -> bool:
+    """Run today's missed daily slot once; retry only a crash-marked running job."""
+    scheduled = now.replace(
+        hour=target.hour, minute=target.minute, second=target.second, microsecond=0
+    )
+    if now < scheduled:
+        return False
+    if not state or state.get("last_scheduled_date") != now.date().isoformat():
+        return True
+    return state.get("status") == "running"
 
 
 def _seconds_until(target: time) -> float:

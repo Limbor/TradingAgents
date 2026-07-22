@@ -137,7 +137,7 @@ Phase 5 (桌面打包)            ░░░░░░░░░░░░░░░�
 | 前端 Portfolio 持仓页 | ✅ 初版完成 | 持仓 CRUD、P&L、建议确认调仓；Dashboard 已展示结构化风险事件 |
 | 前端 Watchlist 关注页 | ✅ 初版完成 | 手动触发 `daily_pipeline` 进入 Chat + 近期运行列表；候选明细历史化待增强 |
 | 前端 Settings MCP 配置 | ✅ 完成 | MCP URL / enabled / timeout |
-| Tauri 桌面打包 | ❌ 远期 | desktop/ 目录不存在 |
+| Tauri 桌面打包 | ✅ 已实现 | PyInstaller sidecar + Tauri `.app`/`.dmg`，CI 执行发布构建 |
 
 ---
 
@@ -474,7 +474,7 @@ Chat 层已完成四类意图分流：
 
 | Week | 里程碑 | 状态 |
 |------|--------|------|
-| W16 | Tauri 集成 (Sidecar/窗口/托盘) | ❌ desktop/ 不存在 |
+| W16 | Tauri 集成 (Sidecar/窗口/发布构建) | ✅ macOS `.app`/`.dmg` 已验证，CI 已门禁 |
 | W17 | macOS 通知推送 | ❌ |
 | W18 | PyInstaller sidecar + .dmg 构建 | ❌ |
 
@@ -557,12 +557,12 @@ Chat 层已完成四类意图分流：
 ### 10.2 代码质量 ✅ 已完成（2026-07-17）
 
 1. ~~扩展前端 Vitest — 覆盖 WebSocket 重连和 Query invalidation~~ **已实现**——新增 `frontend/src/api/ws.test.ts`（9 测试）用可控 `FakeWebSocket` + fake timers 驱动重连状态机：run 流 unclean close 指数退避重连 / clean close 不重连 / maxReconnectAttempts=5 上限；chat 流非手动 close 重连 / disconnect 不重连 / 已 open 去重 / onerror→close / send 未连抛错 / malformed 帧忽略。新增 `frontend/src/pages/Chat/hooks.test.tsx`（5 测试）用 `vi.mock` 替换 ws/client 并捕获回调，断言 `run_complete`→失效 runs/dashboard-artifacts/holdings、`error`/`run_cancelled`→失效 runs、reconnect onOpen 恢复终态 run。
-2. ~~扩展浏览器 E2E — 增加真实后端预发布 smoke~~ **已实现**（见 10.1 第 4 条）——env 门控 `E2E_REAL_BACKEND=1` + `frontend/e2e/*.smoke.ts` + `test:e2e:smoke`（cross-env 跨平台），Playwright webServer 同起真实 FastAPI + vite dev，端到端断言健康探针 + 外壳渲染 + 路由跳转；独立 `e2e-smoke` CI job（continue-on-error 预警）。
+2. ~~扩展浏览器 E2E — 增加真实后端预发布 smoke~~ **已实现并升级为合并门禁**（见 10.1 第 4 条）——env 门控 `E2E_REAL_BACKEND=1` + `frontend/e2e/*.smoke.ts` + `test:e2e:smoke`（cross-env 跨平台），Playwright webServer 同起真实 FastAPI + vite dev，端到端断言健康探针 + 外壳渲染 + 路由跳转；独立 `e2e-smoke` CI job 失败会阻断合并。
 3. ~~MCP Client 合约测试 — 覆盖异步 job 恢复~~ **已实现**——`tests/unit/test_mcp_contract.py` 新增 5 个异步 job 传输合约测试（run_backtest/get_job_status/get_job_result/run_ablation_study 走统一错误信封、isError→mcp_tool_error、非法 JSON 拒绝、poll timeout→None + 标记重连）；`tests/unit/test_decision_audit.py` 新增 running 态保持 + failed 态落库两个恢复回归（补齐既有仅覆盖 completed happy path 的缺口）。
 4. ~~ChatAgent 评测集 — 中文多轮与错误路由回归~~ **已实现**——`tests/unit/test_chat_agent.py` 扩展：中文多轮上下文（clarify→ticker 晋级 skill_run、tool_answer 合成回合写入 buffer）、错误路由回归（handler 异常降级、空 tool name 回退 chat、args JSON 字符串解析、registry 缺失名标记不可用）、会话淘汰（TTL 过期删除、LRU 超容量删最旧）。
 
 ### 10.3 后续规划
 
 1. Phase 4: 历史样本积累 + walk-forward/ablation 验证 + lesson 晋级治理
-2. ~~Phase 5: Tauri 桌面打包~~ **脚手架已落地（2026-07-17，macOS 优先）**——自包含方案：FastAPI 后端经 PyInstaller 冻结为单文件二进制，作为 Tauri sidecar 被 Rust 壳（`src-tauri/src/main.rs`）在 `setup` 拉起、退出时 kill，绑定 `127.0.0.1:8422`；前端 `vite build --mode tauri` 经 `frontend/.env.tauri` 注入绝对后端地址，web 构建不受影响；数据仍写 `~/.tradingagents`，桌面/CLI/dev 共享状态。产出 `src-tauri/`（Cargo.toml/tauri.conf.json/main.rs/capabilities）、`packaging/`（backend_entry.py + PyInstaller spec）、`scripts/build_desktop.sh` 一键编排、`docs/DESKTOP_PACKAGING.md`。**待有 Rust 工具链的机器执行 `scripts/build_desktop.sh` 产出 `.app`/`.dmg`**；代码签名/公证、Windows/Linux 交叉构建、自动更新为后续增量。
+2. ~~Phase 5: Tauri 桌面打包~~ **已完成 macOS 可发布构建链（2026-07-19）**——FastAPI 经 PyInstaller 冻结为 sidecar；Rust 壳使用随机 loopback 端口、每次启动 256-bit 临时令牌、运行时前端协商与健康等待，并限制 CSP、WebSocket Origin 和前端 Tauri 权限。`scripts/build_desktop.sh` 已实机产出 `.app`/`.dmg`，CI 也执行完整桌面构建并上传 unsigned artifact。后续仅剩代码签名/公证、Windows/Linux 构建与自动更新。
 3. 继续增强 Orchestrator/ChatAgent：更多中文股票别名、参数澄清、多轮上下文

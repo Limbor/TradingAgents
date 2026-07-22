@@ -15,9 +15,9 @@ TradingAgents 桌面版把 **React 工作台** 与 **FastAPI 后端** 打进一�
 │    └─ setup(): spawn sidecar ─┐                                        │
 │                               ▼                                        │
 │  tradingagents-backend (PyInstaller 冻结的 FastAPI)                    │
-│    └─ uvicorn @ 127.0.0.1:8422                                         │
+│    └─ uvicorn @ 127.0.0.1:<随机端口>                                   │
 │                                                                        │
-│  前端 REST/WS 直连 127.0.0.1:8422（构建期由 .env.tauri 注入绝对地址）  │
+│  前端通过 Tauri command 获取本次端口与临时令牌，等待健康检查后启动 UI │
 │  数据默认写 ~/.tradingagents （与 CLI / dev server 共享状态）          │
 │                                                                        │
 │  退出时壳进程 kill sidecar，避免残留 Python 进程                       │
@@ -28,9 +28,11 @@ TradingAgents 桌面版把 **React 工作台** 与 **FastAPI 后端** 打进一�
 
 - **共享数据目录**：后端仍默认写 `~/.tradingagents`（DB、缓存、报告），所以桌面版
   与命令行、开发服务器看到同一份持仓/报告/反思数据。
-- **构建期连线**：打包前端用 `vite build --mode tauri`，加载 `frontend/.env.tauri`
-  把 `VITE_API_BASE_URL` / `VITE_WS_BASE_URL` 指向 `127.0.0.1:8422`。普通
-  `npm run build`（web 部署）不受影响，仍走相对地址。
+- **运行时安全连线**：Rust 壳每次启动选择随机 loopback 端口并生成 256-bit 临时
+  bearer token；前端通过只读 Tauri command 获取连接信息，等待 sidecar 健康后再
+  加载工作台。端口和令牌均不写入静态资源或本地存储。
+- **边界防护**：后端校验 REST token 与 WebSocket Origin，桌面 WebView 使用 CSP
+  仅允许连接本机随机端口；前端没有 shell spawn/execute 权限。
 - **生命周期**：sidecar 在 `setup` 阶段启动，`RunEvent::Exit` 时被 `kill`。
 
 ## 前置依赖
@@ -42,9 +44,8 @@ TradingAgents 桌面版把 **React 工作台** 与 **FastAPI 后端** 打进一�
 | 前端依赖 | `cd frontend && npm install` | 含 `@tauri-apps/cli` |
 | Xcode CLT | `xcode-select --install` | macOS 原生打包/签名 |
 
-> 本仓库当前环境未安装 Rust，故 `cargo build` / `.dmg` 产物需在具备 Rust 的
-> 机器上执行 `scripts/build_desktop.sh` 生成。脚手架、进程管理、打包规格与
-> 构建脚本均已就绪并可验证。
+> CI 在 macOS runner 上执行完整 PyInstaller + Tauri `.app` / `.dmg` 构建；本地
+> 仍可用同一脚本复现。代码签名与 Apple 公证凭据尚未接入。
 
 ## 一键构建
 
@@ -82,13 +83,13 @@ frontend/node_modules/.bin/tauri dev
 | `src-tauri/Cargo.toml` | Rust 壳依赖（tauri 2 + shell 插件） |
 | `src-tauri/tauri.conf.json` | 窗口、bundle 目标、`externalBin` sidecar、图标 |
 | `src-tauri/src/main.rs` | 壳入口：spawn/kill 后端 sidecar，转发日志 |
-| `src-tauri/capabilities/default.json` | Tauri 2 权限（允许执行 sidecar） |
+| `src-tauri/capabilities/default.json` | Tauri 2 前端权限（仅 `core:default`） |
 | `src-tauri/binaries/` | PyInstaller 产物（按 target triple 命名，git 忽略） |
 | `src-tauri/icons/` | `tauri icon` 生成（git 忽略） |
 | `packaging/backend_entry.py` | PyInstaller 分析入口，转发 `server.main()` |
 | `packaging/tradingagents-backend.spec` | PyInstaller 规格（含动态导入收集） |
 | `scripts/build_desktop.sh` | 一键编排 |
-| `frontend/.env.tauri` | 构建期后端地址注入 |
+| `frontend/.env.tauri` | 桌面构建模式说明（不含固定地址或凭据） |
 
 ## 常见问题
 
@@ -98,8 +99,8 @@ frontend/node_modules/.bin/tauri dev
 - **冻结后 `ModuleNotFoundError`**：skill 是运行时动态发现的，spec 已用
   `collect_submodules("tradingagents")` 收全；若新增第三方 provider 报缺模块，
   在 spec 的 `collect_all` 列表里补一行即可。
-- **端口占用**：sidecar 固定 `127.0.0.1:8422`（与 `main.rs` 常量、`.env.tauri` 一致）。
-  改端口需三处同步。
+- **后端启动超时**：前端最多等待 sidecar 20 秒并展示明确错误。端口每次随机选择；
+  若极低概率发生端口竞争，退出应用后重试即可。
 
 ## 后续（不在首轮范围）
 

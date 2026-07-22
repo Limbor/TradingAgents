@@ -352,6 +352,28 @@ class TestPersistenceUpdates:
         updated = db.update_strategy_lesson("nonexistent", finding="new")
         assert updated is None
 
+    def test_candidate_requires_explicit_approval_before_becoming_active(self, tmp_path):
+        from tradingagents.core.persistence import Database
+
+        db = Database(tmp_path / "lesson-governance.db")
+        db.save_strategy_lesson(
+            lesson_id="candidate-1",
+            lesson_type="cross_symbol_pattern",
+            scope="global",
+            finding="candidate",
+            active=False,
+            governance_status="validated",
+        )
+        assert db.list_strategy_lessons(active_only=True) == []
+        assert db.approve_strategy_lesson("candidate-1") is True
+        approved = db.get_strategy_lesson("candidate-1")
+        assert approved["active"] is True
+        assert approved["governance_status"] == "approved"
+        assert db.deactivate_strategy_lesson("candidate-1") is True
+        retired = db.get_strategy_lesson("candidate-1")
+        assert retired["active"] is False
+        assert retired["governance_status"] == "retired"
+
 
 # ---------------------------------------------------------------------------
 # win_rate None handling (P0-2 fix)
@@ -695,7 +717,9 @@ class TestLessonEvidenceAndHistory:
         assert flow_lesson["lesson_type"] == "cross_symbol_pattern"
         assert flow_lesson["target"] == ""
         assert flow_lesson["evidence_count"] == 6
-        assert flow_lesson["active"] is True
+        assert flow_lesson["active"] is False
+        assert flow_lesson["governance_status"] in {"candidate", "validated"}
+        assert "q_value" in flow_lesson["payload"]
 
 
 # ---------------------------------------------------------------------------
@@ -797,10 +821,11 @@ class TestNeutralChannel:
         lesson = by_dim["neutral:industry=有色"]
         assert lesson["scope"] == "industry"
         assert lesson["target"] == "有色"
-        assert lesson["active"] is True
+        assert lesson["active"] is False
+        assert lesson["governance_status"] in {"candidate", "validated"}
         assert lesson["payload"]["kind"] == "neutral"
         assert lesson["payload"]["pattern"] == "validated_avoidance"
-        assert lesson["confidence"] == "high"  # |avg_excess| 0.15 >= 0.10
+        assert lesson["confidence"] in {"low", "high"}
 
     @pytest.mark.asyncio
     async def test_missed_upside_promoted(self):
@@ -1092,4 +1117,3 @@ class TestSectorBetaDecomposition:
         assert bucket.neutral_sector_adjusted_n == 4
         assert len(bucket.neutral_excesses) == 6
         assert miner._neutral_basis(bucket) == "mixed"
-

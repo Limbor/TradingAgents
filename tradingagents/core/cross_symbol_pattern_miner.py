@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -54,6 +55,9 @@ class PatternBucket:
     # directional lessons stay scope="global").
     scope: str = "global"
     target: str = ""
+    p_value: float = 1.0
+    q_value: float = 1.0
+    statistically_validated: bool = False
 
 
 class CrossSymbolPatternMiner:
@@ -464,15 +468,23 @@ class CrossSymbolPatternMiner:
         many neutral/unscored cases but few scored ones does not have a
         reliable win_rate.
         """
-        significant: list[PatternBucket] = []
+        eligible: list[PatternBucket] = []
         for bucket in buckets:
             if bucket.scored_n < min_samples:
                 continue
             bucket.baseline_win_rate = baseline_win_rate
             bucket.lift = bucket.win_rate - baseline_win_rate
-            if abs(bucket.lift) >= min_lift:
-                significant.append(bucket)
-        return significant
+            bucket.p_value = _exact_binomial_two_sided(
+                bucket.correct_count, bucket.scored_n, baseline_win_rate
+            )
+            eligible.append(bucket)
+        _apply_benjamini_hochberg(eligible)
+        alpha = float(self._config.get("cross_symbol_miner_fdr_alpha", 0.05))
+        for bucket in eligible:
+            bucket.statistically_validated = bucket.q_value <= alpha
+        # Effect-size filtering selects review candidates. Statistical
+        # validation is recorded separately and never auto-activates a rule.
+        return [bucket for bucket in eligible if abs(bucket.lift) >= min_lift]
 
     # ------------------------------------------------------------------
     # LLM explanation + template fallback
@@ -581,8 +593,12 @@ class CrossSymbolPatternMiner:
             "baseline": bucket.baseline_win_rate,
             "lift": bucket.lift,
             "avg_return": bucket.avg_return,
+            "p_value": round(bucket.p_value, 6),
+            "q_value": round(bucket.q_value, 6),
+            "statistically_validated": bucket.statistically_validated,
         }
-        confidence = self._lift_to_confidence(bucket.lift)
+        governance = "validated" if bucket.statistically_validated else "candidate"
+        confidence = self._lift_to_confidence(bucket.lift) if bucket.statistically_validated else "low"
 
         # Check existing lessons for a same-dimension match.
         try:
@@ -611,6 +627,12 @@ class CrossSymbolPatternMiner:
                     suggested_adjustment=adjustment,
                     evidence_count=bucket.n,
                     confidence=confidence,
+                    governance_status=(
+                        merged.get("governance_status")
+                        if merged.get("governance_status") == "approved"
+                        else governance
+                    ),
+                    active=bool(merged.get("active")) and merged.get("governance_status") == "approved",
                     payload=payload,
                 )
                 result["lessons_updated"] += 1
@@ -630,7 +652,8 @@ class CrossSymbolPatternMiner:
                 target="",
                 evidence_count=bucket.n,
                 confidence=confidence,
-                active=True,
+                active=False,
+                governance_status=governance,
                 payload=payload,
             )
             result["lessons_created"] += 1
@@ -817,7 +840,7 @@ class CrossSymbolPatternMiner:
         min_excess = float(self._config.get("cross_symbol_miner_min_excess", 0.05))
         min_consistency = float(self._config.get("cross_symbol_miner_min_consistency", 0.6))
         min_periods = int(self._config.get("cross_symbol_miner_neutral_min_periods", 2))
-        significant: list[PatternBucket] = []
+        eligible: list[PatternBucket] = []
         regime_filtered = 0
         for bucket in self._aggregate_neutral(cases):
             excesses = bucket.neutral_excesses
@@ -835,6 +858,15 @@ class CrossSymbolPatternMiner:
             bucket.neutral_avg_excess = avg
             bucket.neutral_consistency = consistency
             bucket.neutral_distinct_periods = n_periods
+            bucket.p_value = _exact_binomial_two_sided(same, n, 0.5)
+            eligible.append(bucket)
+        _apply_benjamini_hochberg(eligible)
+        alpha = float(self._config.get("cross_symbol_miner_fdr_alpha", 0.05))
+        significant: list[PatternBucket] = []
+        for bucket in eligible:
+            avg = bucket.neutral_avg_excess
+            consistency = bucket.neutral_consistency
+            n_periods = bucket.neutral_distinct_periods
             if abs(avg) < min_excess or consistency < min_consistency:
                 continue
             if n_periods < min_periods:
@@ -843,6 +875,7 @@ class CrossSymbolPatternMiner:
                 # recurring edge. Skip promotion.
                 regime_filtered += 1
                 continue
+            bucket.statistically_validated = bucket.q_value <= alpha
             significant.append(bucket)
         result["neutral_significant_buckets"] = len(significant)
         if regime_filtered:
@@ -906,8 +939,15 @@ class CrossSymbolPatternMiner:
             "target": bucket.target,
             "basis": basis,
             "sector_adjusted_n": bucket.neutral_sector_adjusted_n,
+            "p_value": round(bucket.p_value, 6),
+            "q_value": round(bucket.q_value, 6),
+            "statistically_validated": bucket.statistically_validated,
         }
-        confidence = self._excess_to_confidence(bucket.neutral_avg_excess)
+        governance = "validated" if bucket.statistically_validated else "candidate"
+        confidence = (
+            self._excess_to_confidence(bucket.neutral_avg_excess)
+            if bucket.statistically_validated else "low"
+        )
 
         try:
             existing = self._db.list_strategy_lessons(
@@ -935,6 +975,12 @@ class CrossSymbolPatternMiner:
                     suggested_adjustment=adjustment,
                     evidence_count=n,
                     confidence=confidence,
+                    governance_status=(
+                        merged.get("governance_status")
+                        if merged.get("governance_status") == "approved"
+                        else governance
+                    ),
+                    active=bool(merged.get("active")) and merged.get("governance_status") == "approved",
                     payload=payload,
                 )
                 result["lessons_updated"] += 1
@@ -953,7 +999,8 @@ class CrossSymbolPatternMiner:
                 target=bucket.target,
                 evidence_count=n,
                 confidence=confidence,
-                active=True,
+                active=False,
+                governance_status=governance,
                 payload=payload,
             )
             result["lessons_created"] += 1
@@ -1041,6 +1088,36 @@ class CrossSymbolPatternMiner:
 # ---------------------------------------------------------------------------
 # Lesson ID and dedup helpers
 # ---------------------------------------------------------------------------
+
+
+def _exact_binomial_two_sided(successes: int, trials: int, probability: float) -> float:
+    """Exact two-sided binomial p-value without a SciPy runtime dependency."""
+    if trials <= 0 or not 0.0 <= probability <= 1.0:
+        return 1.0
+
+    def pmf(k: int) -> float:
+        return (
+            math.comb(trials, k)
+            * (probability ** k)
+            * ((1.0 - probability) ** (trials - k))
+        )
+
+    observed = pmf(successes)
+    tolerance = observed * 1e-12 + 1e-15
+    return min(1.0, sum(pmf(k) for k in range(trials + 1) if pmf(k) <= observed + tolerance))
+
+
+def _apply_benjamini_hochberg(buckets: list[PatternBucket]) -> None:
+    """Attach FDR-adjusted q-values across all buckets tested in one family."""
+    if not buckets:
+        return
+    ordered = sorted(buckets, key=lambda bucket: bucket.p_value)
+    count = len(ordered)
+    running = 1.0
+    for rank in range(count, 0, -1):
+        bucket = ordered[rank - 1]
+        running = min(running, bucket.p_value * count / rank)
+        bucket.q_value = min(1.0, running)
 
 
 def _lesson_id_from_finding(finding: str) -> str:

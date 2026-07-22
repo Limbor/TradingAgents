@@ -161,7 +161,8 @@ async def create_backtest(request: Request, body: BacktestRequest):
         raise HTTPException(status_code=502, detail=message)
     job_id = str(result.get("job_id") or "")
     status = "submitted" if job_id else "completed"
-    stored_result = {} if job_id else await audit_backtest_result(client, result, request_payload)
+    audit_config = {**request.app.state.config, **request_payload}
+    stored_result = {} if job_id else await audit_backtest_result(client, result, audit_config)
     item = request.app.state.db.save_backtest_run(
         backtest_id=backtest_id, job_id=job_id, strategy_type=body.strategy_name,
         start_date=body.start_date, end_date=body.end_date,
@@ -189,7 +190,11 @@ async def list_backtests(request: Request, status: str | None = None, limit: int
     items = request.app.state.db.list_backtest_runs(status=status, limit=limit)
     refreshed = []
     for item in items:
-        if item["status"] in {"submitted", "running"} and item.get("job_id"):
+        validation = (item.get("result") or {}).get("validation") or {}
+        needs_reaudit = item["status"] == "completed" and validation.get("version") != 2
+        if (
+            item["status"] in {"submitted", "running"} and item.get("job_id")
+        ) or needs_reaudit:
             refreshed.append(await get_backtest(request, item["id"], refresh=True))
         else:
             refreshed.append(item)
@@ -202,14 +207,29 @@ async def get_backtest(request: Request, backtest_id: str, refresh: bool = True)
     item = db.get_backtest_run(backtest_id)
     if not item:
         raise HTTPException(status_code=404, detail="Backtest not found")
-    if refresh and item["status"] in {"submitted", "running"} and item.get("job_id"):
+    validation = (item.get("result") or {}).get("validation") or {}
+    needs_reaudit = item["status"] == "completed" and validation.get("version") != 2
+    if refresh and needs_reaudit:
+        client = await get_mcp_client(request.app.state.config)
+        if client is not None:
+            audit_config = {**request.app.state.config, **item["config"]}
+            audited = await audit_backtest_result(client, item["result"], audit_config)
+            item = db.save_backtest_run(
+                backtest_id=item["id"], job_id=item["job_id"],
+                strategy_type=item["strategy_type"], start_date=item["start_date"],
+                end_date=item["end_date"], config=item["config"],
+                status="completed", result=audited,
+            )
+            _save_backtest_artifact(db, item)
+    elif refresh and item["status"] in {"submitted", "running"} and item.get("job_id"):
         client = await get_mcp_client(request.app.state.config)
         if client is not None:
             status_payload = await client.get_job_status(item["job_id"])
             remote_status = str((status_payload or {}).get("status") or "running").lower()
             if remote_status in {"completed", "success", "succeeded", "done"}:
                 result = await client.get_job_result(item["job_id"])
-                audited = await audit_backtest_result(client, result or {}, item["config"])
+                audit_config = {**request.app.state.config, **item["config"]}
+                audited = await audit_backtest_result(client, result or {}, audit_config)
                 item = db.save_backtest_run(
                     backtest_id=item["id"], job_id=item["job_id"],
                     strategy_type=item["strategy_type"], start_date=item["start_date"],

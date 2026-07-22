@@ -22,7 +22,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_TAURI="$ROOT_DIR/src-tauri"
 FRONTEND="$ROOT_DIR/frontend"
-ICON_SOURCE="$ROOT_DIR/assets/TauricResearch.png"
+# 方形应用图标源（tauri icon 要求正方形，1024x1024）。TauricResearch.png 是
+# 6:1 横向 banner，不能直接用。
+ICON_SOURCE="$ROOT_DIR/assets/icon.png"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }

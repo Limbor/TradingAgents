@@ -29,30 +29,34 @@ class DecisionAuditEngine:
         evaluated = skipped = 0
         warnings: list[str] = []
         benchmark_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
-        records = self.db.list_decision_records(
-            status="open", limit=limit, oldest_first=True
-        ) + self.db.list_decision_records(
-            status="partially_realized", limit=limit, oldest_first=True
-        ) + self.db.list_decision_records(
-            status="tracking", limit=limit, oldest_first=True
-        )
-        records = sorted(records, key=lambda row: (row.get("decision_date") or "", row.get("created_at") or ""))[:limit]
+        if hasattr(self.db, "list_due_decision_records"):
+            records = self.db.list_due_decision_records(limit=limit)
+        else:  # Compatibility for lightweight test doubles.
+            records = self.db.list_decision_records(
+                status="open", limit=limit, oldest_first=True
+            )
         for record in records:
             requested = sorted({1, 5, 10, 20} | set(horizons) | {int(record.get("horizon_days") or 5)})
             existing = {int(row["horizon_days"]) for row in self.db.list_decision_outcomes(
                 decision_id=record["id"]
             )}
+            attempted = 0
+            record_errors: list[str] = []
             for horizon in requested:
                 if horizon in existing or advance_trading_days(record["decision_date"], horizon) > as_of:
                     continue
+                attempted += 1
                 outcome = await self.reflection.fetch_outcome(
                     record["symbol"], record["decision_date"], horizon
                 )
                 if not outcome:
                     skipped += 1
-                    warnings.append(
-                        f"{record['id']} horizon {horizon}: price outcome unavailable; kept pending"
+                    message = (
+                        f"{record['id']} horizon {horizon}: price outcome unavailable; "
+                        "retry scheduled"
                     )
+                    warnings.append(message)
+                    record_errors.append(f"horizon {horizon}: price unavailable")
                     continue
                 benchmark_symbol = str((record.get("payload") or {}).get("universe_index") or
                                        self.config.get("decision_audit_benchmark") or "000300.SH")
@@ -80,6 +84,11 @@ class DecisionAuditEngine:
                              "benchmark_source": (benchmark or {}).get("source")},
                 )
                 evaluated += 1
+            if attempted and hasattr(self.db, "record_decision_audit_attempt"):
+                self.db.record_decision_audit_attempt(
+                    record["id"],
+                    error="; ".join(record_errors) if record_errors else None,
+                )
             final_horizon = int(record.get("horizon_days") or 5)
             outcomes = self.db.list_decision_outcomes(decision_id=record["id"])
             final = next((row for row in outcomes if int(row["horizon_days"]) == final_horizon), None)
@@ -116,6 +125,7 @@ class DecisionAuditEngine:
                     reflection_case_id=case_id,
                 )
         return {"evaluated_outcomes": evaluated, "skipped": skipped,
+                "selected_records": len(records),
                 "as_of_date": as_of, "warnings": warnings}
 
     async def _fetch_benchmark(self, symbol: str, signal_date: str,

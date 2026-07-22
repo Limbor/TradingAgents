@@ -47,11 +47,18 @@ def fuse_candidate_signal(
     candidate: dict[str, Any],
     style: str,
     llm_assessment: LLMAssessment | dict[str, Any] | None = None,
+    *,
+    alpha_override: float | None = None,
 ) -> dict[str, Any]:
     """Return a state-machine decision pack for one candidate.
 
     The legacy score fields are kept for display/backwards compatibility, but
     the canonical action is ``final_decision``.
+
+    ``alpha_override`` is dormant plumbing for the adaptive-alpha work: when
+    provided (not None), it replaces the static ``STYLE_ALPHA`` quant weight
+    (clamped to [0, 1]). No production caller passes it yet, so default
+    behavior is unchanged.
     """
     assessment = _coerce_assessment(llm_assessment)
     quant_score = _clamp(_float_or(candidate.get("quant_score") or candidate.get("score"), 0.0))
@@ -67,7 +74,11 @@ def fuse_candidate_signal(
         final_score = quant_score
         fusion_mode = "quant_only"
     else:
-        quant_weight = STYLE_ALPHA.get(style, STYLE_ALPHA["medium_term"])
+        quant_weight = (
+            max(0.0, min(1.0, alpha_override))
+            if alpha_override is not None
+            else STYLE_ALPHA.get(style, STYLE_ALPHA["medium_term"])
+        )
         llm_weight = 1.0 - quant_weight
         llm_confidence = _clamp(assessment.llm_confidence)
         # catalyst bonus: high catalyst boosts score, low catalyst penalizes

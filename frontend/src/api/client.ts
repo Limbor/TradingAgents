@@ -1,12 +1,15 @@
 import { authHeaders } from "./auth";
+import { getBackendRuntime } from "./runtime";
 
 // Origin of the backend. Empty in dev/web builds so requests stay relative
 // (`/api/v1`) and flow through the Vite dev proxy or a same-origin deploy.
-// The Tauri build bakes in an absolute origin (see frontend/.env.tauri) since
-// the packaged frontend is served from a custom protocol, not the backend.
+// Desktop builds receive an absolute per-launch origin from the Rust shell;
+// the packaged frontend itself contains no fixed port.
 const API_ORIGIN = (
+  getBackendRuntime()?.api_origin ??
   (import.meta as unknown as { env?: Record<string, string | undefined> }).env
-    ?.VITE_API_BASE_URL ?? ""
+    ?.VITE_API_BASE_URL ??
+  ""
 ).replace(/\/$/, "");
 const API_BASE = `${API_ORIGIN}/api/v1`;
 
@@ -73,6 +76,7 @@ export interface StrategyLesson {
   evidence_count: number;
   confidence: string;
   active: boolean;
+  governance_status: "candidate" | "validated" | "approved" | "retired";
   expires_at: string | null;
   payload: Record<string, unknown>;
   created_at: string;
@@ -106,6 +110,52 @@ export interface ReflectionSummary {
   incorrect: number;
   accuracy: number;
   lookback_days: number;
+}
+
+export interface ScorecardAggregate {
+  count: number;
+  directional_count: number;
+  hit_rate: number | null;
+  avg_return: number | null;
+  avg_excess: number | null;
+}
+
+export interface ScorecardBucket extends ScorecardAggregate {
+  bucket: string;
+}
+
+export interface ScorecardRankIC {
+  value: number | null;
+  n: number;
+}
+
+export interface AlphaSuggestion {
+  suggested_alpha: number;
+  static_alpha: number;
+  alpha_data: number | null;
+  data_weight: number;
+  delta: number;
+  quant_ic: number | null;
+  llm_ic: number | null;
+  n: number;
+  applicable: boolean;
+  reason: string;
+  style: string | null;
+}
+
+export interface PredictionScorecard {
+  available: boolean;
+  reason: string | null;
+  n_evaluated: number;
+  min_samples: number;
+  lookback_days: number;
+  as_of: string;
+  overall: ScorecardAggregate | null;
+  rank_ic: Record<string, ScorecardRankIC>;
+  fusion_comparison: Record<string, ScorecardBucket | null>;
+  buckets: Record<string, ScorecardBucket[]>;
+  horizon_distribution: Record<string, number>;
+  alpha_suggestion: AlphaSuggestion | null;
 }
 
 export interface TradeCondition {
@@ -357,6 +407,10 @@ export async function getReflectionSummary(lookbackDays = 30): Promise<Reflectio
   return fetchJson(`${API_BASE}/reflections/summary?lookback_days=${lookbackDays}`);
 }
 
+export async function getPredictionScorecard(lookbackDays = 90): Promise<PredictionScorecard> {
+  return fetchJson(`${API_BASE}/prediction-scorecard?lookback_days=${lookbackDays}`);
+}
+
 export async function triggerReflection(): Promise<{ status: string; message: string }> {
   return fetchJson(`${API_BASE}/reflections/trigger`, { method: "POST" });
 }
@@ -369,6 +423,14 @@ export async function deactivateLesson(
   lessonId: string
 ): Promise<{ status: string; lesson_id: string; message: string }> {
   return fetchJson(`${API_BASE}/strategy-lessons/${encodeURIComponent(lessonId)}/deactivate`, {
+    method: "POST",
+  });
+}
+
+export async function approveLesson(
+  lessonId: string
+): Promise<{ status: string; lesson_id: string; message: string }> {
+  return fetchJson(`${API_BASE}/strategy-lessons/${encodeURIComponent(lessonId)}/approve`, {
     method: "POST",
   });
 }

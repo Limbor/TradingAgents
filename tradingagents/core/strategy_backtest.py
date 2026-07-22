@@ -6,19 +6,80 @@ import hashlib
 import json
 from typing import Any
 
+_METRIC_KEYS = (
+    "total_return",
+    "benchmark_total_return",
+    "alpha",
+    "excess_return",
+    "max_drawdown",
+    "sharpe",
+    "win_rate",
+    "turnover",
+    "transaction_cost_bps",
+    "slippage_bps",
+    "lookahead_bias_check_passed",
+    "survivorship_bias_check_passed",
+    "source",
+    "data_version",
+)
+
 
 def backtest_request_id(config: dict[str, Any]) -> str:
     canonical = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return "backtest:" + hashlib.sha256(canonical.encode()).hexdigest()[:24]
 
 
+def normalize_backtest_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Flatten StockManager sync and async result envelopes into one contract.
+
+    Live async jobs return metrics under ``result.report`` while older/sync
+    implementations expose them at the top level or under ``performance``.
+    Keeping this adapter in one place prevents the API, UI, and production gate
+    from silently interpreting the same successful job differently.
+    """
+    if not isinstance(result, dict):
+        return {}
+    payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+    report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+    performance = (
+        result.get("performance")
+        if isinstance(result.get("performance"), dict)
+        else payload.get("performance")
+        if isinstance(payload.get("performance"), dict)
+        else {}
+    )
+
+    normalized = {key: value for key, value in result.items() if key != "result"}
+    for key, value in payload.items():
+        if key not in {"report", "performance"}:
+            normalized.setdefault(key, value)
+    for source in (performance, report, payload, result):
+        for key in _METRIC_KEYS:
+            if key in source and source[key] is not None:
+                normalized[key] = source[key]
+    if report:
+        normalized["report"] = report
+    curve = (
+        result.get("equity_curve")
+        or result.get("curve")
+        or payload.get("equity_curve")
+        or payload.get("curve")
+        or []
+    )
+    if isinstance(curve, list):
+        normalized["equity_curve"] = curve
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    if meta:
+        normalized["meta"] = meta
+        for key in ("source", "data_version"):
+            if not normalized.get(key) and meta.get(key):
+                normalized[key] = meta[key]
+    return normalized
+
+
 async def audit_backtest_result(client: Any, result: dict[str, Any],
                                 config: dict[str, Any]) -> dict[str, Any]:
-    performance = result.get("performance") if isinstance(result.get("performance"), dict) else {}
-    enriched = {**result}
-    for key in ("total_return", "max_drawdown", "sharpe", "win_rate", "turnover"):
-        if key not in enriched and key in performance:
-            enriched[key] = performance[key]
+    enriched = normalize_backtest_result(result)
     curve = enriched.get("equity_curve") or enriched.get("curve") or []
     cv = None
     if isinstance(curve, list) and curve:
@@ -26,44 +87,80 @@ async def audit_backtest_result(client: Any, result: dict[str, Any],
             curve, n_splits=5, purge_days=int(config.get("purge_days") or 10)
         )
     required = ("total_return", "max_drawdown", "sharpe", "win_rate", "turnover")
-    missing = [key for key in required if not isinstance(enriched.get(key), (int, float))]
+    missing = [key for key in required if _as_float(enriched.get(key)) is None]
     provenance_missing = [key for key in ("source", "data_version") if not enriched.get(key)]
     lookahead_safe = enriched.get("lookahead_bias_check_passed") is True
     survivorship_safe = enriched.get("survivorship_bias_check_passed") is True
-    costs_declared = all(
-        isinstance(enriched.get(key, config.get(key)), (int, float))
+    costs = {
+        key: _as_float(enriched.get(key, config.get(key)))
         for key in ("transaction_cost_bps", "slippage_bps")
-    )
-    cv_valid = isinstance(cv, dict) and cv.get("status") != "error" and any(
-        isinstance(cv.get(key), (int, float))
-        for key in ("oos_sharpe", "mean_sharpe", "cv_sharpe", "median_sharpe", "sharpe")
-    )
+    }
+    costs_declared = all(value is not None and value >= 0 for value in costs.values())
+    cv_valid = _cv_sharpe(cv) is not None
     # Walk-forward stability is a pure post-processing summary of the purged CV
     # (per-fold sharpe consistency / out-of-sample decay); it runs no extra
     # backtests and searches no parameters. summarize_walk_forward tolerates a
     # None / non-dict cv and returns a uniform {"available": False} marker.
     walk_forward = summarize_walk_forward(cv)
+    alpha = _as_float(enriched.get("alpha"))
+    if alpha is None:
+        alpha = _as_float(enriched.get("excess_return"))
+    if alpha is None:
+        total = _as_float(enriched.get("total_return"))
+        benchmark_total = _as_float(enriched.get("benchmark_total_return"))
+        if total is not None and benchmark_total is not None:
+            alpha = total - benchmark_total
+            enriched["alpha"] = alpha
+    benchmark_comparison_present = alpha is not None
+
+    thresholds = {
+        "min_total_return": float(config.get("backtest_min_total_return", 0.0)),
+        "min_alpha": float(config.get("backtest_min_alpha", 0.0)),
+        "min_sharpe": float(config.get("backtest_min_sharpe", 0.5)),
+        "max_drawdown": float(config.get("backtest_max_drawdown", 0.25)),
+        "min_win_rate": float(config.get("backtest_min_win_rate", 0.45)),
+        "max_turnover": float(config.get("backtest_max_turnover", 10.0)),
+        "min_oos_sharpe": float(config.get("backtest_min_oos_sharpe", 0.5)),
+    }
+    oos_sharpe = _cv_sharpe(cv)
+    threshold_checks = {
+        "total_return": _at_least(enriched.get("total_return"), thresholds["min_total_return"]),
+        "alpha": alpha is not None and alpha >= thresholds["min_alpha"],
+        "sharpe": _at_least(enriched.get("sharpe"), thresholds["min_sharpe"]),
+        "max_drawdown": _drawdown_within(enriched.get("max_drawdown"), thresholds["max_drawdown"]),
+        "win_rate": _at_least(enriched.get("win_rate"), thresholds["min_win_rate"]),
+        "turnover": _at_most(enriched.get("turnover"), thresholds["max_turnover"]),
+        "oos_sharpe": oos_sharpe is not None and oos_sharpe >= thresholds["min_oos_sharpe"],
+        "walk_forward": not walk_forward.get("available") or bool(walk_forward.get("consistent")),
+    }
+    metric_thresholds_passed = all(threshold_checks.values())
     # Execution slippage + ablation contribution are opt-in, best-effort MCP
     # calls that only fire when the caller supplies the required inputs (a trade
     # blotter / an explicitly declared ablation set). Neither sweeps parameters.
     execution_slippage = await analyze_execution_slippage(client, enriched, config)
     ablation_study = await run_declared_ablations(client, config)
     enriched["validation"] = {
+        "version": 2,
         "required_metrics_present": not missing,
         "missing_metrics": missing,
         "missing_provenance": provenance_missing,
         "lookahead_bias_check_passed": lookahead_safe,
         "survivorship_bias_check_passed": survivorship_safe,
         "costs_declared": costs_declared,
-        "transaction_cost_bps": enriched.get("transaction_cost_bps", config.get("transaction_cost_bps")),
-        "slippage_bps": enriched.get("slippage_bps", config.get("slippage_bps")),
+        "transaction_cost_bps": costs["transaction_cost_bps"],
+        "slippage_bps": costs["slippage_bps"],
+        "benchmark_comparison_present": benchmark_comparison_present,
+        "thresholds": thresholds,
+        "threshold_checks": threshold_checks,
+        "metric_thresholds_passed": metric_thresholds_passed,
         "purged_cv": cv or {},
         "walk_forward": walk_forward,
         "execution_slippage": execution_slippage,
         "ablation_study": ablation_study,
         "production_gate_passed": (
             not missing and not provenance_missing and lookahead_safe and survivorship_safe and
-            costs_declared and cv_valid
+            costs_declared and cv_valid and benchmark_comparison_present and
+            metric_thresholds_passed
         ),
     }
     return enriched
@@ -74,6 +171,31 @@ def _as_float(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
+    return None
+
+
+def _at_least(value: Any, minimum: float) -> bool:
+    parsed = _as_float(value)
+    return parsed is not None and parsed >= minimum
+
+
+def _at_most(value: Any, maximum: float) -> bool:
+    parsed = _as_float(value)
+    return parsed is not None and parsed <= maximum
+
+
+def _drawdown_within(value: Any, maximum_loss: float) -> bool:
+    parsed = _as_float(value)
+    return parsed is not None and parsed >= -abs(maximum_loss)
+
+
+def _cv_sharpe(cv: Any) -> float | None:
+    if not isinstance(cv, dict) or cv.get("status") == "error":
+        return None
+    for key in ("oos_sharpe", "mean_sharpe", "cv_sharpe", "median_sharpe", "sharpe"):
+        parsed = _as_float(cv.get(key))
+        if parsed is not None:
+            return parsed
     return None
 
 

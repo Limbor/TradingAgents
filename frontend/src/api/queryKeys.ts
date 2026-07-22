@@ -17,6 +17,7 @@ export const queryKeys = {
   health: () => ["health"] as const,
   reflectionsSummary: () => ["reflections-summary"] as const,
   reflectionSummaryFor: (days = 30) => ["reflections-summary", days] as const,
+  predictionScorecard: (days = 90) => ["prediction-scorecard", days] as const,
   dashboardArtifacts: () => ["dashboard-artifacts"] as const,
   strategyLessons: () => ["strategy-lessons"] as const,
   reflectionLessons: (activeOnly = true, lessonType?: string) =>

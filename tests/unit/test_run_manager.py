@@ -138,3 +138,18 @@ def test_run_manager_persists_run_lifecycle(tmp_path):
         assert stored["completed_at"] is not None
 
     asyncio.run(run())
+
+
+def test_run_manager_reconciles_interrupted_persisted_run(tmp_path):
+    db = Database(tmp_path / "interrupted.db")
+    db.save_run("zombie", "test", {}, "pending")
+    db.update_run_status("zombie", "running", started_at="2026-07-18T00:00:00Z")
+
+    RunManager(db=db)
+
+    stored = db.get_run("zombie")
+    assert stored["status"] == "failed"
+    assert stored["error"] == "Interrupted by application restart"
+    events = db.list_run_events("zombie")
+    assert events[-1]["event_type"] == "error"
+    assert events[-1]["payload"]["message"] == "Interrupted by application restart"

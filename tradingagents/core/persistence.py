@@ -12,10 +12,46 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from tradingagents.dataflows.symbol_utils import (
+    detect_market,
+    is_yahoo_safe,
+    normalize_cn_display,
+)
+
 logger = logging.getLogger(__name__)
 
 
 DB_PATH = Path.home() / ".tradingagents" / "app.db"
+
+_NON_SECURITY_SYMBOLS = {
+    "DAILY_PIPELINE",
+    "DAILY_REVIEW",
+    "MARKET_SCANNER",
+    "POSITION_ADVISOR",
+    "PORTFOLIO",
+    "CN_A",
+    "UNKNOWN",
+}
+
+
+def _normalize_audit_symbol(symbol: Any) -> str | None:
+    """Return a canonical market symbol or ``None`` for workflow labels.
+
+    The audit ledger accepts both A-share and international Yahoo-style
+    symbols, but it must never treat artifact/skill identifiers as securities.
+    This helper is deliberately syntactic and network-free so migrations can
+    use it safely while the database is opening.
+    """
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    raw = symbol.strip().upper()
+    if raw in _NON_SECURITY_SYMBOLS or "_" in raw or len(raw) > 32:
+        return None
+    if detect_market(raw) == "cn_a":
+        return normalize_cn_display(raw)
+    if not is_yahoo_safe(raw):
+        return None
+    return raw
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -158,6 +194,7 @@ CREATE TABLE IF NOT EXISTS strategy_lessons (
     evidence_count INTEGER NOT NULL DEFAULT 1,
     confidence TEXT NOT NULL DEFAULT 'low',
     active INTEGER NOT NULL DEFAULT 1,
+    governance_status TEXT NOT NULL DEFAULT 'approved',
     expires_at TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
@@ -250,6 +287,10 @@ CREATE TABLE IF NOT EXISTS decision_records (
     reference_price REAL,
     status TEXT NOT NULL DEFAULT 'open',
     reflection_case_id TEXT NOT NULL DEFAULT '',
+    audit_last_attempt_at TEXT,
+    audit_next_retry_at TEXT,
+    audit_failure_count INTEGER NOT NULL DEFAULT 0,
+    audit_last_error TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -304,6 +345,15 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_status ON backtest_runs(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS scheduler_job_state (
+    name TEXT PRIMARY KEY,
+    last_scheduled_date TEXT,
+    status TEXT NOT NULL DEFAULT 'idle',
+    last_started_at TEXT,
+    last_completed_at TEXT,
+    error TEXT
+);
 """
 
 
@@ -329,6 +379,49 @@ class Database:
                     conn.execute(f"SELECT {_col} FROM plans LIMIT 0")
                 except sqlite3.OperationalError:
                     conn.execute(f"ALTER TABLE plans ADD COLUMN {_col} TEXT")
+            # Audit retry metadata was added after the initial decision ledger.
+            # Keep the migration additive so existing user databases upgrade in
+            # place without rebuilding the ledger.
+            for _col, _definition in (
+                ("audit_last_attempt_at", "TEXT"),
+                ("audit_next_retry_at", "TEXT"),
+                ("audit_failure_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("audit_last_error", "TEXT"),
+            ):
+                try:
+                    conn.execute(f"SELECT {_col} FROM decision_records LIMIT 0")
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        f"ALTER TABLE decision_records ADD COLUMN {_col} {_definition}"
+                    )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_decision_records_audit_retry
+                ON decision_records(status, audit_next_retry_at, audit_last_attempt_at)
+                """
+            )
+            # Explicit lesson governance separates mined candidates from rules
+            # that are allowed to influence future analyses. Existing
+            # cross-symbol lessons predate statistical validation and are
+            # conservatively demoted once during migration.
+            lesson_governance_added = False
+            try:
+                conn.execute("SELECT governance_status FROM strategy_lessons LIMIT 0")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE strategy_lessons ADD COLUMN governance_status "
+                    "TEXT NOT NULL DEFAULT 'approved'"
+                )
+                lesson_governance_added = True
+            if lesson_governance_added:
+                conn.execute(
+                    "UPDATE strategy_lessons SET governance_status = 'retired' "
+                    "WHERE active = 0"
+                )
+                conn.execute(
+                    "UPDATE strategy_lessons SET governance_status = 'candidate', active = 0 "
+                    "WHERE lesson_type = 'cross_symbol_pattern'"
+                )
             self._backfill_report_artifacts(conn)
             self._backfill_decision_records(conn)
             # One-time dedup of historical reflection_cases created before the
@@ -389,6 +482,38 @@ class Database:
               AND NOT EXISTS (SELECT 1 FROM trade_executions e WHERE e.decision_id = decision_records.id)
             """
         )
+        # Normalize legacy symbols and quarantine parser/report labels that were
+        # accidentally admitted as tickers (for example ``DAILY_PIPELINE``).
+        # Evidence-bearing rows are never deleted; they are marked cancelled so
+        # historical outcomes/executions remain inspectable.
+        rows = conn.execute("SELECT id, symbol FROM decision_records").fetchall()
+        for row in rows:
+            normalized = _normalize_audit_symbol(row["symbol"])
+            if normalized:
+                if normalized != row["symbol"]:
+                    conn.execute(
+                        "UPDATE decision_records SET symbol = ?, updated_at = ? WHERE id = ?",
+                        (normalized, now, row["id"]),
+                    )
+                continue
+            has_evidence = conn.execute(
+                """
+                SELECT EXISTS(SELECT 1 FROM decision_outcomes WHERE decision_id = ?)
+                     + EXISTS(SELECT 1 FROM trade_executions WHERE decision_id = ?)
+                """,
+                (row["id"], row["id"]),
+            ).fetchone()[0]
+            if has_evidence:
+                conn.execute(
+                    """
+                    UPDATE decision_records
+                    SET status = 'cancelled', audit_last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    ("invalid_symbol_quarantined", now, row["id"]),
+                )
+            else:
+                conn.execute("DELETE FROM decision_records WHERE id = ?", (row["id"],))
 
     def _dedup_reflection_cases(self, conn: sqlite3.Connection) -> None:
         """Delete duplicate reflection cases, keeping the newest per group.
@@ -721,7 +846,63 @@ class Database:
         """Get a run by ID."""
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-            return dict(row) if row else None
+        return dict(row) if row else None
+
+    def reconcile_interrupted_runs(self) -> int:
+        """Fail persisted non-terminal runs left behind by a prior process."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id FROM runs WHERE status IN ('pending', 'running')"
+            ).fetchall()
+            for row in rows:
+                run_id = str(row["id"])
+                message = "Interrupted by application restart"
+                conn.execute(
+                    "UPDATE runs SET status = 'failed', error = ?, completed_at = ? "
+                    "WHERE id = ?",
+                    (message, now, run_id),
+                )
+                seq = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT OR IGNORE INTO run_events "
+                    "(run_id, seq, event_type, payload_json, created_at) "
+                    "VALUES (?, ?, 'error', ?, ?)",
+                    (run_id, seq, json.dumps({"message": message}), now),
+                )
+            return len(rows)
+
+    def get_scheduler_job_state(self, name: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduler_job_state WHERE name = ?", (name,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_scheduler_job_state(
+        self, name: str, *, scheduled_date: str | None, status: str,
+        started_at: str | None = None, completed_at: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO scheduler_job_state (
+                    name, last_scheduled_date, status, last_started_at,
+                    last_completed_at, error
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    last_scheduled_date = COALESCE(excluded.last_scheduled_date, last_scheduled_date),
+                    status = excluded.status,
+                    last_started_at = COALESCE(excluded.last_started_at, last_started_at),
+                    last_completed_at = COALESCE(excluded.last_completed_at, last_completed_at),
+                    error = excluded.error
+                """,
+                (name, scheduled_date, status, started_at, completed_at, error),
+            )
 
     def get_report(self, report_id: str) -> dict | None:
         """Get a report by ID."""
@@ -992,6 +1173,9 @@ class Database:
                                reference_price: float | None = None,
                                payload: dict | None = None) -> dict:
         now = datetime.now(timezone.utc).isoformat()
+        normalized_symbol = _normalize_audit_symbol(symbol)
+        if normalized_symbol is None:
+            raise ValueError(f"invalid auditable security symbol: {symbol!r}")
         with self._conn() as conn:
             conn.execute(
                 """
@@ -1007,7 +1191,7 @@ class Database:
                     payload_json=excluded.payload_json, updated_at=excluded.updated_at
                 """,
                 (decision_id, source_type, source_run_id, source_artifact_id,
-                 symbol.strip().upper(), name, decision_date, decision.upper(),
+                 normalized_symbol, name, decision_date, decision.upper(),
                  max(1, int(horizon_days)), reference_price,
                  json.dumps(payload or {}, ensure_ascii=False, default=str), now, now),
             )
@@ -1046,6 +1230,69 @@ class Database:
                 values,
             ).fetchall()
         return [self._decode_json_columns(dict(row), ("payload_json",)) for row in rows]
+
+    def list_due_decision_records(self, *, limit: int = 100,
+                                  as_of: str | None = None) -> list[dict]:
+        """Return a fair audit batch without permanent head-of-line blocking.
+
+        Rows that failed market-data retrieval are backed off through
+        ``audit_next_retry_at``. Ordering by the least-recent attempt lets fresh
+        decisions progress even when an old symbol remains temporarily
+        unavailable.
+        """
+        now = as_of or datetime.now(timezone.utc).isoformat()
+        bounded_limit = min(max(int(limit), 1), 500)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.*,
+                    (SELECT COUNT(*) FROM trade_executions e WHERE e.decision_id=d.id)
+                        AS execution_count,
+                    (SELECT COUNT(*) FROM decision_outcomes o WHERE o.decision_id=d.id)
+                        AS outcome_count
+                FROM decision_records d
+                WHERE d.status IN ('open', 'partially_realized', 'tracking')
+                  AND (d.audit_next_retry_at IS NULL OR d.audit_next_retry_at <= ?)
+                ORDER BY
+                    CASE WHEN d.audit_last_attempt_at IS NULL THEN 0 ELSE 1 END,
+                    d.audit_last_attempt_at ASC,
+                    d.decision_date ASC,
+                    d.created_at ASC
+                LIMIT ?
+                """,
+                (now, bounded_limit),
+            ).fetchall()
+        return [self._decode_json_columns(dict(row), ("payload_json",)) for row in rows]
+
+    def record_decision_audit_attempt(self, decision_id: str, *,
+                                      error: str | None = None) -> dict | None:
+        """Persist audit retry state, applying bounded exponential backoff."""
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT audit_failure_count FROM decision_records WHERE id = ?",
+                (decision_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if error:
+                failure_count = int(row["audit_failure_count"] or 0) + 1
+                retry_days = min(2 ** max(failure_count - 1, 0), 7)
+                next_retry = (now_dt + timedelta(days=retry_days)).isoformat()
+            else:
+                failure_count = 0
+                next_retry = None
+            conn.execute(
+                """
+                UPDATE decision_records
+                SET audit_last_attempt_at = ?, audit_next_retry_at = ?,
+                    audit_failure_count = ?, audit_last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, next_retry, failure_count, error, now, decision_id),
+            )
+        return self.get_decision_record(decision_id)
 
     def update_decision_record(self, decision_id: str, *, status: str | None = None,
                                reflection_case_id: str | None = None) -> dict | None:
@@ -1530,6 +1777,7 @@ class Database:
         evidence_count: int = 1,
         confidence: str = "low",
         active: bool = True,
+        governance_status: str | None = None,
         expires_at: str | None = None,
         payload: dict | None = None,
     ) -> None:
@@ -1540,10 +1788,10 @@ class Database:
                 """
                 INSERT OR REPLACE INTO strategy_lessons (
                     id, lesson_type, scope, target, finding, suggested_adjustment,
-                    evidence_count, confidence, active, expires_at, payload_json,
+                    evidence_count, confidence, active, governance_status, expires_at, payload_json,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lesson_id,
@@ -1555,6 +1803,7 @@ class Database:
                     int(evidence_count),
                     confidence,
                     1 if active else 0,
+                    governance_status or ("approved" if active else "candidate"),
                     expires_at,
                     json.dumps(payload or {}, ensure_ascii=False),
                     now,
@@ -1636,7 +1885,8 @@ class Database:
         now = datetime.now(timezone.utc).isoformat()
         allowed = {
             "lesson_type", "scope", "target", "finding", "suggested_adjustment",
-            "evidence_count", "confidence", "active", "expires_at", "payload",
+            "evidence_count", "confidence", "active", "governance_status",
+            "expires_at", "payload",
         }
         sets: list[str] = []
         params: list[Any] = []
@@ -1681,7 +1931,19 @@ class Database:
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
-                "UPDATE strategy_lessons SET active = 0, updated_at = ? WHERE id = ?",
+                "UPDATE strategy_lessons SET active = 0, governance_status = 'retired', "
+                "updated_at = ? WHERE id = ?",
+                (now, lesson_id),
+            )
+            return int(cur.rowcount or 0) > 0
+
+    def approve_strategy_lesson(self, lesson_id: str) -> bool:
+        """Manually approve a reviewed candidate for strategy injection."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE strategy_lessons SET active = 1, governance_status = 'approved', "
+                "updated_at = ? WHERE id = ? AND governance_status IN ('candidate', 'validated')",
                 (now, lesson_id),
             )
             return int(cur.rowcount or 0) > 0
@@ -2136,3 +2398,32 @@ class Database:
             "lookback_days": lookback_days,
             "recent": [dict(row) for row in recent],
         }
+
+    def get_prediction_scorecard(
+        self, lookback_days: int = 90, min_samples: int = 5
+    ) -> dict:
+        """Aggregate reflected cases into a read-only prediction-quality scorecard.
+
+        Reuses ``list_reflection_cases`` (JSON-decoded payloads) for the
+        ``reflected`` cases within the lookback window, then delegates to the
+        pure ``build_scorecard`` aggregator. The active profile's investment
+        style selects the static ``STYLE_ALPHA`` prior for the advisory
+        ``alpha_suggestion``. No schema changes, no side effects.
+        """
+        from tradingagents.core.prediction_metrics import build_scorecard
+        from tradingagents.core.signal_fusion import STYLE_ALPHA
+
+        cases = self.list_reflection_cases(
+            status="reflected",
+            lookback_days=lookback_days,
+            limit=10000,
+        )
+        style = str(self.get_user_profile().get("investment_style") or "medium_term")
+        alpha_prior = STYLE_ALPHA.get(style, STYLE_ALPHA["medium_term"])
+        return build_scorecard(
+            cases,
+            lookback_days=lookback_days,
+            min_samples=min_samples,
+            alpha_prior=alpha_prior,
+            style=style,
+        )

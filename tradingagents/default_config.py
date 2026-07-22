@@ -30,6 +30,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MCP_STOCKMANAGER_DIR": "mcp_stockmanager_dir",
     "TRADINGAGENTS_INVESTMENT_STYLE":     "investment_style",
     "TRADINGAGENTS_API_AUTH_TOKEN":       "api_auth_token",
+    "TRADINGAGENTS_API_ALLOWED_ORIGINS":  "api_allowed_origins",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_ENABLED": "daily_pipeline_llm_review_enabled",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LIMIT": "daily_pipeline_llm_review_limit",
     "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LESSON_EXTRA": "daily_pipeline_llm_review_lesson_extra",
@@ -187,6 +188,21 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # default so local desktop usage is unaffected; set it when exposing the
     # API beyond localhost.
     "api_auth_token": os.getenv("TRADINGAGENTS_API_AUTH_TOKEN", ""),
+    "api_allowed_origins": os.getenv(
+        "TRADINGAGENTS_API_ALLOWED_ORIGINS",
+        "http://localhost:5173,tauri://localhost,http://tauri.localhost,"
+        "https://tauri.localhost",
+    ),
+    # Candidate-quant-rule production gate. Passing requires complete
+    # provenance/bias/cost evidence, benchmark-relative alpha, purged-CV
+    # evidence, and every numeric threshold below.
+    "backtest_min_total_return": 0.0,
+    "backtest_min_alpha": 0.0,
+    "backtest_min_sharpe": 0.5,
+    "backtest_max_drawdown": 0.25,
+    "backtest_min_win_rate": 0.45,
+    "backtest_max_turnover": 10.0,
+    "backtest_min_oos_sharpe": 0.5,
     # Legacy stdio path kept only for compatibility with older configs.
     "mcp_stockmanager_dir": os.path.expanduser("~/Documents/develop/StockManager"),
     # -------------------------------------------------------------------
@@ -224,13 +240,14 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Cross-symbol pattern mining. When enabled, the reflection batch runs a
     # statistical pattern discovery step after processing pending cases.
     # Patterns are saved as strategy_lessons with lesson_type="cross_symbol_pattern".
-    # Enabled by default so high-confidence patterns auto-promote after the
-    # daily 16:30 reflection batch; override with
+    # Enabled by default, but mined patterns remain inactive candidates until
+    # manually approved; override with
     # TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED=false to disable.
     "cross_symbol_miner_enabled": True,
-    "cross_symbol_miner_min_samples": 5,
+    "cross_symbol_miner_min_samples": 20,
     "cross_symbol_miner_min_lift": 0.15,
     "cross_symbol_miner_lookback_days": 30,
+    "cross_symbol_miner_fdr_alpha": 0.05,
     # Neutral channel of the miner: promotes WATCHLIST/HOLD/MONITOR patterns
     # by consistent excess-over-benchmark return (the win-rate gate cannot see
     # neutral cases because was_correct is None). Only runs when the master
@@ -242,12 +259,19 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # excess magnitude + same-sign consistency, so they use a lower minimum
     # sample count than the directional win-rate channel (which stays at
     # cross_symbol_miner_min_samples).
-    "cross_symbol_miner_neutral_min_samples": 4,
+    "cross_symbol_miner_neutral_min_samples": 20,
     # Regime guardrail: a neutral pattern must span at least this many distinct
     # ISO weeks of signal dates to promote. A single sector-wide selloff or a
     # one-day batch produces a strong-but-spurious excess concentrated in one
     # window; requiring recurrence across >=N weeks keeps market/sector-regime
     # episodes from being minted as permanent lessons. (Sector-beta
     # decomposition against an industry index is a further TODO.)
-    "cross_symbol_miner_neutral_min_periods": 2,
+    "cross_symbol_miner_neutral_min_periods": 4,
+    # Adaptive-alpha (direction 2). When enabled, the fusion layer may use a
+    # measured RankIC-derived quant weight instead of the static STYLE_ALPHA.
+    # v1 ships this OFF and advisory-only: the reflection scorecard surfaces a
+    # suggested alpha, but no production decision changes. Flip to True only
+    # after enough directional samples accumulate (the suggestion shrinks to
+    # the static prior on small/noisy samples regardless).
+    "adaptive_alpha_enabled": False,
 })

@@ -13,6 +13,7 @@ from tradingagents.core.persistence import Database
 from tradingagents.core.reflection import ReflectionEngine
 from tradingagents.core.strategy_backtest import (
     audit_backtest_result,
+    normalize_backtest_result,
     summarize_walk_forward,
 )
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -74,6 +75,70 @@ def test_existing_signals_and_reports_are_backfilled_idempotently(tmp_path):
     assert "signal:legacy-signal" in ids
     assert "report:legacy-report" in ids
     assert len([row for row in records if row["id"] == "report:legacy-report"]) == 1
+
+
+def test_audit_backfill_normalizes_cn_symbols_and_drops_workflow_labels(tmp_path):
+    path = tmp_path / "dirty-migration.db"
+    db = Database(path)
+    db.save_report(
+        "bare-cn", "run-r", "605589", "Sell", "report", None, "圣泉集团"
+    )
+    db.save_report(
+        "workflow-label", "run-r", "DAILY_PIPELINE", "Watchlist",
+        "report", None, "每日选股",
+    )
+
+    reopened = Database(path)
+    records = {row["id"]: row for row in reopened.list_decision_records(limit=20)}
+    assert records["report:bare-cn"]["symbol"] == "605589.SH"
+    assert "report:workflow-label" not in records
+
+
+def test_invalid_new_decision_symbol_is_rejected(tmp_path):
+    db = Database(tmp_path / "invalid-symbol.db")
+    with pytest.raises(ValueError, match="invalid auditable security symbol"):
+        db.upsert_decision_record(
+            decision_id="decision:bad", source_type="stock_analysis",
+            symbol="DAILY_PIPELINE", decision_date="2026-01-05",
+            decision="WATCHLIST",
+        )
+
+
+def test_failed_old_audit_record_does_not_block_fresh_record(tmp_path, monkeypatch):
+    db = Database(tmp_path / "fair-audit.db")
+    db.upsert_decision_record(
+        decision_id="decision:old", source_type="daily_pipeline",
+        symbol="600519.SH", decision_date="2025-01-02", decision="BUY",
+    )
+    db.upsert_decision_record(
+        decision_id="decision:fresh", source_type="daily_pipeline",
+        symbol="000858.SZ", decision_date="2025-01-03", decision="BUY",
+    )
+    engine = DecisionAuditEngine(db, {})
+
+    async def outcome(symbol, *_args, **_kwargs):
+        if symbol == "600519.SH":
+            return None
+        return {
+            "actual_return": 0.02, "close_at_signal": 100,
+            "close_at_horizon": 102, "source": "fixture",
+        }
+
+    async def benchmark(*_args, **_kwargs):
+        return {"actual_return": 0.0, "source": "fixture-index"}
+
+    monkeypatch.setattr(engine.reflection, "fetch_outcome", outcome)
+    monkeypatch.setattr(engine, "_fetch_benchmark", benchmark)
+
+    first = asyncio.run(engine.evaluate_due(as_of_date="2025-03-01", limit=1))
+    assert first["evaluated_outcomes"] == 0
+    old = db.get_decision_record("decision:old")
+    assert old["audit_failure_count"] == 1
+    assert old["audit_next_retry_at"]
+
+    second = asyncio.run(engine.evaluate_due(as_of_date="2025-03-01", limit=1))
+    assert second["evaluated_outcomes"] == 4
+    assert db.list_decision_outcomes(decision_id="decision:fresh")
 
 
 def test_signal_audit_uses_executable_target_date_not_prior_close(tmp_path):
@@ -203,7 +268,8 @@ def test_backtest_job_submission_and_recovery(tmp_path, monkeypatch):
             return {"status": "completed"}
 
         async def get_job_result(self, job_id):
-            return {"total_return": 0.12, "max_drawdown": -0.08, "sharpe": 1.1,
+            return {"total_return": 0.12, "alpha": 0.03,
+                    "max_drawdown": -0.08, "sharpe": 1.1,
                     "win_rate": 0.55, "turnover": 1.2, "source": "stockmanager",
                     "data_version": "fixture-v1", "lookahead_bias_check_passed": True,
                     "survivorship_bias_check_passed": True,
@@ -323,7 +389,8 @@ def test_strategy_backtest_skill_persists_audited_sync_result(tmp_path, monkeypa
                     "configs": [{"name": "prod_ff_residual_csi800_tv15", "sha1": "c1"}]}
 
         async def run_backtest(self, **_kwargs):
-            return {"total_return": 0.1, "max_drawdown": -0.06, "sharpe": 1.0,
+            return {"total_return": 0.1, "alpha": 0.02,
+                    "max_drawdown": -0.06, "sharpe": 1.0,
                     "win_rate": 0.52, "turnover": 1.1, "source": "stockmanager",
                     "data_version": "fixture-v1", "lookahead_bias_check_passed": True,
                     "survivorship_bias_check_passed": True,
@@ -361,7 +428,8 @@ def test_backtest_gate_rejects_missing_provenance_and_lookahead_evidence():
 
     result = asyncio.run(audit_backtest_result(
         MCP(),
-        {"total_return": 0.1, "max_drawdown": -0.1, "sharpe": 1.0,
+        {"total_return": 0.1, "alpha": 0.02,
+         "max_drawdown": -0.1, "sharpe": 1.0,
          "win_rate": 0.5, "turnover": 1.0,
          "equity_curve": [{"date": "2024-01-01", "value": 1.0}]},
         {"holding_days": 5, "transaction_cost_bps": 10, "slippage_bps": 5},
@@ -369,6 +437,57 @@ def test_backtest_gate_rejects_missing_provenance_and_lookahead_evidence():
     assert result["validation"]["production_gate_passed"] is False
     assert result["validation"]["missing_provenance"] == ["source", "data_version"]
     assert result["validation"]["lookahead_bias_check_passed"] is False
+
+
+def test_live_async_backtest_envelope_is_flattened_for_ui_and_gate():
+    normalized = normalize_backtest_result({
+        "job_id": "job-live",
+        "status": "succeeded",
+        "result": {
+            "report": {
+                "total_return": 0.189,
+                "benchmark_total_return": 0.356,
+                "alpha": -0.167,
+                "sharpe": 0.437,
+                "max_drawdown": -0.197,
+                "win_rate": 0.72,
+            },
+            "equity_curve": [{"date": "2025-01-02", "equity": 1_000_000}],
+            "meta": {"strategy": "momentum120"},
+        },
+    })
+    assert normalized["total_return"] == pytest.approx(0.189)
+    assert normalized["benchmark_total_return"] == pytest.approx(0.356)
+    assert normalized["alpha"] == pytest.approx(-0.167)
+    assert normalized["sharpe"] == pytest.approx(0.437)
+    assert normalized["equity_curve"][0]["equity"] == 1_000_000
+    assert "result" not in normalized
+
+
+def test_backtest_gate_rejects_complete_but_losing_strategy():
+    class MCP:
+        async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
+            return {"oos_sharpe": -2.0}
+
+    result = asyncio.run(audit_backtest_result(
+        MCP(),
+        {
+            "total_return": -0.5, "benchmark_total_return": 0.1,
+            "alpha": -0.6, "max_drawdown": -0.9, "sharpe": -3.0,
+            "win_rate": 0.1, "turnover": 9.0, "source": "stockmanager",
+            "data_version": "v1", "lookahead_bias_check_passed": True,
+            "survivorship_bias_check_passed": True,
+            "transaction_cost_bps": 10, "slippage_bps": 5,
+            "equity_curve": [{"date": "2024-01-01", "equity": 1.0}],
+        },
+        {},
+    ))
+    validation = result["validation"]
+    assert validation["production_gate_passed"] is False
+    assert validation["required_metrics_present"] is True
+    assert validation["metric_thresholds_passed"] is False
+    assert validation["threshold_checks"]["alpha"] is False
+    assert validation["threshold_checks"]["oos_sharpe"] is False
 
 
 def test_summarize_walk_forward_from_fold_sharpes():
@@ -427,7 +546,8 @@ def test_audit_attaches_walk_forward_slippage_and_ablation():
 
     result = asyncio.run(audit_backtest_result(
         MCP(),
-        {"total_return": 0.1, "max_drawdown": -0.1, "sharpe": 1.0,
+        {"total_return": 0.1, "alpha": 0.02,
+         "max_drawdown": -0.1, "sharpe": 1.0,
          "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
          "data_version": "v1", "lookahead_bias_check_passed": True,
          "survivorship_bias_check_passed": True,
@@ -461,7 +581,8 @@ def test_audit_skips_addons_without_inputs_or_support():
 
     result = asyncio.run(audit_backtest_result(
         MCP(),
-        {"total_return": 0.1, "max_drawdown": -0.1, "sharpe": 1.0,
+        {"total_return": 0.1, "alpha": 0.02,
+         "max_drawdown": -0.1, "sharpe": 1.0,
          "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
          "data_version": "v1", "lookahead_bias_check_passed": True,
          "survivorship_bias_check_passed": True,
@@ -492,7 +613,8 @@ def test_audit_addons_degrade_on_non_dict_mcp_result():
 
     result = asyncio.run(audit_backtest_result(
         MCP(),
-        {"total_return": 0.1, "max_drawdown": -0.1, "sharpe": 1.0,
+        {"total_return": 0.1, "alpha": 0.02,
+         "max_drawdown": -0.1, "sharpe": 1.0,
          "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
          "data_version": "v1", "lookahead_bias_check_passed": True,
          "survivorship_bias_check_passed": True,

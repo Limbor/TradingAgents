@@ -1,7 +1,12 @@
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 const localChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const localVenvPython = resolve(process.cwd(), "../.venv/bin/python");
+const backendPython = existsSync(localVenvPython)
+  ? `"${localVenvPython}"`
+  : process.platform === "win32" ? "python" : "python3";
 
 // Pre-release smoke mode: boot the real FastAPI backend alongside the vite dev
 // server and run only *.smoke.ts. The default run ignores smoke specs and keeps
@@ -17,7 +22,7 @@ const frontendServer = {
 
 const backendServer = {
   // Runs from the repo root; the vite dev proxy forwards /api and /ws to :8422.
-  command: "python -m tradingagents.api.server",
+  command: `${backendPython} -m tradingagents.api.server`,
   cwd: "..",
   url: "http://127.0.0.1:8422/api/v1/health",
   reuseExistingServer: !process.env.CI,

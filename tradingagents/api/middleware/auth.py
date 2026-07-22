@@ -76,3 +76,25 @@ def verify_ws_token(query_params, config: dict) -> bool:
         return True
     supplied = (query_params.get("token") if query_params else "") or ""
     return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
+def allowed_origins(config: dict | None) -> list[str]:
+    """Return the explicit browser/Tauri origin allow-list."""
+    raw = (config or {}).get("api_allowed_origins") or ""
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = []
+    return [str(value).strip().rstrip("/") for value in values if str(value).strip()]
+
+
+def verify_ws_origin(headers, config: dict | None) -> bool:
+    """Reject browser WebSockets from origins outside the configured allow-list.
+
+    Non-browser clients commonly omit Origin; token authentication remains the
+    authority for those clients and keeps CLI/integration consumers working.
+    """
+    origin = ((headers.get("origin") if headers else "") or "").strip().rstrip("/")
+    return not origin or origin in allowed_origins(config)

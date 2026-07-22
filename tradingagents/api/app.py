@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from tradingagents.api.middleware.auth import AuthMiddleware
+from tradingagents.api.middleware.auth import AuthMiddleware, allowed_origins
 from tradingagents.core.chat_agent import ChatAgent
 from tradingagents.core.lightweight_tools import build_all_tools
 from tradingagents.core.mcp_client import get_mcp_client, get_mcp_status, shutdown_mcp_client
@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.orchestrator = Orchestrator(registry, config, db=db, llm_router=llm_router)
 
-    app.state.scheduler = Scheduler()
+    app.state.scheduler = Scheduler(db=db)
     if config.get("scheduler_enabled", True):
         daily_skill = registry.get("daily_pipeline")
         if daily_skill is not None:
@@ -224,7 +224,7 @@ def create_app() -> FastAPI:
     # CORS for local development and Tauri
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "tauri://localhost"],
+        allow_origins=allowed_origins(DEFAULT_CONFIG),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

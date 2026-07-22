@@ -76,10 +76,65 @@ class StrategyLessonItem(BaseModel):
     evidence_count: int = 1
     confidence: str = "low"
     active: bool = True
+    governance_status: str = "approved"
     expires_at: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
+
+
+class ScorecardAggregate(BaseModel):
+    count: int = 0
+    directional_count: int = 0
+    hit_rate: float | None = None
+    avg_return: float | None = None
+    avg_excess: float | None = None
+
+
+class ScorecardBucket(ScorecardAggregate):
+    bucket: str
+
+
+class ScorecardRankIC(BaseModel):
+    value: float | None = None
+    n: int = 0
+
+
+class AlphaSuggestion(BaseModel):
+    """Advisory adaptive-alpha recommendation (read-only, never auto-applied)."""
+
+    suggested_alpha: float
+    static_alpha: float
+    alpha_data: float | None = None
+    data_weight: float = 0.0
+    delta: float = 0.0
+    quant_ic: float | None = None
+    llm_ic: float | None = None
+    n: int = 0
+    applicable: bool = False
+    reason: str = ""
+    style: str | None = None
+
+
+class PredictionScorecard(BaseModel):
+    """Read-only prediction-quality scorecard.
+
+    ``available=False`` (with ``reason``) is returned when too few evaluated
+    samples exist; the remaining fields are only populated when available.
+    """
+
+    available: bool = False
+    reason: str | None = None
+    n_evaluated: int = 0
+    min_samples: int = 5
+    lookback_days: int = 90
+    as_of: str = ""
+    overall: ScorecardAggregate | None = None
+    rank_ic: dict[str, ScorecardRankIC] = Field(default_factory=dict)
+    fusion_comparison: dict[str, ScorecardBucket | None] = Field(default_factory=dict)
+    buckets: dict[str, list[ScorecardBucket]] = Field(default_factory=dict)
+    horizon_distribution: dict[str, int] = Field(default_factory=dict)
+    alpha_suggestion: AlphaSuggestion | None = None
 
 
 class CandidateActionRequest(BaseModel):
@@ -122,6 +177,19 @@ async def get_reflection_summary(request: Request, lookback_days: int = 30):
         accuracy=stats.get("accuracy", 0.0),
         lookback_days=lookback_days,
     )
+
+
+@router.get("/prediction-scorecard", response_model=PredictionScorecard)
+async def get_prediction_scorecard(request: Request, lookback_days: int = 90):
+    """Read-only prediction-quality scorecard over recent reflected cases.
+
+    Pure measurement layer: aggregates realized outcomes of past signals
+    (hit-rate, RankIC, bucketed stats, quant-only vs fused comparison) without
+    touching any decision, fusion weight, or gate. Degrades to
+    ``available=false`` when too few evaluated samples exist.
+    """
+    scorecard = request.app.state.db.get_prediction_scorecard(lookback_days=lookback_days)
+    return PredictionScorecard(**scorecard)
 
 
 @router.get("/reflection-cases", response_model=list[ReflectionCaseItem])
@@ -185,6 +253,23 @@ async def deactivate_strategy_lesson(request: Request, lesson_id: str):
         status="not_found",
         lesson_id=lesson_id,
         message="No active lesson matched the given id.",
+    )
+
+
+@router.post("/strategy-lessons/{lesson_id}/approve", response_model=LessonDeactivateResponse)
+async def approve_strategy_lesson(request: Request, lesson_id: str):
+    """Approve a reviewed candidate so it may influence future analyses."""
+    updated = request.app.state.db.approve_strategy_lesson(lesson_id)
+    if updated:
+        return LessonDeactivateResponse(
+            status="ok",
+            lesson_id=lesson_id,
+            message="Lesson approved and enabled for future analyses.",
+        )
+    return LessonDeactivateResponse(
+        status="not_found",
+        lesson_id=lesson_id,
+        message="No candidate or statistically validated lesson matched the id.",
     )
 
 

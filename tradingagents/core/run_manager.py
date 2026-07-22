@@ -57,6 +57,8 @@ class RunManager:
         self._runs: dict[str, Run] = {}
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
         self._db = db
+        if self._db is not None:
+            self._db.reconcile_interrupted_runs()
 
     async def create_run(
         self,

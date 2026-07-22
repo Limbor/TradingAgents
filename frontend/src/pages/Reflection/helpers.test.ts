@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import type { ReflectionCase, StrategyLesson } from "@/api/client";
+import type { PredictionScorecard, ReflectionCase, ScorecardBucket, StrategyLesson } from "@/api/client";
 import {
   attributionMeta,
+  alphaDeltaTone,
   caseAttribution,
   caseExcess,
   caseOriginalDecision,
   confidenceCls,
+  formatAlpha,
+  formatIC,
   formatPct,
+  fusionDelta,
   isNeutralLesson,
   lessonHistory,
   lessonMetrics,
   lessonTrend,
+  orderedBuckets,
   sparklinePoints,
 } from "./helpers";
 
@@ -26,6 +31,7 @@ function lesson(overrides: Partial<StrategyLesson> = {}): StrategyLesson {
     evidence_count: 4,
     confidence: "high",
     active: true,
+    governance_status: "approved",
     expires_at: null,
     payload: {},
     created_at: "2026-07-01T00:00:00Z",
@@ -225,5 +231,118 @@ describe("sparklinePoints", () => {
   it("handles a flat series without dividing by zero", () => {
     const path = sparklinePoints([0.4, 0.4], 100, 20);
     expect(path).toBe("0.0,20.0 100.0,20.0");
+  });
+});
+
+function bucket(overrides: Partial<ScorecardBucket> = {}): ScorecardBucket {
+  return {
+    bucket: "",
+    count: 0,
+    directional_count: 0,
+    hit_rate: null,
+    avg_return: null,
+    avg_excess: null,
+    ...overrides,
+  };
+}
+
+describe("fusionDelta", () => {
+  it("differences fused minus quant-only when both cohorts exist", () => {
+    const sc = {
+      fusion_comparison: {
+        quant_only: bucket({ bucket: "quant_only", hit_rate: 0.4, avg_return: -0.01 }),
+        quant_llm_fused: bucket({ bucket: "quant_llm_fused", hit_rate: 0.7, avg_return: 0.03 }),
+      },
+    } as Pick<PredictionScorecard, "fusion_comparison">;
+    const d = fusionDelta(sc);
+    expect(d.hasBoth).toBe(true);
+    expect(d.hitRate).toBeCloseTo(0.3);
+    expect(d.avgReturn).toBeCloseTo(0.04);
+  });
+  it("yields nulls and hasBoth=false when a cohort is missing", () => {
+    const sc = {
+      fusion_comparison: {
+        quant_only: null,
+        quant_llm_fused: bucket({ bucket: "quant_llm_fused", hit_rate: 0.7, avg_return: 0.03 }),
+      },
+    } as Pick<PredictionScorecard, "fusion_comparison">;
+    const d = fusionDelta(sc);
+    expect(d.hasBoth).toBe(false);
+    expect(d.hitRate).toBeNull();
+    expect(d.avgReturn).toBeNull();
+  });
+  it("treats a null metric on either side as non-comparable", () => {
+    const sc = {
+      fusion_comparison: {
+        quant_only: bucket({ bucket: "quant_only", hit_rate: null, avg_return: -0.01 }),
+        quant_llm_fused: bucket({ bucket: "quant_llm_fused", hit_rate: 0.7, avg_return: 0.03 }),
+      },
+    } as Pick<PredictionScorecard, "fusion_comparison">;
+    const d = fusionDelta(sc);
+    expect(d.hasBoth).toBe(true);
+    expect(d.hitRate).toBeNull(); // one side null
+    expect(d.avgReturn).toBeCloseTo(0.04);
+  });
+});
+
+describe("formatIC", () => {
+  it("formats coefficients with an explicit sign and 3 decimals", () => {
+    expect(formatIC(0.4237)).toBe("+0.424");
+    expect(formatIC(-0.12)).toBe("-0.120");
+    expect(formatIC(0)).toBe("+0.000");
+  });
+  it("renders an em dash for null / non-finite", () => {
+    expect(formatIC(null)).toBe("—");
+    expect(formatIC(Number.NaN)).toBe("—");
+  });
+});
+
+describe("orderedBuckets", () => {
+  it("sorts known dimensions into canonical order", () => {
+    const rows = [
+      bucket({ bucket: "60-75" }),
+      bucket({ bucket: "0-45" }),
+      bucket({ bucket: "75-100" }),
+    ];
+    expect(orderedBuckets("quant_score", rows).map((b) => b.bucket)).toEqual([
+      "0-45",
+      "60-75",
+      "75-100",
+    ]);
+  });
+  it("appends unexpected labels after the known order", () => {
+    const rows = [bucket({ bucket: "weird" }), bucket({ bucket: "BUY" })];
+    expect(orderedBuckets("decision", rows).map((b) => b.bucket)).toEqual(["BUY", "weird"]);
+  });
+  it("returns the input untouched for an unknown dimension", () => {
+    const rows = [bucket({ bucket: "z" }), bucket({ bucket: "a" })];
+    expect(orderedBuckets("nope", rows).map((b) => b.bucket)).toEqual(["z", "a"]);
+  });
+});
+
+describe("formatAlpha", () => {
+  it("formats a weight to two decimals", () => {
+    expect(formatAlpha(0.55)).toBe("0.55");
+    expect(formatAlpha(0.8)).toBe("0.80");
+  });
+  it("returns an em dash for null / non-finite", () => {
+    expect(formatAlpha(null)).toBe("\u2014");
+    expect(formatAlpha(Number.NaN)).toBe("\u2014");
+    expect(formatAlpha(Number.POSITIVE_INFINITY)).toBe("\u2014");
+  });
+});
+
+describe("alphaDeltaTone", () => {
+  it("treats small / null / non-finite deltas as neutral", () => {
+    expect(alphaDeltaTone(null)).toBe("text-stone-400");
+    expect(alphaDeltaTone(0)).toBe("text-stone-400");
+    expect(alphaDeltaTone(0.01)).toBe("text-stone-400");
+    expect(alphaDeltaTone(Number.NaN)).toBe("text-stone-400");
+  });
+  it("marks a meaningful positive shift toward quant emerald", () => {
+    expect(alphaDeltaTone(0.05)).toBe("text-emerald-300");
+  });
+  it("marks a meaningful negative shift toward LLM amber", () => {
+    expect(alphaDeltaTone(-0.05)).toBe("text-amber-300");
   });
 });

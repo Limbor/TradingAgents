@@ -58,10 +58,6 @@ jobs:
   e2e-smoke:
     name: real-backend smoke
     runs-on: ubuntu-latest
-    # Pre-release early-warning only: the mocked *.spec.ts contract (frontend
-    # job) is the stable merge gate. A flaky real-backend boot (missing dep,
-    # MCP probe, port) must surface here without blocking the whole workflow.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -88,6 +84,40 @@ jobs:
         # degraded) via the Playwright webServer and runs *.smoke.ts. The mocked
         # *.spec.ts contract above stays the stable frontend-flow verifier.
         run: npm run test:e2e:smoke
+
+  desktop-build:
+    name: macOS desktop release build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install desktop dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -e ".[desktop]"
+          npm --prefix frontend ci
+      - name: Build signed-ready app and DMG
+        run: ./scripts/build_desktop.sh all
+      - name: Upload unsigned desktop bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: TradingAgents-macOS-unsigned
+          path: |
+            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
 
   smoke-install:
     name: clean-install smoke

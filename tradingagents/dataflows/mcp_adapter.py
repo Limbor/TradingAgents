@@ -271,10 +271,21 @@ def _normalize_data_coverage(
             "main_net_inflow", "main_force_net", "net_inflow", "fund_flow",
             "flow_score", "institutional_flow", "net_mf_ratio", "main_net_ratio",
         ),
-        "quality": ("roe", "roe_ttm", "roa", "gross_margin", "revenue_growth"),
-        "liquidity": ("amount", "amount_20d", "turnover_rate", "volume_ratio"),
-        "momentum": ("momentum_20d", "momentum_60d", "return_20d", "return_60d"),
-        "risk_control": ("volatility_20d", "volatility_60d", "max_drawdown_60d", "max_drawdown_120d"),
+        # Quality raw-factor names vary by data source; the MCP contract emits
+        # `roe_ttm` / `gross_margin_ttm`, so match both plain and `_ttm` variants
+        # (plus common growth/margin aliases) to avoid false `quality missing`.
+        "quality": (
+            "roe", "roe_ttm", "roa", "roa_ttm",
+            "gross_margin", "gross_margin_ttm", "net_margin", "net_margin_ttm",
+            "revenue_growth", "revenue_growth_ttm", "revenue_yoy",
+            "profit_growth", "netprofit_yoy", "quality_score",
+        ),
+        "liquidity": ("amount", "amount_20d", "turnover_rate", "turnover_rate_20d", "volume_ratio"),
+        "momentum": ("momentum_5d", "momentum_20d", "momentum_60d", "return_20d", "return_60d"),
+        "risk_control": (
+            "volatility_20d", "volatility_60d",
+            "max_drawdown_20d", "max_drawdown_60d", "max_drawdown_120d",
+        ),
     }
     for group, keys in groups.items():
         if _has_any_metric(key_metrics, factor_snapshot, keys=keys):

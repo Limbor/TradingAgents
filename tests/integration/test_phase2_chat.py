@@ -63,6 +63,23 @@ def test_ws_chat_emits_free_chat_response_types(
     assert message["payload"][payload_key] == expected_value
 
 
+def test_ws_chat_rejects_untrusted_browser_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat-origin.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    app = create_app()
+    with (
+        TestClient(app) as client,
+        client.websocket_connect(
+            "/ws/chat", headers={"origin": "https://evil.example"}
+        ) as websocket,
+    ):
+        message = websocket.receive_json()
+
+    assert message["type"] == "error"
+    assert message["payload"]["message"] == "Unauthorized"
+
+
 def test_ws_chat_routes_to_market_scanner_and_streams_result(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat.db"))
     monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)

@@ -407,6 +407,26 @@ def test_deactivate_strategy_lesson(client):
     assert res.json()["status"] == "not_found"
 
 
+def test_approve_strategy_lesson_candidate(client):
+    db = client.app.state.db
+    db.save_strategy_lesson(
+        lesson_id="L-candidate",
+        lesson_type="cross_symbol_pattern",
+        scope="global",
+        finding="待审规律",
+        active=False,
+        governance_status="validated",
+    )
+    assert db.get_strategy_lesson("L-candidate")["active"] is False
+
+    res = client.post("/api/v1/strategy-lessons/L-candidate/approve")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+    approved = db.get_strategy_lesson("L-candidate")
+    assert approved["active"] is True
+    assert approved["governance_status"] == "approved"
+
+
 def test_list_lesson_cases_resolves_evidence(client):
     """The lesson->cases endpoint resolves the payload's evidence_cases ids to
     full reflection cases, skips unresolvable ids, and returns [] for unknown
@@ -475,3 +495,132 @@ def test_get_strategy_lesson_roundtrip(client):
     assert lesson["payload"]["history"][0]["win_rate"] == 0.4
     assert lesson["active"] is True
     assert db.get_strategy_lesson("nope") is None
+
+
+def test_prediction_scorecard_degrades_when_no_samples(client):
+    """With no reflected cases the route returns the graceful available=false shape."""
+    res = client.get("/api/v1/prediction-scorecard?lookback_days=90")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["available"] is False
+    assert payload["n_evaluated"] == 0
+    assert payload["lookback_days"] == 90
+    assert payload["reason"]
+
+
+def test_prediction_scorecard_returns_aggregated_shape(client, monkeypatch):
+    """Route serializes an available scorecard (mock db) with nested structure."""
+    fixed = {
+        "available": True,
+        "n_evaluated": 6,
+        "lookback_days": 90,
+        "as_of": "2026-06-01",
+        "overall": {
+            "count": 6,
+            "directional_count": 5,
+            "hit_rate": 0.6,
+            "avg_return": 0.021,
+            "avg_excess": 0.008,
+        },
+        "rank_ic": {
+            "quant_score": {"value": 0.42, "n": 6},
+            "llm_confidence": {"value": None, "n": 2},
+        },
+        "fusion_comparison": {
+            "quant_only": {
+                "bucket": "quant_only",
+                "count": 3,
+                "directional_count": 3,
+                "hit_rate": 0.33,
+                "avg_return": -0.01,
+                "avg_excess": -0.005,
+            },
+            "quant_llm_fused": {
+                "bucket": "quant_llm_fused",
+                "count": 3,
+                "directional_count": 2,
+                "hit_rate": 1.0,
+                "avg_return": 0.05,
+                "avg_excess": 0.02,
+            },
+        },
+        "buckets": {
+            "quant_score": [
+                {
+                    "bucket": "75-100",
+                    "count": 2,
+                    "directional_count": 2,
+                    "hit_rate": 1.0,
+                    "avg_return": 0.05,
+                    "avg_excess": 0.02,
+                }
+            ],
+            "llm_confidence": [],
+            "decision": [],
+        },
+        "horizon_distribution": {"5": 4, "10": 2},
+        "alpha_suggestion": {
+            "suggested_alpha": 0.62,
+            "static_alpha": 0.55,
+            "alpha_data": 0.8,
+            "data_weight": 0.3,
+            "delta": 0.07,
+            "quant_ic": 0.42,
+            "llm_ic": 0.1,
+            "n": 12,
+            "applicable": True,
+            "reason": "按 quant/LLM RankIC 相对占比推导。",
+            "style": "medium_term",
+        },
+    }
+    monkeypatch.setattr(
+        client.app.state.db,
+        "get_prediction_scorecard",
+        lambda lookback_days=90: fixed,
+    )
+    res = client.get("/api/v1/prediction-scorecard?lookback_days=90")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["available"] is True
+    assert payload["n_evaluated"] == 6
+    assert payload["overall"]["hit_rate"] == 0.6
+    assert payload["rank_ic"]["quant_score"]["value"] == 0.42
+    assert payload["rank_ic"]["llm_confidence"]["value"] is None
+    assert payload["fusion_comparison"]["quant_llm_fused"]["hit_rate"] == 1.0
+    assert payload["buckets"]["quant_score"][0]["bucket"] == "75-100"
+    assert payload["horizon_distribution"] == {"5": 4, "10": 2}
+    assert payload["alpha_suggestion"]["suggested_alpha"] == 0.62
+    assert payload["alpha_suggestion"]["applicable"] is True
+    assert payload["alpha_suggestion"]["style"] == "medium_term"
+
+
+def test_prediction_scorecard_alpha_suggestion_optional(client, monkeypatch):
+    """A scorecard without alpha_suggestion serializes it as null."""
+    fixed = {
+        "available": True,
+        "n_evaluated": 6,
+        "lookback_days": 90,
+        "as_of": "2026-06-01",
+        "overall": {
+            "count": 6,
+            "directional_count": 5,
+            "hit_rate": 0.6,
+            "avg_return": 0.021,
+            "avg_excess": 0.008,
+        },
+        "rank_ic": {
+            "quant_score": {"value": 0.42, "n": 6},
+            "llm_confidence": {"value": None, "n": 2},
+        },
+        "fusion_comparison": {"quant_only": None, "quant_llm_fused": None},
+        "buckets": {"quant_score": [], "llm_confidence": [], "decision": []},
+        "horizon_distribution": {"5": 6},
+    }
+    monkeypatch.setattr(
+        client.app.state.db,
+        "get_prediction_scorecard",
+        lambda lookback_days=90: fixed,
+    )
+    res = client.get("/api/v1/prediction-scorecard?lookback_days=90")
+    assert res.status_code == 200
+    assert res.json()["alpha_suggestion"] is None

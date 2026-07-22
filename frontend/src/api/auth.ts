@@ -4,14 +4,18 @@
  * When the backend has `api_auth_token` configured (env
  * TRADINGAGENTS_API_AUTH_TOKEN), REST requests must carry
  * `Authorization: Bearer <token>` and WebSocket URLs must append `?token=`.
- * The token is stored in localStorage so it survives reloads and is read on
- * every request. When unset (the local-desktop default), no auth header/query
- * is added and the backend runs in open mode.
+ * Desktop builds use a per-launch token supplied by the Rust shell and never
+ * persist it. Web deployments may still use localStorage for an explicitly
+ * configured remote API token.
  */
+
+import { getBackendRuntime } from "./runtime";
 
 const STORAGE_KEY = "tradingagents_api_auth_token";
 
 export function getAuthToken(): string {
+  const desktopToken = getBackendRuntime()?.token;
+  if (desktopToken) return desktopToken;
   try {
     return localStorage.getItem(STORAGE_KEY) ?? "";
   } catch {

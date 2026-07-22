@@ -1,4 +1,4 @@
-import type { ReflectionCase, StrategyLesson } from "@/api/client";
+import type { PredictionScorecard, ReflectionCase, ScorecardBucket, StrategyLesson } from "@/api/client";
 
 /** Pure presentation helpers for the Reflection page, extracted so they can be
  * unit-tested without rendering React. */
@@ -151,4 +151,69 @@ export function sparklinePoints(
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
+}
+
+// ── prediction scorecard helpers ────────────────────────────────────────
+
+export interface FusionDelta {
+  /** fused minus quant-only; null when either side is missing. */
+  hitRate: number | null;
+  avgReturn: number | null;
+  /** true only when both fusion modes have samples to compare. */
+  hasBoth: boolean;
+}
+
+/** Difference the fused (quant+LLM) cohort against the quant-only cohort so the
+ * UI can answer "did LLM review add value?". Missing either side yields nulls. */
+export function fusionDelta(scorecard: Pick<PredictionScorecard, "fusion_comparison">): FusionDelta {
+  const q = scorecard.fusion_comparison?.quant_only ?? null;
+  const f = scorecard.fusion_comparison?.quant_llm_fused ?? null;
+  const diff = (a: number | null | undefined, b: number | null | undefined): number | null =>
+    typeof a === "number" && typeof b === "number" ? a - b : null;
+  return {
+    hitRate: diff(f?.hit_rate, q?.hit_rate),
+    avgReturn: diff(f?.avg_return, q?.avg_return),
+    hasBoth: Boolean(q && f),
+  };
+}
+
+/** Format a RankIC coefficient (already in [-1, 1]) with an explicit sign. */
+export function formatIC(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}${value.toFixed(3)}`;
+}
+
+const BUCKET_ORDER: Record<string, string[]> = {
+  quant_score: ["0-45", "45-60", "60-75", "75-100", "unknown"],
+  llm_confidence: ["<50", "50-70", "70-100", "none"],
+  decision: ["BUY", "WATCHLIST", "MONITOR", "HOLD_REVIEW", "SKIP", ""],
+};
+
+/** Sort a dimension's buckets into their canonical display order. Buckets not
+ * in the known order (unexpected labels) are appended, so nothing is dropped. */
+export function orderedBuckets(dimension: string, buckets: ScorecardBucket[]): ScorecardBucket[] {
+  const order = BUCKET_ORDER[dimension];
+  if (!order) return buckets;
+  const idx = (b: ScorecardBucket) => {
+    const i = order.indexOf(b.bucket);
+    return i === -1 ? order.length : i;
+  };
+  return [...buckets].sort((a, b) => idx(a) - idx(b));
+}
+
+/** Format an alpha weight (0..1) to 2 decimals; null -> em dash. */
+export function formatAlpha(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return value.toFixed(2);
+}
+
+/** Tailwind text color for an alpha delta. Deltas within +-0.02 are treated as
+ * negligible (neutral); larger shifts toward quant (positive) are emerald,
+ * toward LLM (negative) are amber. */
+export function alphaDeltaTone(delta: number | null): string {
+  if (delta === null || !Number.isFinite(delta) || Math.abs(delta) < 0.02) {
+    return "text-stone-400";
+  }
+  return delta > 0 ? "text-emerald-300" : "text-amber-300";
 }

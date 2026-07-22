@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from tradingagents.api.middleware.auth import verify_ws_token
+from tradingagents.api.middleware.auth import verify_ws_origin, verify_ws_token
 from tradingagents.skills.base import BaseSkill, SkillEvent
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,10 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
     Sends historical events first (for reconnection), then streams
     new events as they occur.
     """
-    if not verify_ws_token(websocket.query_params, getattr(websocket.app.state, "config", {}) or {}):
+    config = getattr(websocket.app.state, "config", {}) or {}
+    if not verify_ws_token(websocket.query_params, config) or not verify_ws_origin(
+        websocket.headers, config
+    ):
         await _reject_ws(websocket)
         return
     await websocket.accept()
@@ -129,7 +132,10 @@ async def ws_chat(websocket: WebSocket):
     a new request. A send-lock serializes all socket writes so the background
     consumer and the main loop never interleave partial frames.
     """
-    if not verify_ws_token(websocket.query_params, getattr(websocket.app.state, "config", {}) or {}):
+    config = getattr(websocket.app.state, "config", {}) or {}
+    if not verify_ws_token(websocket.query_params, config) or not verify_ws_origin(
+        websocket.headers, config
+    ):
         await _reject_ws(websocket)
         return
     await websocket.accept()

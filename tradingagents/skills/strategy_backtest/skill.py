@@ -90,7 +90,11 @@ class StrategyBacktestSkill(BaseSkill):
             return
         job_id = str(result.get("job_id") or "")
         status = "submitted" if job_id else "completed"
-        stored_result = {} if job_id else await audit_backtest_result(client, result, payload)
+        stored_result = (
+            {}
+            if job_id
+            else await audit_backtest_result(client, result, {**config, **payload})
+        )
         db.save_backtest_run(backtest_id=backtest_id, job_id=job_id,
                              strategy_type=values.strategy_name, start_date=values.start_date,
                              end_date=values.end_date, config=payload, status=status,

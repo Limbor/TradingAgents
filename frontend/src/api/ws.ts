@@ -1,4 +1,5 @@
 import { withTokenQuery } from "./auth";
+import { getBackendRuntime } from "./runtime";
 
 export interface WSMessage {
   type: string;
@@ -27,18 +28,14 @@ export interface ToolCallPayload {
 type WSEventHandler = (message: WSMessage) => void;
 
 function wsBaseUrl(): string {
+  const runtimeOrigin = getBackendRuntime()?.ws_origin;
+  if (runtimeOrigin) return runtimeOrigin.replace(/\/$/, "");
   const env = (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env;
   const explicit = env?.VITE_WS_BASE_URL as string | undefined;
   if (explicit) return explicit.replace(/\/$/, "");
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const isLocalDev =
-    Boolean(env?.DEV) &&
-    ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
-  const backendHost = isLocalDev
-    ? `${window.location.hostname === "::1" ? "[::1]" : window.location.hostname}:8422`
-    : window.location.host;
-  return `${protocol}//${backendHost}`;
+  return `${protocol}//${window.location.host}`;
 }
 
 class WebSocketManager {

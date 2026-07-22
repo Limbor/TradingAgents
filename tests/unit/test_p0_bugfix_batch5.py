@@ -10,8 +10,10 @@ Covers:
 import asyncio
 
 from tradingagents.api.middleware.auth import (
+    allowed_origins,
     auth_token_configured,
     request_has_valid_token,
+    verify_ws_origin,
     verify_ws_token,
 )
 from tradingagents.core.persistence import Database
@@ -93,6 +95,14 @@ def test_verify_ws_token_when_configured():
     assert verify_ws_token({"token": "secret-token"}, config) is True
     assert verify_ws_token({"token": "wrong"}, config) is False
     assert verify_ws_token({}, config) is False
+
+
+def test_websocket_origin_is_restricted_for_browser_clients():
+    config = {"api_allowed_origins": "tauri://localhost,http://localhost:5173"}
+    assert allowed_origins(config) == ["tauri://localhost", "http://localhost:5173"]
+    assert verify_ws_origin({"origin": "tauri://localhost"}, config) is True
+    assert verify_ws_origin({"origin": "https://evil.example"}, config) is False
+    assert verify_ws_origin({}, config) is True  # non-browser client; token still applies
 
 
 # ---------------------------------------------------------------------------

@@ -1,28 +1,38 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Brain, ChevronDown, Lightbulb, RefreshCw, Sparkles, Target } from "lucide-react";
+import { Brain, ChevronDown, Lightbulb, RefreshCw, Sparkles, Target, BarChart3 } from "lucide-react";
 import {
+  approveLesson,
   deactivateLesson,
+  getPredictionScorecard,
   getReflectionSummary,
   listLessonCases,
   listReflectionCases,
   listStrategyLessons,
   minePatterns,
   triggerReflection,
+  type AlphaSuggestion,
+  type PredictionScorecard,
   type ReflectionCase,
+  type ScorecardBucket,
   type StrategyLesson,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { displayNameOf } from "@/components/common/StockName";
 import {
+  alphaDeltaTone,
   attributionMeta,
   caseAttribution,
   caseExcess,
   caseOriginalDecision,
   confidenceCls,
+  formatAlpha,
+  formatIC,
   formatPct,
+  fusionDelta,
   lessonMetrics,
   lessonTrend,
+  orderedBuckets,
   sparklinePoints,
 } from "./helpers";
 
@@ -45,6 +55,10 @@ export default function Reflection() {
   const summary = useQuery({
     queryKey: queryKeys.reflectionSummaryFor(lookback),
     queryFn: () => getReflectionSummary(lookback),
+  });
+  const scorecard = useQuery({
+    queryKey: queryKeys.predictionScorecard(lookback),
+    queryFn: () => getPredictionScorecard(lookback),
   });
   const lessons = useQuery({
     queryKey: queryKeys.reflectionLessons(activeOnly),
@@ -83,6 +97,7 @@ export default function Reflection() {
     qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
     qc.invalidateQueries({ queryKey: ["reflection-cases"] });
     qc.invalidateQueries({ queryKey: ["reflections-summary"] });
+    qc.invalidateQueries({ queryKey: ["prediction-scorecard"] });
   };
 
   const handleDeactivate = async (id: string) => {
@@ -100,6 +115,21 @@ export default function Reflection() {
     }
   };
 
+  const handleApprove = async (id: string) => {
+    setError(null); setNotice(null);
+    try {
+      const res = await approveLesson(id);
+      if (res.status === "ok") {
+        setNotice("经验已人工批准，后续分析可使用该规则。");
+        qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
+      } else {
+        setError("该经验不是可批准候选，或已被处理。");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "批准经验失败");
+    }
+  };
+
   const s = summary.data;
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-5">
@@ -110,7 +140,7 @@ export default function Reflection() {
           </p>
           <h2 className="mt-2 text-2xl font-semibold text-stone-50">反思闭环评测</h2>
           <p className="mt-1 text-sm text-stone-500">
-            决策到期后按真实收益复盘，将复现的规律沉淀为策略经验并注入后续复核。此处可查看准确率、挖掘出的经验与反思案例。
+            决策到期后按真实收益复盘；挖掘规律先进入候选区，只有人工批准后才会注入后续复核。
           </p>
         </div>
         <button
@@ -159,6 +189,9 @@ export default function Reflection() {
         </p>
       </section>
 
+      {/* Prediction-quality scorecard (read-only measurement) */}
+      <ScorecardSection query={scorecard} lookback={lookback} />
+
       {/* Strategy lessons */}
       <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -177,7 +210,7 @@ export default function Reflection() {
                   : "border-stone-700 text-stone-400 hover:border-stone-600"
               }`}
             >
-              {activeOnly ? "仅活跃" : "含已停用"}
+              {activeOnly ? "仅已批准" : "含候选/退役"}
             </button>
             <button
               onClick={runMining}
@@ -191,12 +224,12 @@ export default function Reflection() {
         {lessons.isLoading && <p className="text-sm text-stone-500">加载中...</p>}
         {!lessons.isLoading && (lessons.data?.length ?? 0) === 0 && (
           <p className="rounded border border-dashed border-stone-700 bg-stone-950 p-6 text-center text-sm text-stone-500">
-            暂无{activeOnly ? "活跃" : ""}策略经验。样本积累到阈值后由每日 16:30 反思批处理自动挖掘，或点击“挖掘规律”手动触发。
+            暂无{activeOnly ? "已批准" : ""}策略经验。挖掘结果先进入候选区，经统计检验和人工批准后才会影响后续分析。
           </p>
         )}
         <div className="grid gap-2 md:grid-cols-2">
           {(lessons.data ?? []).map((lesson) => (
-            <LessonCard key={lesson.id} lesson={lesson} onDeactivate={handleDeactivate} />
+            <LessonCard key={lesson.id} lesson={lesson} onDeactivate={handleDeactivate} onApprove={handleApprove} />
           ))}
         </div>
       </section>
@@ -254,12 +287,15 @@ export default function Reflection() {
 function LessonCard({
   lesson,
   onDeactivate,
+  onApprove,
 }: {
   lesson: StrategyLesson;
   onDeactivate: (id: string) => void | Promise<void>;
+  onApprove: (id: string) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [retiring, setRetiring] = useState(false);
+  const [approving, setApproving] = useState(false);
   const m = lessonMetrics(lesson);
   const trend = lessonTrend(lesson);
   const trendPath = sparklinePoints(trend.values);
@@ -278,6 +314,15 @@ function LessonCard({
     }
   };
 
+  const approve = async () => {
+    setApproving(true);
+    try {
+      await onApprove(lesson.id);
+    } finally {
+      setApproving(false);
+    }
+  };
+
   return (
     <div className={`rounded-lg border p-3 ${lesson.active ? "border-stone-800 bg-stone-950" : "border-stone-800/60 bg-stone-950/40 opacity-70"}`}>
       <div className="mb-1.5 flex items-center gap-2">
@@ -290,7 +335,9 @@ function LessonCard({
             {lesson.scope}={lesson.target}
           </span>
         )}
-        {!lesson.active && <span className="text-[10px] text-stone-600">已停用</span>}
+        <span className="text-[10px] text-stone-500">
+          {lesson.governance_status === "approved" ? "已批准" : lesson.governance_status === "validated" ? "统计已验证·待批准" : lesson.governance_status === "candidate" ? "候选·待验证/批准" : "已退役"}
+        </span>
         <span className="ml-auto text-[10px] text-stone-600">证据 {lesson.evidence_count}</span>
       </div>
       <p className="text-sm text-stone-200">{lesson.finding}</p>
@@ -320,12 +367,22 @@ function LessonCard({
             {retiring ? "停用中..." : "停用"}
           </button>
         )}
+        {!lesson.active && ["candidate", "validated"].includes(lesson.governance_status) && (
+          <button
+            onClick={approve}
+            disabled={approving}
+            className="ml-auto rounded border border-teal-700 px-2 py-0.5 text-[10px] text-teal-300 transition hover:border-teal-500 disabled:opacity-40"
+          >
+            {approving ? "批准中..." : "人工批准"}
+          </button>
+        )}
       </div>
 
       {open && (
         <div className="mt-2 space-y-3">
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-stone-500">
             <Detail label="类型" value={lesson.lesson_type} />
+            <Detail label="治理状态" value={lesson.governance_status} />
             <Detail label="样本量" value={m.sampleSize !== null ? String(m.sampleSize) : "—"} />
             <Detail label="一致率" value={formatPct(m.consistency, 1)} />
             <Detail label="平均超额" value={formatPct(m.avgExcess, 2, true)} />
@@ -428,6 +485,191 @@ function AttributionBadge({ attribution, status }: { attribution: string; status
 
 function ConfidenceBadge({ confidence }: { confidence: string }) {
   return <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${confidenceCls(confidence)}`}>{confidence}</span>;
+}
+
+function ScorecardSection({
+  query,
+  lookback,
+}: {
+  query: { data?: PredictionScorecard; isLoading: boolean };
+  lookback: number;
+}) {
+  const data = query.data;
+  return (
+    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-stone-100">
+          <BarChart3 className="h-4 w-4 text-sky-300" /> 预测质量看板
+          <span className="text-xs font-normal text-stone-500">只读度量 · 近 {lookback} 天</span>
+        </h3>
+        {data?.available && (
+          <span className="text-[10px] text-stone-600">
+            {data.n_evaluated} 条已评估 · as of {data.as_of}
+          </span>
+        )}
+      </div>
+
+      {query.isLoading && <p className="text-sm text-stone-500">加载中...</p>}
+
+      {!query.isLoading && data && !data.available && (
+        <p className="rounded border border-dashed border-stone-700 bg-stone-950 p-6 text-center text-sm text-stone-500">
+          {data.reason ?? `评估样本不足（现有 ${data.n_evaluated} 条，需 ≥${data.min_samples} 条）。`}
+        </p>
+      )}
+
+      {!query.isLoading && data?.available && <ScorecardBody data={data} />}
+    </section>
+  );
+}
+
+function ScorecardBody({ data }: { data: PredictionScorecard }) {
+  const overall = data.overall;
+  const quantIc = data.rank_ic?.quant_score;
+  const llmIc = data.rank_ic?.llm_confidence;
+  const delta = fusionDelta(data);
+  const quantOnly = data.fusion_comparison?.quant_only ?? null;
+  const fused = data.fusion_comparison?.quant_llm_fused ?? null;
+  return (
+    <div className="space-y-4">
+      {/* Headline KPIs */}
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Kpi label="命中率" value={formatPct(overall?.hit_rate ?? null, 1)} tone="teal" />
+        <Kpi label="平均超额" value={formatPct(overall?.avg_excess ?? null, 2, true)} tone="emerald" />
+        <Kpi
+          label={`量化 RankIC (n=${quantIc?.n ?? 0})`}
+          value={formatIC(quantIc?.value ?? null)}
+        />
+        <Kpi
+          label={`LLM RankIC (n=${llmIc?.n ?? 0})`}
+          value={formatIC(llmIc?.value ?? null)}
+        />
+      </div>
+
+      {/* Adaptive-alpha suggestion (advisory only, never changes live decisions) */}
+      {data.alpha_suggestion && <AlphaSuggestionCard suggestion={data.alpha_suggestion} />}
+
+      {/* Quant-only vs fused comparison */}
+      <div className="rounded border border-stone-800 bg-stone-950 p-3">
+        <p className="mb-2 text-xs font-medium text-stone-300">纯量化 vs 融合（LLM 复核是否加分）</p>
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="text-stone-600">
+              <th className="text-left font-normal">模式</th>
+              <th className="text-right font-normal">样本</th>
+              <th className="text-right font-normal">命中率</th>
+              <th className="text-right font-normal">平均收益</th>
+            </tr>
+          </thead>
+          <tbody className="font-mono text-stone-300">
+            <ScorecardComparisonRow label="纯量化" row={quantOnly} />
+            <ScorecardComparisonRow label="量化+LLM" row={fused} />
+          </tbody>
+        </table>
+        {delta.hasBoth && (
+          <p className="mt-2 text-[10px] text-stone-500">
+            融合相对纯量化：命中率{" "}
+            <DeltaText value={delta.hitRate} digits={1} />，平均收益{" "}
+            <DeltaText value={delta.avgReturn} digits={2} />
+          </p>
+        )}
+      </div>
+
+      {/* Bucketed breakdowns */}
+      <div className="grid gap-3 md:grid-cols-3">
+        <ScorecardBucketTable title="按量化分" rows={orderedBuckets("quant_score", data.buckets?.quant_score ?? [])} />
+        <ScorecardBucketTable title="按 LLM 置信度" rows={orderedBuckets("llm_confidence", data.buckets?.llm_confidence ?? [])} />
+        <ScorecardBucketTable title="按决策" rows={orderedBuckets("decision", data.buckets?.decision ?? [])} />
+      </div>
+    </div>
+  );
+}
+
+function AlphaSuggestionCard({ suggestion }: { suggestion: AlphaSuggestion }) {
+  const { applicable, static_alpha, suggested_alpha, delta } = suggestion;
+  return (
+    <div className="rounded border border-stone-800 bg-stone-950 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-medium text-stone-300">融合权重 α 建议（quant 权重）</p>
+        <span className="rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-500">
+          仅建议 · 未改实盘
+        </span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi label="当前静态 α" value={formatAlpha(static_alpha)} />
+        <Kpi
+          label="建议 α"
+          value={applicable ? formatAlpha(suggested_alpha) : formatAlpha(static_alpha)}
+          tone={applicable ? "teal" : undefined}
+        />
+        <div className="rounded border border-stone-800 bg-stone-900/40 p-2">
+          <p className="text-[10px] text-stone-500">差值</p>
+          <p className={`mt-0.5 font-mono text-lg ${alphaDeltaTone(applicable ? delta : 0)}`}>
+            {applicable ? `${delta >= 0 ? "+" : ""}${formatAlpha(delta)}` : "—"}
+          </p>
+        </div>
+      </div>
+      <p className="mt-2 text-[10px] text-stone-500">
+        {applicable ? suggestion.reason : "样本不足，维持静态权重。"}
+      </p>
+    </div>
+  );
+}
+
+function ScorecardComparisonRow({ label, row }: { label: string; row: ScorecardBucket | null }) {
+  if (!row) {
+    return (
+      <tr>
+        <td className="text-left text-stone-400">{label}</td>
+        <td className="text-right text-stone-600" colSpan={3}>无样本</td>
+      </tr>
+    );
+  }
+  return (
+    <tr>
+      <td className="text-left text-stone-400">{label}</td>
+      <td className="text-right">{row.count}</td>
+      <td className="text-right">{formatPct(row.hit_rate, 1)}</td>
+      <td className="text-right">{formatPct(row.avg_return, 2, true)}</td>
+    </tr>
+  );
+}
+
+function ScorecardBucketTable({ title, rows }: { title: string; rows: ScorecardBucket[] }) {
+  return (
+    <div className="rounded border border-stone-800 bg-stone-950 p-3">
+      <p className="mb-2 text-xs font-medium text-stone-300">{title}</p>
+      {rows.length === 0 ? (
+        <p className="text-[10px] text-stone-600">无数据</p>
+      ) : (
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="text-stone-600">
+              <th className="text-left font-normal">桶</th>
+              <th className="text-right font-normal">样本</th>
+              <th className="text-right font-normal">命中率</th>
+              <th className="text-right font-normal">平均收益</th>
+            </tr>
+          </thead>
+          <tbody className="font-mono text-stone-300">
+            {rows.map((r) => (
+              <tr key={r.bucket || "—"}>
+                <td className="text-left text-stone-400">{r.bucket || "—"}</td>
+                <td className="text-right">{r.count}</td>
+                <td className="text-right">{formatPct(r.hit_rate, 1)}</td>
+                <td className="text-right">{formatPct(r.avg_return, 2, true)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function DeltaText({ value, digits }: { value: number | null; digits: number }) {
+  if (value === null) return <span className="text-stone-500">—</span>;
+  const cls = value >= 0 ? "text-emerald-300" : "text-red-300";
+  return <span className={`font-mono ${cls}`}>{formatPct(value, digits, true)}</span>;
 }
 
 function Kpi({ label, value, tone = "stone" }: { label: string; value: string; tone?: "stone" | "teal" | "emerald" | "red" }) {
