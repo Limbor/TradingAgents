@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from tradingagents.agents.utils.memory import TradingMemoryLog
+from tradingagents.core.adaptive_alpha import resolve_alpha_override
 from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.candidate_review_runner import apply_llm_reviews
 from tradingagents.core.mcp_client import get_mcp_client
@@ -95,6 +96,18 @@ class DailyPipelineSkill(BaseSkill):
         profile = db.get_user_profile()
         strategy_lessons = _load_strategy_lessons(db)
 
+        # Adaptive alpha: when enabled, translate the measured prediction
+        # scorecard into a production fusion-weight override. Gated by the
+        # existing advisory applicability check; disabled => static STYLE_ALPHA.
+        alpha_override: float | None = None
+        alpha_meta: dict[str, Any] = {"enabled": False}
+        if config.get("adaptive_alpha_enabled"):
+            scorecard = db.get_prediction_scorecard()
+            alpha_override, alpha_meta = resolve_alpha_override(
+                scorecard, str(profile.get("investment_style") or "medium_term")
+            )
+            alpha_meta = {"enabled": True, **alpha_meta}
+
         yield SkillEvent(
             event_type="skill_start",
             data={
@@ -129,7 +142,16 @@ class DailyPipelineSkill(BaseSkill):
             progress_pct=15,
         )
 
-        candidates, mcp_used, warnings, quant_meta = await _rank_candidates(input_params, config, profile)
+        candidates, mcp_used, warnings, quant_meta = await _rank_candidates(
+            input_params, config, profile, alpha_override=alpha_override
+        )
+        if alpha_meta.get("applied"):
+            warnings = [
+                *warnings,
+                "自适应α已生效：α "
+                f"{alpha_meta.get('static_alpha')}→{alpha_meta.get('suggested_alpha')}"
+                f"（有效样本 n={alpha_meta.get('n')}）",
+            ]
         yield skill_progress(
             stage_id="universe",
             stage_label="候选池与交易日上下文",
@@ -171,6 +193,7 @@ class DailyPipelineSkill(BaseSkill):
             profile,
             candidates,
             strategy_lessons=strategy_lessons,
+            alpha_override=alpha_override,
         )
         yield skill_progress(
             stage_id="llm_review",
@@ -222,6 +245,7 @@ class DailyPipelineSkill(BaseSkill):
                 "strategy_meta": strategy_meta,
                 "review_meta": review_meta,
                 "deep_meta": deep_meta,
+                "adaptive_alpha": alpha_meta,
                 "profile": profile,
                 "candidates": candidates,
                 "quant_candidates": quant_candidates,
@@ -304,6 +328,7 @@ class DailyPipelineSkill(BaseSkill):
                 "strategy_meta": strategy_meta,
                 "review_meta": review_meta,
                 "deep_meta": deep_meta,
+                "adaptive_alpha": alpha_meta,
                 "quant_candidates": quant_candidates,
                 "reviewed_candidates": reviewed_candidates,
                 "decision_pack": decision_pack,
@@ -340,6 +365,7 @@ async def _rank_candidates(
     input_params: DailyPipelineInput,
     config: dict[str, Any],
     profile: dict[str, Any],
+    alpha_override: float | None = None,
 ) -> tuple[list[dict[str, Any]], bool, list[str], dict[str, Any]]:
     client = await get_mcp_client(config)
     if client is None:
@@ -400,7 +426,9 @@ async def _rank_candidates(
         candidates.append(candidate)
     await _fill_latest_prices(client, candidates, input_params.trade_date, warnings, config)
     for candidate in candidates:
-        fusion = fuse_candidate_signal(candidate, profile["investment_style"])
+        fusion = fuse_candidate_signal(
+            candidate, profile["investment_style"], alpha_override=alpha_override
+        )
         candidate.update(fusion)
         candidate["quant_evidence"] = quant_evidence_markdown(candidate)
         candidate["rationale"] = candidate_rationale(candidate, include_llm=True)
@@ -911,6 +939,7 @@ async def _apply_llm_reviews(
     profile: dict[str, Any],
     candidates: list[dict[str, Any]],
     strategy_lessons: list[dict[str, Any]] | None = None,
+    alpha_override: float | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Delegate to the shared LLM review runner.
 
@@ -931,6 +960,7 @@ async def _apply_llm_reviews(
         enabled=enabled,
         strategy_lessons=strategy_lessons,
         enrich=True,
+        alpha_override=alpha_override,
         disabled_warning="Daily pipeline LLM review disabled by config.",
         unavailable_warning="Daily pipeline LLM reviewer unavailable; using quant-only fusion.",
     )

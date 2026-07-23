@@ -83,6 +83,49 @@ def test_apply_llm_reviews_available_reuses_reviewer_and_fuses():
     asyncio.run(run())
 
 
+def test_apply_llm_reviews_alpha_override_threads_into_fusion():
+    """A provided alpha_override replaces the static STYLE_ALPHA quant weight."""
+
+    async def run():
+        payload = {
+            "llm_view": "positive",
+            "catalyst_strength": "likely",
+            "llm_confidence": 78,
+            "risk_override": False,
+            "invalidates_quant": False,
+            "key_catalysts": ["催化"],
+            "key_risks": ["风险"],
+            "risk_flags": [],
+            "reasoning": "成立",
+        }
+        default_c = _candidate("600519.SH")
+        await apply_llm_reviews(
+            [default_c],
+            config={},
+            trade_date="2026-06-30",
+            style="medium_term",
+            reviewer=_FakeReviewer(dict(payload)),
+            review_limit=5,
+            enrich=False,
+        )
+        override_c = _candidate("600519.SH")
+        await apply_llm_reviews(
+            [override_c],
+            config={},
+            trade_date="2026-06-30",
+            style="medium_term",
+            reviewer=_FakeReviewer(dict(payload)),
+            review_limit=5,
+            enrich=False,
+            alpha_override=0.8,
+        )
+        # medium_term static alpha is 0.55; the override forces 0.8.
+        assert default_c["alpha_weight"] == {"quant": 0.55, "llm": 0.45}
+        assert override_c["alpha_weight"] == {"quant": 0.8, "llm": 0.2}
+
+    asyncio.run(run())
+
+
 def test_apply_llm_reviews_review_limit_truncates():
     async def run():
         reviewer = _FakeReviewer({"llm_view": "neutral", "llm_confidence": 50, "reasoning": "中性"})

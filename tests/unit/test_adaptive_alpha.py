@@ -1,6 +1,6 @@
 """Unit tests for the pure adaptive-alpha suggestion module."""
 
-from tradingagents.core.adaptive_alpha import suggest_alpha
+from tradingagents.core.adaptive_alpha import resolve_alpha_override, suggest_alpha
 
 # ── sample gate (min_n) ──────────────────────────────────────────────────
 
@@ -91,3 +91,66 @@ def test_prior_outside_band_is_clamped_when_not_applicable():
     assert result["applicable"] is False
     assert result["suggested_alpha"] == 0.8  # prior clamped into band
     assert result["static_alpha"] == 0.95
+
+
+# ── resolve_alpha_override (production gate) ─────────────────────────────
+
+
+def _scorecard(suggestion):
+    return {"available": True, "alpha_suggestion": suggestion}
+
+
+def test_resolve_override_applicable_style_match_returns_alpha():
+    sc = _scorecard(
+        {
+            "applicable": True,
+            "style": "short_term",
+            "suggested_alpha": 0.452,
+            "static_alpha": 0.7,
+            "delta": -0.248,
+            "n": 11,
+        }
+    )
+    override, meta = resolve_alpha_override(sc, "short_term")
+    assert override == 0.452
+    assert meta["applied"] is True
+    assert meta["style"] == "short_term"
+    assert meta["suggested_alpha"] == 0.452
+    assert meta["static_alpha"] == 0.7
+    assert meta["delta"] == -0.248
+    assert meta["n"] == 11
+
+
+def test_resolve_override_not_applicable_returns_none():
+    sc = _scorecard({"applicable": False, "style": "short_term", "n": 4})
+    override, meta = resolve_alpha_override(sc, "short_term")
+    assert override is None
+    assert meta["applied"] is False
+    assert meta["reason"] == "not_applicable"
+    assert meta["n"] == 4
+
+
+def test_resolve_override_style_mismatch_returns_none():
+    sc = _scorecard(
+        {"applicable": True, "style": "long_term", "suggested_alpha": 0.4}
+    )
+    override, meta = resolve_alpha_override(sc, "short_term")
+    assert override is None
+    assert meta["applied"] is False
+    assert meta["reason"] == "style_mismatch"
+    assert meta["suggestion_style"] == "long_term"
+    assert meta["style"] == "short_term"
+
+
+def test_resolve_override_missing_suggestion_returns_none():
+    override, meta = resolve_alpha_override({"available": False}, "short_term")
+    assert override is None
+    assert meta["applied"] is False
+    assert meta["reason"] == "no_suggestion"
+
+
+def test_resolve_override_none_scorecard_returns_none():
+    override, meta = resolve_alpha_override(None, "short_term")
+    assert override is None
+    assert meta["applied"] is False
+    assert meta["reason"] == "no_suggestion"

@@ -41,6 +41,7 @@ async def apply_llm_reviews(
     enabled: bool = True,
     strategy_lessons: list[dict[str, Any]] | None = None,
     enrich: bool = False,
+    alpha_override: float | None = None,
     disabled_warning: str = "LLM review disabled by config.",
     unavailable_warning: str = "LLM reviewer unavailable; using quant-only fusion.",
 ) -> tuple[list[str], dict[str, Any]]:
@@ -160,6 +161,7 @@ async def apply_llm_reviews(
                 candidate,
                 style,
                 review.as_fusion_payload(),
+                alpha_override=alpha_override,
             )
         )
         candidate["rationale"] = candidate_rationale(candidate, include_llm=True)

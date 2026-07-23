@@ -85,3 +85,44 @@ def suggest_alpha(
         "applicable": True,
         "reason": reason,
     }
+
+
+def resolve_alpha_override(
+    scorecard: dict | None,
+    style: str,
+) -> tuple[float | None, dict]:
+    """Resolve the production alpha override from a prediction scorecard.
+
+    Pure function (no DB): given a scorecard (as produced by
+    ``Database.get_prediction_scorecard``) and the run's investment ``style``,
+    return ``(alpha_override, meta)``. ``alpha_override`` is ``None`` (meaning
+    keep the static STYLE_ALPHA) unless the scorecard carries an *applicable*
+    ``alpha_suggestion`` whose style matches ``style``.
+
+    The applicability gate (min sample size, shrinkage, safety band) already
+    lives in ``suggest_alpha``; this function only decides whether to act on it.
+    """
+    suggestion = (scorecard or {}).get("alpha_suggestion")
+    if not suggestion:
+        return None, {"applied": False, "reason": "no_suggestion"}
+    if not suggestion.get("applicable"):
+        return None, {
+            "applied": False,
+            "reason": "not_applicable",
+            "n": suggestion.get("n"),
+        }
+    if suggestion.get("style") != style:
+        return None, {
+            "applied": False,
+            "reason": "style_mismatch",
+            "suggestion_style": suggestion.get("style"),
+            "style": style,
+        }
+    return suggestion["suggested_alpha"], {
+        "applied": True,
+        "style": style,
+        "suggested_alpha": suggestion.get("suggested_alpha"),
+        "static_alpha": suggestion.get("static_alpha"),
+        "delta": suggestion.get("delta"),
+        "n": suggestion.get("n"),
+    }
