@@ -202,12 +202,15 @@ async def list_reflection_cases(
     limit: int = 50,
 ):
     """List layered reflection cases."""
+    from tradingagents.core.reflection_enroll import BACKTEST_EVAL_SOURCE_TYPE
+
     rows = request.app.state.db.list_reflection_cases(
         status=status,
         symbol=symbol,
         reflection_scope=reflection_scope,
         eligible_only=eligible_only,
         limit=limit,
+        exclude_source_types=(BACKTEST_EVAL_SOURCE_TYPE,),
     )
     from tradingagents.core.trading_time import advance_trading_days
 

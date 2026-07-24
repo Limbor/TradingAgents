@@ -23,6 +23,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Source tag for offline backtest-evaluation samples. Cases enrolled with this
+# source_type accumulate unbiased historical evaluation data (RankIC / hit-rate)
+# in ``reflection_cases`` only. They are NEVER written to ``decision_records``,
+# so the production audit gate (``decision_audit.audit_summary``) stays clean,
+# and live scorecard / reflection UI queries filter them out via
+# ``exclude_source_types``. See scripts/accumulate_eval_samples.py.
+BACKTEST_EVAL_SOURCE_TYPE = "backtest_eval"
+
 
 def enroll_reflection_case(
     db,

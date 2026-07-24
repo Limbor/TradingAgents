@@ -178,7 +178,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # managed localhost service over HTTP/Streamable MCP.
     "stockmanager_mcp_url": os.getenv("STOCKMANAGER_MCP_URL", "http://127.0.0.1:8765/mcp"),
     "stockmanager_mcp_enabled": True,
-    "stockmanager_mcp_timeout": 120.0,
+    # Per-call MCP tool timeout (seconds). Large-pool ranking (e.g. CSI300
+    # rank_factor_candidates over ~300 constituents) measured ~260s end-to-end,
+    # so the previous 120s default timed out and stalled the service. 300s gives
+    # those wide-universe calls headroom; override via STOCKMANAGER_MCP_TIMEOUT.
+    "stockmanager_mcp_timeout": 300.0,
     "stockmanager_mcp_sse_read_timeout": 300.0,
     "stockmanager_mcp_health_timeout": 2.0,
     "scheduler_enabled": True,

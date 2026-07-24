@@ -1542,6 +1542,8 @@ class Database:
         eligible_only: bool = False,
         lookback_days: int | None = None,
         due_only: bool = False,
+        source_type: str | None = None,
+        exclude_source_types: tuple[str, ...] = (),
     ) -> list[dict]:
         """List reflection cases with decoded JSON payloads.
 
@@ -1560,6 +1562,12 @@ class Database:
                 (trading-day due dates are always >= it), so no truly-due case
                 is dropped; the caller still skips cases whose price outcome
                 isn't available yet.
+            source_type: Only return cases with this exact ``source_type``
+                (e.g. ``backtest_eval`` to read offline evaluation samples).
+            exclude_source_types: Drop cases whose ``source_type`` is in this
+                set. Live scorecard / reflection UI queries pass
+                ``(BACKTEST_EVAL_SOURCE_TYPE,)`` so evaluation samples never
+                leak into production-facing views.
         """
         query = "SELECT * FROM reflection_cases"
         clauses: list[str] = []
@@ -1573,6 +1581,13 @@ class Database:
         if reflection_scope:
             clauses.append("reflection_scope = ?")
             params.append(reflection_scope)
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if exclude_source_types:
+            placeholders = ", ".join("?" for _ in exclude_source_types)
+            clauses.append(f"source_type NOT IN ({placeholders})")
+            params.extend(exclude_source_types)
         if eligible_only:
             clauses.append("eligible_for_strategy_learning = 1")
         if lookback_days is not None:
@@ -2411,12 +2426,53 @@ class Database:
         ``alpha_suggestion``. No schema changes, no side effects.
         """
         from tradingagents.core.prediction_metrics import build_scorecard
+        from tradingagents.core.reflection_enroll import BACKTEST_EVAL_SOURCE_TYPE
         from tradingagents.core.signal_fusion import STYLE_ALPHA
 
         cases = self.list_reflection_cases(
             status="reflected",
             lookback_days=lookback_days,
             limit=10000,
+            exclude_source_types=(BACKTEST_EVAL_SOURCE_TYPE,),
+        )
+        style = str(self.get_user_profile().get("investment_style") or "medium_term")
+        alpha_prior = STYLE_ALPHA.get(style, STYLE_ALPHA["medium_term"])
+        return build_scorecard(
+            cases,
+            lookback_days=lookback_days,
+            min_samples=min_samples,
+            alpha_prior=alpha_prior,
+            style=style,
+            style_alpha_priors=dict(STYLE_ALPHA),
+        )
+
+    def get_evaluation_scorecard(
+        self, lookback_days: int = 3650, min_samples: int = 5
+    ) -> dict:
+        """Read-only scorecard over offline backtest-evaluation samples.
+
+        Mirrors :meth:`get_prediction_scorecard` but reads ONLY the cases tagged
+        ``source_type=BACKTEST_EVAL_SOURCE_TYPE`` (accumulated by
+        scripts/accumulate_eval_samples.py). These unbiased historical samples
+        cover the full ``quant_score`` range, so the resulting RankIC / hit-rate
+        / excess figures answer "is the strategy accurate, and which way to
+        tune" without the top-N range bias of the live scorecard.
+
+        The default lookback is wide (10y) because evaluation samples are
+        backfilled from arbitrary historical dates. Delegates to the same pure
+        ``build_scorecard`` aggregator and passes ``style_alpha_priors`` so the
+        result carries per-style RankIC. This is display/offline-analysis only
+        and NEVER feeds any production weight or gate.
+        """
+        from tradingagents.core.prediction_metrics import build_scorecard
+        from tradingagents.core.reflection_enroll import BACKTEST_EVAL_SOURCE_TYPE
+        from tradingagents.core.signal_fusion import STYLE_ALPHA
+
+        cases = self.list_reflection_cases(
+            status="reflected",
+            lookback_days=lookback_days,
+            limit=100000,
+            source_type=BACKTEST_EVAL_SOURCE_TYPE,
         )
         style = str(self.get_user_profile().get("investment_style") or "medium_term")
         alpha_prior = STYLE_ALPHA.get(style, STYLE_ALPHA["medium_term"])
