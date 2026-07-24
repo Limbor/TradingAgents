@@ -525,6 +525,24 @@ export default function Settings() {
             </span>
           </label>
         </div>
+        <div className="mt-4">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={config.adaptive_alpha_enabled}
+              onChange={(e) =>
+                save({ adaptive_alpha_enabled: e.target.checked })
+              }
+              className="h-4 w-4 rounded border-stone-600 bg-stone-900"
+            />
+            <span className="text-sm text-stone-300">
+              启用自适应 α{" "}
+              <span className="text-stone-500">
+                (根据预测评分动态调整每日选股的 quant/LLM 融合权重；未生效时维持静态权重)
+              </span>
+            </span>
+          </label>
+        </div>
       </section>
     </div>
   );

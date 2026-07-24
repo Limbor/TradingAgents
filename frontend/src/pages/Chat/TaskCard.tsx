@@ -130,6 +130,7 @@ function TaskResult({
     const candidates = parseCandidates(structured.data);
     return (
       <div className="space-y-3">
+        <AdaptiveAlphaBadge meta={structured.adaptiveAlpha} />
         <CandidateTable
           candidates={candidates}
           warnings={structured.warnings}
@@ -219,6 +220,46 @@ function TaskResult({
   );
 }
 
+const ADAPTIVE_ALPHA_REASONS: Record<string, string> = {
+  not_applicable: "样本不足，维持静态权重",
+  style_mismatch: "风格不匹配，维持静态权重",
+  no_suggestion: "暂无预测评分，维持静态权重",
+};
+
+function formatAlphaValue(value: unknown): string {
+  return typeof value === "number" ? value.toFixed(2) : "—";
+}
+
+// Surfaces whether the adaptive-alpha override actually changed fusion weights
+// for this daily-pipeline run (only present when the feature is enabled).
+export function AdaptiveAlphaBadge({ meta }: { meta?: Record<string, unknown> }) {
+  if (!meta || meta.enabled !== true) return null;
+  const applied = meta.applied === true;
+  if (applied) {
+    const staticAlpha = formatAlphaValue(meta.static_alpha);
+    const suggested = formatAlphaValue(meta.suggested_alpha);
+    const n = typeof meta.n === "number" ? meta.n : undefined;
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-xs text-teal-200">
+        <span className="font-medium">自适应α已生效</span>
+        <span className="text-teal-300/80">
+          quant权重 {staticAlpha} → {suggested}
+          {n !== undefined ? `（有效样本 n=${n}）` : ""}
+        </span>
+      </div>
+    );
+  }
+  const reason =
+    (typeof meta.reason === "string" && ADAPTIVE_ALPHA_REASONS[meta.reason]) ||
+    "本次未生效，维持静态权重";
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-800/60 px-3 py-2 text-xs text-stone-400">
+      <span className="font-medium text-stone-300">自适应α已开启</span>
+      <span>{reason}</span>
+    </div>
+  );
+}
+
 function tryParseStructured(result: string): {
   type: string;
   data: unknown;
@@ -228,6 +269,7 @@ function tryParseStructured(result: string): {
   sessionState?: string;
   selectionContext?: Record<string, unknown>;
   artifactId?: string;
+  adaptiveAlpha?: Record<string, unknown>;
   remainingText: string;
 } | null {
   const extract = (parsed: Record<string, unknown>) => ({
@@ -240,6 +282,10 @@ function tryParseStructured(result: string): {
         : undefined,
     artifactId: typeof parsed.artifactId === "string" ? parsed.artifactId : undefined,
     sessionState: typeof parsed.sessionState === "string" ? parsed.sessionState : undefined,
+    adaptiveAlpha:
+      parsed.adaptiveAlpha && typeof parsed.adaptiveAlpha === "object"
+        ? (parsed.adaptiveAlpha as Record<string, unknown>)
+        : undefined,
   });
   const lines = result.split("\n");
   for (const [index, line] of lines.entries()) {

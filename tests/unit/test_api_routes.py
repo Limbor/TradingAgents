@@ -86,6 +86,18 @@ def test_update_config(client):
     assert res.json()["max_debate_rounds"] == 3
 
 
+def test_update_config_toggles_adaptive_alpha(client):
+    # Defaults off, and the toggle round-trips through the runtime config.
+    assert client.get("/api/v1/config").json()["adaptive_alpha_enabled"] is False
+    res = client.put(
+        "/api/v1/config",
+        json={"adaptive_alpha_enabled": True},
+    )
+    assert res.status_code == 200
+    assert res.json()["adaptive_alpha_enabled"] is True
+    assert client.get("/api/v1/config").json()["adaptive_alpha_enabled"] is True
+
+
 def test_update_config_allows_backend_url_reset(client):
     res = client.put(
         "/api/v1/config",

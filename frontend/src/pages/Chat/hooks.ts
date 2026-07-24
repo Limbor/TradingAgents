@@ -169,7 +169,12 @@ export function useChatWebSocket() {
         });
         appendTaskResult(
           message.run_id,
-          JSON.stringify({ __type: "candidates", data: rows, warnings }),
+          JSON.stringify({
+            __type: "candidates",
+            data: rows,
+            warnings,
+            adaptiveAlpha: message.payload.adaptive_alpha ?? undefined,
+          }),
         );
       } else if (message.type === "risk_monitor_results") {
         const rows = message.payload.risks as unknown[] | undefined;

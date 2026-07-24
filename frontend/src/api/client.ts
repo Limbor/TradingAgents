@@ -229,6 +229,7 @@ export interface ConfigResponse {
   stockmanager_mcp_enabled: boolean;
   stockmanager_mcp_timeout: number;
   daily_pipeline_filters: DailyPipelineFilters;
+  adaptive_alpha_enabled: boolean;
   api_keys: Record<string, boolean>;
 }
 
