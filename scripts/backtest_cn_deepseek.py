@@ -150,7 +150,9 @@ def is_correct(action: str, future_return_pct: float) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", choices=["local", "deepseek"], default="local")
-    parser.add_argument("--model", default="deepseek-chat")
+    # deepseek-chat / deepseek-reasoner aliases were retired by the DeepSeek API
+    # (HTTP 400); use the v4 family. Pro is the flagship reasoning model.
+    parser.add_argument("--model", default="deepseek-v4-pro")
     parser.add_argument("--horizon", type=int, default=10)
     parser.add_argument("--allow-upload", action="store_true")
     args = parser.parse_args()
