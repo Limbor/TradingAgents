@@ -101,8 +101,28 @@ def resolve_alpha_override(
 
     The applicability gate (min sample size, shrinkage, safety band) already
     lives in ``suggest_alpha``; this function only decides whether to act on it.
+
+    When the scorecard carries a per-style ``alpha_suggestions_by_style`` block
+    (see ``build_scorecard``) and the entry for ``style`` is *applicable*, that
+    style-specific suggestion wins. Otherwise this falls back to the single
+    active-style ``alpha_suggestion`` (unchanged legacy behaviour), so history
+    that predates per-style capture keeps producing the same override.
     """
-    suggestion = (scorecard or {}).get("alpha_suggestion")
+    scorecard = scorecard or {}
+    by_style = scorecard.get("alpha_suggestions_by_style")
+    if isinstance(by_style, dict):
+        styled = by_style.get(style)
+        if isinstance(styled, dict) and styled.get("applicable"):
+            return styled["suggested_alpha"], {
+                "applied": True,
+                "style": style,
+                "suggested_alpha": styled.get("suggested_alpha"),
+                "static_alpha": styled.get("static_alpha"),
+                "delta": styled.get("delta"),
+                "n": styled.get("n"),
+                "source": "by_style",
+            }
+    suggestion = scorecard.get("alpha_suggestion")
     if not suggestion:
         return None, {"applied": False, "reason": "no_suggestion"}
     if not suggestion.get("applicable"):

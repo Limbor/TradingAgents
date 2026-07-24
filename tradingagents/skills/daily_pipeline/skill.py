@@ -292,6 +292,7 @@ class DailyPipelineSkill(BaseSkill):
             str(config.get("run_id", "")),
             input_params.trade_date,
             candidates,
+            str(profile.get("investment_style") or ""),
         )
 
         yield SkillEvent(
@@ -742,6 +743,7 @@ def _save_reflection_cases(
     run_id: str,
     trade_date: str,
     candidates: list[dict[str, Any]],
+    investment_style: str = "",
 ) -> dict[str, int]:
     """Create layered reflection cases from daily pipeline candidates."""
     created = 0
@@ -760,7 +762,7 @@ def _save_reflection_cases(
                 signal_date=str(candidate.get("decision_target_date") or trade_date),
                 rating_or_decision=candidate.get("final_decision") or candidate.get("signal"),
                 source_run_id=run_id,
-                snapshot_payload=_reflection_snapshot(candidate),
+                snapshot_payload=_reflection_snapshot(candidate, investment_style),
                 # daily_pipeline's 3-tier scope: BUY -> decision_grade,
                 # WATCHLIST/MONITOR/HOLD_REVIEW -> candidate_pool, else exploratory.
                 decision_grade_values=("buy",),
@@ -783,7 +785,9 @@ def _signal_id(trade_date: str, candidate: dict[str, Any]) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"daily_pipeline:{trade_date}:{symbol}"))
 
 
-def _reflection_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
+def _reflection_snapshot(
+    candidate: dict[str, Any], investment_style: str = ""
+) -> dict[str, Any]:
     """Capture the evidence visible at signal time for later causal reflection."""
     keys = [
         "symbol",
@@ -818,6 +822,10 @@ def _reflection_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
         "deep_analysis",
     ]
     snapshot = {key: candidate.get(key) for key in keys if key in candidate}
+    # Record the run's investment style so the prediction scorecard can bucket
+    # RankIC / alpha suggestions per style later (see build_scorecard).
+    if investment_style:
+        snapshot["investment_style"] = investment_style
     snapshot["candidate"] = {key: value for key, value in candidate.items() if key not in {"raw_payload"}}
     return snapshot
 

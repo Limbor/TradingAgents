@@ -133,6 +133,7 @@ def extract_features(case: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "symbol": str(case.get("symbol") or ""),
         "decision": decision or "",
+        "investment_style": _pick_str(snapshot, candidate, key="investment_style"),
         "quant_score": _pick_number(snapshot, candidate, key="quant_score"),
         "llm_confidence": _pick_number(snapshot, candidate, key="llm_confidence"),
         "fusion_mode": _pick_str(snapshot, candidate, key="fusion_mode"),
@@ -220,6 +221,7 @@ def build_scorecard(
     min_samples: int = 5,
     alpha_prior: float | None = None,
     style: str | None = None,
+    style_alpha_priors: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Aggregate reflected cases into a prediction-quality scorecard.
 
@@ -229,6 +231,12 @@ def build_scorecard(
     When ``alpha_prior`` is provided (the static ``STYLE_ALPHA`` for the active
     style), an advisory ``alpha_suggestion`` block is added — a read-only
     recommendation that never changes production decisions on its own.
+
+    When ``style_alpha_priors`` is also provided (the full ``STYLE_ALPHA`` map),
+    a per-style ``alpha_suggestions_by_style`` block is added for each style
+    actually seen in the reflected cases. This lets the production override pick
+    a style-specific alpha once enough same-style samples accrue; it stays empty
+    (graceful degradation) for history that predates style capture.
     """
     as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     features = [f for case in cases if (f := extract_features(case)) is not None]
@@ -295,11 +303,35 @@ def build_scorecard(
     if alpha_prior is not None:
         from tradingagents.core.adaptive_alpha import suggest_alpha
 
-        quant_n = len(quant_pairs)
-        llm_n = len(llm_pairs)
-        effective_n = min(quant_n, llm_n) if quant_n and llm_n else quant_n or llm_n
-        suggestion = suggest_alpha(quant_ic, llm_ic, effective_n, prior=alpha_prior)
+        def _suggest_for(rows: list[dict[str, Any]], prior: float) -> dict[str, Any]:
+            q_pairs = [(r["quant_score"], r["actual_return"]) for r in rows if r["quant_score"] is not None]
+            l_pairs = [(r["llm_confidence"], r["actual_return"]) for r in rows if r["llm_confidence"] is not None]
+            q_n, l_n = len(q_pairs), len(l_pairs)
+            eff_n = min(q_n, l_n) if q_n and l_n else q_n or l_n
+            return suggest_alpha(
+                spearman_rankic(q_pairs), spearman_rankic(l_pairs), eff_n, prior=prior
+            )
+
+        suggestion = _suggest_for(features, alpha_prior)
         suggestion["style"] = style
         scorecard["alpha_suggestion"] = suggestion
+
+        if style_alpha_priors:
+            styled: dict[str, list[dict[str, Any]]] = {}
+            for f in features:
+                s = f.get("investment_style")
+                if s:
+                    styled.setdefault(s, []).append(f)
+            by_style: dict[str, Any] = {}
+            for s, rows in styled.items():
+                prior = style_alpha_priors.get(s)
+                if prior is None:
+                    continue
+                sug = _suggest_for(rows, prior)
+                sug["style"] = s
+                sug["n_style"] = len(rows)
+                by_style[s] = sug
+            if by_style:
+                scorecard["alpha_suggestions_by_style"] = by_style
 
     return scorecard

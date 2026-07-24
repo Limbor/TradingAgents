@@ -2426,4 +2426,5 @@ class Database:
             min_samples=min_samples,
             alpha_prior=alpha_prior,
             style=style,
+            style_alpha_priors=dict(STYLE_ALPHA),
         )
