@@ -154,3 +154,73 @@ def test_resolve_override_none_scorecard_returns_none():
     assert override is None
     assert meta["applied"] is False
     assert meta["reason"] == "no_suggestion"
+
+
+# ── resolve_alpha_override with per-style block ───────────────────────
+
+
+def test_resolve_override_prefers_applicable_by_style():
+    sc = {
+        "available": True,
+        "alpha_suggestion": {
+            "applicable": True,
+            "style": "short_term",
+            "suggested_alpha": 0.60,
+            "static_alpha": 0.7,
+        },
+        "alpha_suggestions_by_style": {
+            "short_term": {
+                "applicable": True,
+                "style": "short_term",
+                "suggested_alpha": 0.48,
+                "static_alpha": 0.7,
+                "delta": -0.22,
+                "n": 12,
+            }
+        },
+    }
+    override, meta = resolve_alpha_override(sc, "short_term")
+    assert override == 0.48  # per-style wins over the aggregate suggestion
+    assert meta["applied"] is True
+    assert meta["source"] == "by_style"
+    assert meta["n"] == 12
+
+
+def test_resolve_override_falls_back_when_by_style_not_applicable():
+    # Per-style entry exists but lacks samples -> fall back to the applicable
+    # aggregate suggestion (no regression during the transition period).
+    sc = {
+        "alpha_suggestion": {
+            "applicable": True,
+            "style": "short_term",
+            "suggested_alpha": 0.60,
+            "static_alpha": 0.7,
+            "delta": -0.10,
+            "n": 30,
+        },
+        "alpha_suggestions_by_style": {
+            "short_term": {"applicable": False, "style": "short_term", "n": 3}
+        },
+    }
+    override, meta = resolve_alpha_override(sc, "short_term")
+    assert override == 0.60
+    assert meta["applied"] is True
+    assert meta.get("source") != "by_style"
+
+
+def test_resolve_override_falls_back_when_style_absent_from_by_style():
+    sc = {
+        "alpha_suggestion": {
+            "applicable": True,
+            "style": "long_term",
+            "suggested_alpha": 0.30,
+            "static_alpha": 0.35,
+        },
+        "alpha_suggestions_by_style": {
+            "short_term": {"applicable": True, "style": "short_term", "suggested_alpha": 0.48}
+        },
+    }
+    override, meta = resolve_alpha_override(sc, "long_term")
+    assert override == 0.30
+    assert meta["applied"] is True
+    assert meta["style"] == "long_term"

@@ -118,6 +118,32 @@ def test_extract_features_excess_fallback_chain():
     assert feats2["excess_return"] is None
 
 
+def test_extract_features_reads_investment_style():
+    case = {
+        "symbol": "600000",
+        "snapshot_payload": {
+            "final_decision": "BUY",
+            "investment_style": "short_term",
+            "candidate": {"fusion_mode": "quant_llm_fused"},
+        },
+        "outcome_payload": {"actual_return": 0.03},
+    }
+    feats = extract_features(case)
+    assert feats is not None
+    assert feats["investment_style"] == "short_term"
+
+
+def test_extract_features_style_defaults_none_when_absent():
+    case = {
+        "symbol": "600000",
+        "snapshot_payload": {"final_decision": "BUY"},
+        "outcome_payload": {"actual_return": 0.03},
+    }
+    feats = extract_features(case)
+    assert feats is not None
+    assert feats["investment_style"] is None
+
+
 # ── build_scorecard ──────────────────────────────────────────────────────
 
 
@@ -210,6 +236,58 @@ def _fused_cases():
         _case("D", "SELL", 40, 30, "quant_llm_fused", -0.01, -0.01),
         _case("E", "WATCHLIST", 62, 55, "quant_llm_fused", 0.04, 0.02),
     ]
+
+
+def test_build_scorecard_omits_by_style_without_style_history():
+    # style_alpha_priors provided but no case carries a style -> graceful
+    # degradation: no per-style block, single suggestion unchanged.
+    result = build_scorecard(
+        _fused_cases(),
+        lookback_days=90,
+        min_samples=5,
+        alpha_prior=0.55,
+        style="medium_term",
+        style_alpha_priors={"short_term": 0.7, "medium_term": 0.55, "long_term": 0.35},
+    )
+    assert "alpha_suggestions_by_style" not in result
+    assert result["alpha_suggestion"]["style"] == "medium_term"
+
+
+def _styled_case(symbol, style, quant, conf, ret):
+    case = _case(symbol, "BUY", quant, conf, "quant_llm_fused", ret)
+    case["snapshot_payload"]["investment_style"] = style
+    return case
+
+
+def test_build_scorecard_buckets_alpha_by_style():
+    # 8 short_term fused rows -> effective_n >= min_n (8) -> applicable;
+    # 3 long_term rows -> below min_n -> present but not applicable.
+    cases = [_styled_case(f"S{i}", "short_term", 80 - i, 70 - i, 0.05 - i * 0.01) for i in range(8)]
+    cases += [_styled_case(f"L{i}", "long_term", 60 - i, 50 - i, 0.02 - i * 0.01) for i in range(3)]
+    result = build_scorecard(
+        cases,
+        lookback_days=90,
+        min_samples=5,
+        alpha_prior=0.55,
+        style="medium_term",
+        style_alpha_priors={"short_term": 0.7, "medium_term": 0.55, "long_term": 0.35},
+    )
+    by_style = result["alpha_suggestions_by_style"]
+    assert set(by_style) == {"short_term", "long_term"}
+
+    st = by_style["short_term"]
+    assert st["style"] == "short_term"
+    assert st["n_style"] == 8
+    assert st["static_alpha"] == 0.7
+    assert st["applicable"] is True
+
+    lt = by_style["long_term"]
+    assert lt["n_style"] == 3
+    assert lt["static_alpha"] == 0.35
+    assert lt["applicable"] is False
+
+    # The single active-style suggestion is still computed over all rows.
+    assert result["alpha_suggestion"]["style"] == "medium_term"
 
 
 def test_build_scorecard_omits_alpha_suggestion_without_prior():
