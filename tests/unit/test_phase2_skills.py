@@ -212,6 +212,118 @@ def test_daily_pipeline_uses_mcp_quant_rank(monkeypatch, tmp_path):
     asyncio.run(run())
 
 
+def test_daily_pipeline_adaptive_alpha_override_end_to_end(monkeypatch, tmp_path):
+    """End-to-end: with adaptive_alpha_enabled and an applicable, style-matched
+    scorecard suggestion, the pipeline re-fuses reviewed candidates using the
+    suggested quant weight (and surfaces it); disabling returns to STYLE_ALPHA.
+    """
+    from tradingagents.core.signal_fusion import STYLE_ALPHA
+
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            return {
+                "status": "success",
+                "as_of_date": kwargs["trade_date"],
+                "factor_profile": kwargs["factor_profile"],
+                "universe": {"index": kwargs["universe_index"], "raw_size": 1, "tradable_size": 1, "ranked_size": 1},
+                "strategy_meta": {"profile": "balanced", "version": "v2"},
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "600519.SH",
+                        "name": "贵州茅台",
+                        "industry": "消费 白酒",
+                        "quant_score": 82.0,
+                        "decision": "BUY",
+                        "factor_scores": {"momentum": 72, "liquidity": 91, "quality": 96, "risk_control": 82},
+                        "tradability": {"is_tradable": True, "st_flag": False, "limit_status": "normal"},
+                        "risk_flags": [],
+                    },
+                ],
+                "warnings": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+
+    class FakeReviewer:
+        async def review(self, candidate):
+            return {
+                "llm_view": "positive",
+                "catalyst_strength": "none",
+                "llm_confidence": 70,
+                "risk_override": False,
+                "invalidates_quant": False,
+                "key_catalysts": [],
+                "key_risks": [],
+                "risk_flags": [],
+                "reasoning": "成立",
+            }
+
+    def _scorecard(style):
+        return {
+            "available": True,
+            "alpha_suggestion": {
+                "applicable": True,
+                "style": style,
+                "suggested_alpha": 0.8,
+                "static_alpha": STYLE_ALPHA[style],
+                "delta": round(0.8 - STYLE_ALPHA[style], 3),
+                "n": 40,
+            },
+        }
+
+    async def _run(db, *, enabled):
+        skill = DailyPipelineSkill()
+        cfg = {
+            "db": db,
+            "run_id": "run-alpha",
+            "daily_pipeline_llm_reviewer": FakeReviewer(),
+            "stockmanager_mcp_enabled": False,  # skip network enrichment; ranking uses the fake client
+        }
+        if enabled:
+            cfg["adaptive_alpha_enabled"] = True
+        events = [
+            event
+            async for event in skill.execute(
+                DailyPipelineInput(trade_date="2026-06-30", limit=1, candidate_limit=5),
+                cfg,
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidates_event = [event for event in events if event.event_type == "daily_pipeline_candidates"][-1]
+        return complete, candidates_event
+
+    async def run():
+        # ON: scorecard yields an applicable, style-matched suggestion.
+        db_on = Database(tmp_path / "alpha-on.db")
+        style = db_on.get_user_profile()["investment_style"]
+        monkeypatch.setattr(db_on, "get_prediction_scorecard", lambda **k: _scorecard(style))
+        complete_on, candidates_on = await _run(db_on, enabled=True)
+        cand_on = complete_on.data["candidates"][0]
+        assert cand_on["fusion_mode"] == "quant_llm_fused"
+        assert cand_on["alpha_weight"] == {"quant": 0.8, "llm": 0.2}
+        assert complete_on.data["adaptive_alpha"]["applied"] is True
+        assert any("自适应α已生效" in w for w in candidates_on.data["warnings"])
+        sig_on = db_on.list_signals(trade_date="2026-06-30")[0]["payload"]
+        assert sig_on["alpha_weight"] == {"quant": 0.8, "llm": 0.2}
+
+        # OFF: even with a live scorecard, the disabled flag keeps static weight.
+        db_off = Database(tmp_path / "alpha-off.db")
+        monkeypatch.setattr(db_off, "get_prediction_scorecard", lambda **k: _scorecard(style))
+        complete_off, candidates_off = await _run(db_off, enabled=False)
+        cand_off = complete_off.data["candidates"][0]
+        static_q = round(STYLE_ALPHA[style], 2)
+        assert cand_off["fusion_mode"] == "quant_llm_fused"
+        assert cand_off["alpha_weight"] == {"quant": static_q, "llm": round(1 - static_q, 2)}
+        assert complete_off.data["adaptive_alpha"] == {"enabled": False}
+        assert not any("自适应α" in w for w in candidates_off.data["warnings"])
+
+    asyncio.run(run())
+
+
 def test_daily_pipeline_deep_analysis_writes_back_conclusion(tmp_path):
     """When enabled, the Top N candidates get a StockAnalysisSkill conclusion
     written back onto the candidate payload (and persisted signal row)."""
