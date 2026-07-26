@@ -360,6 +360,8 @@ flow 0.05
 - 风险硬门槛：`risk_control < 50`、重大公告风险、ST/停牌/一字板直接降级。
 - 回测闭环：每个 profile 至少输出最近 20/60/120 交易日 hit_rate、avg_return、max_drawdown，低于阈值时不得标记为生产策略。
 
+> 2026-07 增补：上述建议中的行业中性化、拥挤度惩罚/风险硬门槛、覆盖率诚实、截面口径四项，已依据回测评估数据升级为 4.6 的强制约束。
+
 ### 4.4 出参
 
 ```json
@@ -439,6 +441,57 @@ MCP 侧必须保证：
 - 所有用到的财务数据必须满足 `announce_date <= trade_date`，禁止未来函数。
 - 因子标准化必须说明方法，建议 winsorize + rank percentile。
 - 行业中性化如果启用，必须在 `method` 或 `warnings` 中说明。
+
+### 4.6 策略约束要求（2026-07 增补，回测评估数据驱动）
+
+本节将 4.3.1 中的四项"建议"升级为**强制要求**。依据是 TradingAgents 侧积累的回测评估证据（walk-forward 真实回放，point-in-time 成分股，无前视）：
+
+**证据基础**
+
+- CSI300 walk-forward（2026-03/04 两月末截面，n=60）：`quant_score` RankIC **+0.20**，且分桶单调——75-100 分桶超额 +1.07%，0-45 分桶超额 -1.84%。结论：截面因子有预测力，**不需要换因子，需要补约束**。
+- `long_term_quality` Top5 过度集中 AI/半导体链且隔日收益为负（4.3.1 原始实测）；回测反思经验中行业集中度出现正反两面证据（部分行业门控规避了 -5.65% 超额，部分行业门控错失 +9.44% 超额）。
+- 数据缺失的影响**按因子分化**：`flow`/`valuation` 缺失的候选观望规避有效（样本平均跑输基准 6.6%）；但 `quality` 缺失且动量/流动性/资金流俱佳的候选被一票否决，错失 +5.7%~+6.7% 超额（多行业重复出现）。
+- 拥挤度实例：3 日涨幅 18.6%、PE 处历史 85%+ 分位的标的仍拿到 74.8 分（排名第 2），拥挤风险完全依赖下游 LLM 兜底。
+
+**约束一：行业中性化默认生效（最高优先级）**
+
+- `rank_factor_candidates` 的动量/流动性类截面因子默认在行业内标准化（行业内 z-score 或行业分组 rank percentile）。
+- 允许通过入参 `neutralize=false` 显式关闭；无论开关状态，必须在 `method` 中声明（不再是"如果启用才说明"）。
+- 验收：同一 `trade_date` 下 Top20 的单一申万一级行业占比不超过 35%（除非 universe 本身行业数不足）。
+
+**约束二：拥挤度惩罚与风险硬门槛默认生效**
+
+- 4.3.1 中的拥挤度降权（近 20 日涨幅高 + 波动扩张 + 回撤控制弱 + 资金流未确认）与风险硬门槛（`risk_control < 50`、ST/停牌/一字板降级）从建议改为默认行为。
+- 每笔惩罚/降级必须在 `score_explain` 或 `gate_reasons` 中输出明细（因子、触发阈值、扣分幅度），保证 Agent 侧可审计"这个分被拥挤度扣过"。
+- 验收：构造一只 20 日涨幅 >30% 且资金流为负的测试标的，其 `quant_score` 显著低于同因子无拥挤版本，且 `score_explain` 含拥挤度条目。
+
+**约束三：覆盖率诚实，按因子分级处理缺失**
+
+- 任何因子缺失都不得静默填 50（8.4 已有），且综合分必须携带可信度：新增出参字段 `score_confidence`（0-1），随缺失因子数量与权重下降。
+- 缺失处理按因子分级（依据上方证据）：
+  - `flow` / `valuation` 缺失：允许压低综合分或标记降级——回测证明该规避有效。
+  - `quality` 缺失但 momentum/liquidity/flow 均可用且 >60：**不得**仅因 quality 缺失压低排名，改为输出 `warnings: ["quality_missing"]` 交由融合层判断。
+- 验收：`data_coverage` 中每个 missing 因子都能在 `score_confidence` 或 `warnings` 中找到对应痕迹。
+
+**约束四：截面相对口径**
+
+- 因子构造与评估统一使用截面相对口径：动量类因子相对 universe/行业（如 `excess_return_20d` 替代绝对 `momentum_20d` 参与打分），避免下行市中绝对动量必然负 IC。
+- 6.3 回测出参与 4.3.1 回测闭环指标（hit_rate/avg_return/max_drawdown）同时输出**超额口径**（相对 universe 基准与相对行业），生产策略门槛以超额口径为准。
+- 验收：`run_signal_backtest` 出参包含 `avg_excess_return` 与 `sector_excess_return`（或等价字段）。
+
+实施优先级：约束一 > 约束二 > 约束三 > 约束四。约束一/二不改工具接口（仅默认行为与解释输出），约束三/四涉及新增字段，可随 Phase 2 一并交付。
+
+#### 4.6.1 验收记录（CSI300 / 2026-07-24 实测）
+
+首轮（2026-07-25）通过：约束一（默认行业中性化 + 35% 上限 + `neutralize=false` 开关与声明）；约束三的 `score_confidence` 字段输出；约束四的 rank 侧超额指标（`excess_return_20d`/`sector_excess_return_20d`）；风险硬门槛的 `gate_reasons` 明细。
+
+二轮复验（2026-07-25 修复后）：
+
+1. ~~行级 `decision` 字段为空~~ ✅ 已修复：20/20 行输出 `decision: {action, demoted, demote_reasons, reason}`；风险门槛失败标的正确标记 `action=MONITOR, demoted=true` 并附原因。
+2. ~~拥挤度惩罚不可审计~~ ✅ 已修复：20/20 行 `score_explain` 含 `crowding: passed` 痕迹；本截面无触发样本，惩罚分支的 A/B 构造标的证据由 MCP 侧测试保障。
+3. ~~置信度扣减不透明~~ ✅ 已修复：新增 `confidence_breakdown`（实测 `['quality partial: -0.12']`）。
+4. 缺失因子分级处理 ✅ 部分实证：`quality partial` 样本（600036.SH）置信度扣减但排名未受压制，符合约束三意图；完全缺失（missing）分支在真实截面中无样本，依赖 MCP 侧自测证据。
+5. （仍开放，低优先级）`run_signal_backtest` 未实现，工具列表仅有 `run_backtest`。若用 `run_backtest` 承接 6.3，需确认出参含 `avg_excess_return`/`sector_excess_return`，或在 capabilities 中声明映射关系。
 
 ## 5. 可选工具：evaluate_signal_formula
 
@@ -738,7 +791,8 @@ TradingAgents 侧收到这四项后即可替换伪因子，并开始做 Agent �
 
 1. `evaluate_signal_formula`
 2. `run_signal_backtest`
-3. 行业中性化参数
+3. 行业中性化参数（已升级：默认生效，见 4.6 约束一）
 4. 因子贡献归因
 5. historical signal replay
 6. 权重调整建议
+7. 4.6 约束三/四的新增字段：`score_confidence`、超额口径回测指标
