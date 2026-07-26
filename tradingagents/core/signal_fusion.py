@@ -79,6 +79,12 @@ def fuse_candidate_signal(
             if alpha_override is not None
             else STYLE_ALPHA.get(style, STYLE_ALPHA["medium_term"])
         )
+        # MCP contract 4.6 constraint 3: a sub-1.0 score_confidence means the
+        # composite quant score was built on partial factor data, so shift
+        # fusion weight from the quant leg to the LLM leg proportionally.
+        score_confidence = _float_or(candidate.get("score_confidence"), None)
+        if score_confidence is not None and score_confidence < 1.0:
+            quant_weight *= max(0.0, min(1.0, score_confidence))
         llm_weight = 1.0 - quant_weight
         llm_confidence = _clamp(assessment.llm_confidence)
         # catalyst bonus: high catalyst boosts score, low catalyst penalizes
@@ -196,6 +202,15 @@ def decision_gate(
         final_decision = "MONITOR" if quant_decision in {"BUY", "WATCHLIST", "MONITOR"} else "SKIP"
         gate_reasons.append("default_gate")
 
+    # Audit trail: surface the MCP-side hard-gate demotion (contract 4.6
+    # constraint 2) alongside our own gate reasons. quant_decision already
+    # carries the demoted action, so this never changes the decision itself.
+    if candidate.get("quant_demoted"):
+        demote_reasons = candidate.get("quant_demote_reasons") or []
+        gate_reasons.append(
+            "mcp_demoted: " + (str(demote_reasons[0]) if demote_reasons else "unspecified")
+        )
+
     stage = "quant_llm_reviewed" if has_llm else "quant_only"
     return {
         "final_decision": final_decision,
@@ -226,6 +241,15 @@ def quant_evidence_markdown(candidate: dict[str, Any]) -> str:
     percentile = candidate.get("universe_percentile")
     if percentile is not None:
         lines.append(f"- universe_percentile: {percentile}")
+    if candidate.get("quant_demoted"):
+        demote_reasons = "; ".join(str(item) for item in candidate.get("quant_demote_reasons") or [])
+        lines.append(f"- quant_demoted: true ({demote_reasons or 'unspecified'})")
+    confidence = candidate.get("score_confidence")
+    if confidence is not None:
+        breakdown = "; ".join(str(item) for item in candidate.get("confidence_breakdown") or [])
+        lines.append(
+            f"- score_confidence: {confidence}" + (f" ({breakdown})" if breakdown else "")
+        )
     if fs:
         lines.append("- factor_scores: " + ", ".join(f"{k}={v}" for k, v in fs.items()))
     if key_metrics:
@@ -267,6 +291,9 @@ def _coerce_assessment(value: LLMAssessment | dict[str, Any] | None) -> LLMAsses
 
 
 def _normalize_decision(value: Any) -> str:
+    # MCP contract 4.6: raw rows may carry decision as {action, demoted, ...}.
+    if isinstance(value, dict):
+        value = value.get("action")
     text = str(value or "").upper()
     if text == "HOLD":
         return "MONITOR"

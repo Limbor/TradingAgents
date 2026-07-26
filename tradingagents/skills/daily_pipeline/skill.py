@@ -416,6 +416,8 @@ async def _rank_candidates(
 
     rows, board_warnings = _filter_rows_by_board(rows, input_params)
     warnings.extend(board_warnings)
+    rows, demote_warnings = _deprioritize_demoted_rows(rows)
+    warnings.extend(demote_warnings)
     rows, industry_warnings = _limit_rows_by_industry(rows, input_params, config)
     warnings.extend(industry_warnings)
 
@@ -546,6 +548,33 @@ def _filter_rows_by_board(
             "increase candidate_limit or relax board_filter."
         )
     return filtered, warnings
+
+
+def _row_demoted(row: dict[str, Any]) -> bool:
+    decision = row.get("decision")
+    return bool(decision.get("demoted")) if isinstance(decision, dict) else False
+
+
+def _deprioritize_demoted_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Push MCP hard-gate demoted rows behind clean rows (contract 4.6 constraint 2).
+
+    MCP ranking is decision-agnostic, so a risk-gated symbol can still hold
+    rank 1. A stable partition keeps rank order inside each bucket while
+    letting demoted rows only fill leftover candidate slots.
+    """
+    demoted = [row for row in rows if _row_demoted(row)]
+    if not demoted:
+        return rows, []
+    clean = [row for row in rows if not _row_demoted(row)]
+    symbols = ", ".join(str(row.get("ts_code") or row.get("symbol") or "?") for row in demoted[:5])
+    suffix = " ..." if len(demoted) > 5 else ""
+    warnings = [
+        f"MCP decision demoted {len(demoted)} candidate(s) ({symbols}{suffix}); "
+        "reordered behind non-demoted rows."
+    ]
+    return [*clean, *demoted], warnings
 
 
 def _limit_rows_by_industry(
@@ -798,6 +827,10 @@ def _reflection_snapshot(
         "quant_score",
         "quant_decision",
         "quant_decision_reason",
+        "quant_demoted",
+        "quant_demote_reasons",
+        "score_confidence",
+        "confidence_breakdown",
         "factor_scores",
         "key_metrics",
         "data_coverage",
@@ -1099,6 +1132,10 @@ def _candidate_cards(candidates: list[dict[str, Any]], *, include_llm: bool) -> 
             "universe_percentile": item.get("universe_percentile"),
             "quant_decision": item.get("quant_decision"),
             "quant_decision_reason": item.get("quant_decision_reason"),
+            "quant_demoted": item.get("quant_demoted"),
+            "quant_demote_reasons": item.get("quant_demote_reasons"),
+            "score_confidence": item.get("score_confidence"),
+            "confidence_breakdown": item.get("confidence_breakdown"),
             "factor_scores": item.get("factor_scores"),
             "key_metrics": item.get("key_metrics"),
             "data_coverage": item.get("data_coverage"),
@@ -1136,6 +1173,8 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "symbol": item.get("symbol"),
             "name": item.get("name"),
             "quant_decision": item.get("quant_decision"),
+            "quant_demoted": item.get("quant_demoted"),
+            "score_confidence": item.get("score_confidence"),
             "final_decision": item.get("final_decision") or item.get("signal"),
             "decision_stage": item.get("decision_stage"),
             "display_score": item.get("display_score", item.get("final_score")),

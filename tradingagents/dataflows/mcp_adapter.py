@@ -151,7 +151,17 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
     tradability = row.get("tradability") if isinstance(row.get("tradability"), dict) else {}
     risk_flags = [str(item) for item in row.get("risk_flags") or []]
     score = _float_or(row.get("quant_score") or row.get("score"), 0.0)
-    quant_decision = str(row.get("quant_decision") or row.get("decision") or _decision_from_score(score)).upper()
+    # MCP contract 4.6: ``decision`` may be a structured dict
+    # {action, demoted, demote_reasons, reason}; older servers returned a bare
+    # string. Both must map onto quant_decision without str(dict) garbage.
+    decision_raw = row.get("decision")
+    decision_obj = decision_raw if isinstance(decision_raw, dict) else {}
+    decision_text = decision_obj.get("action") if decision_obj else decision_raw
+    quant_decision = str(
+        row.get("quant_decision") or decision_text or _decision_from_score(score)
+    ).upper()
+    quant_demoted = bool(decision_obj.get("demoted"))
+    quant_demote_reasons = [str(item) for item in decision_obj.get("demote_reasons") or []]
     warnings = [str(item) for item in row.get("warnings") or []]
     key_metrics = row.get("key_metrics") if isinstance(row.get("key_metrics"), dict) else {}
     latest_price = _first_present(
@@ -178,7 +188,14 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "score": round(score, 1),
         "quant_score": round(score, 1),
         "quant_decision": quant_decision,
-        "quant_decision_reason": str(row.get("quant_decision_reason") or row.get("decision_reason") or ""),
+        "quant_decision_reason": str(
+            row.get("quant_decision_reason")
+            or row.get("decision_reason")
+            or decision_obj.get("reason")
+            or ""
+        ),
+        "quant_demoted": quant_demoted,
+        "quant_demote_reasons": quant_demote_reasons,
         "quant_gate_reasons": row.get("gate_reasons") if isinstance(row.get("gate_reasons"), list) else [],
         "universe_percentile": row.get("universe_percentile"),
         "factor_scores": factor_scores,
@@ -191,6 +208,13 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "score_explain": [str(item) for item in row.get("score_explain") or []],
         "warnings": warnings,
     }
+    # MCP contract 4.6 constraint 3: composite-score confidence with breakdown.
+    confidence = _float_or(row.get("score_confidence"), None)
+    if confidence is not None:
+        normalized["score_confidence"] = max(0.0, min(1.0, confidence))
+    breakdown = row.get("confidence_breakdown")
+    if isinstance(breakdown, list) and breakdown:
+        normalized["confidence_breakdown"] = [str(item) for item in breakdown]
     if latest_price is not None:
         normalized["latest_price"] = latest_price
         normalized["close"] = latest_price
