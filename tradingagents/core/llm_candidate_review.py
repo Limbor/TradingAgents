@@ -106,7 +106,15 @@ class CandidateReviewer:
         if self._structured_llm is not None:
             try:
                 result = self._structured_llm.invoke(prompt)
-                return _coerce_review(result)
+                # DeepSeek (and some OpenAI-compatible backends) occasionally
+                # return no parsed result instead of raising; treat that the
+                # same as a failure so we retry as free text rather than
+                # coercing None into a fake-neutral review.
+                if result is not None:
+                    return _coerce_review(result)
+                logger.warning(
+                    "Candidate LLM structured review returned no parsed result; falling back to text JSON"
+                )
             except Exception as exc:
                 logger.warning("Candidate LLM structured review failed; falling back to text JSON: %s", exc)
 
@@ -331,4 +339,8 @@ def _extract_json(text: str) -> str:
     end = stripped.rfind("}")
     if start >= 0 and end > start:
         return stripped[start : end + 1]
+    # No JSON at all (empty / "None" / prose): raise so the caller records a
+    # tagged unparseable fallback instead of storing the raw text as reasoning.
+    if not stripped or stripped.lower() in {"none", "null"}:
+        raise ValueError(f"no JSON object in LLM review output: {stripped!r}")
     return json.dumps({"reasoning": stripped[:500]})
