@@ -66,6 +66,43 @@ test("dashboard renders structured risk events", async ({ page }) => {
   await expect(page.getByText("高", { exact: true })).toBeVisible();
 });
 
+test("decision desk shows sourced candidates and their selected evidence", async ({ page }) => {
+  await mockApi(page, { artifacts: [{
+    id: "decision-pack-1", run_id: "run-1", artifact_type: "decision_pack", title: "每日选股 2026-09-25 决策包",
+    summary: "输出 2 个候选", created_at: "2026-09-25T08:00:00Z",
+    payload: { market_asof_date: "2026-09-25", decision_pack: [
+      { symbol: "600519.SH", name: "贵州茅台", quant_decision: "BUY", final_decision: "WATCHLIST", display_score: 78, gate_reasons: ["公告待核验"] },
+      { symbol: "000001.SZ", name: "平安银行", quant_decision: "BUY", final_decision: "SKIP", display_score: 61, gate_reasons: ["流动性门槛未通过"] },
+    ] },
+  }] });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "最新候选与证据" })).toBeVisible();
+  await page.getByRole("row", { name: /平安银行/ }).click();
+  await expect(page.getByText("流动性门槛未通过").last()).toBeVisible();
+  await expect(page.getByRole("button", { name: "问 Agent" })).toBeVisible();
+});
+
+test("decision desk opens strategy research and submits the selected backtest", async ({ page }) => {
+  await mockApi(page);
+  let submitted: unknown;
+  await page.route("**/api/v1/backtests", async (route) => {
+    if (route.request().method() === "POST") {
+      submitted = route.request().postDataJSON();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "backtest-1", job_id: "job-1", status: "queued" }) });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    }
+  });
+  await page.goto("/");
+  await expect(page.getByRole("navigation", { name: "交易决策流程" })).toBeVisible();
+  await page.getByRole("link", { name: "策略研究" }).click();
+  await expect(page).toHaveURL(/\/research$/);
+  await expect(page.getByRole("heading", { name: "策略研究" })).toBeVisible();
+  await page.getByRole("button", { name: "提交回测" }).click();
+  await expect(page.getByRole("status").getByText(/回测已提交/)).toBeVisible();
+  expect(submitted).toMatchObject({ strategy_name: "ff_residual_csi800_main", config_name: "prod_ff_residual_csi800_tv15" });
+});
+
 test("position advice reaches a prefilled confirmation dialog", async ({ page }) => {
   page.on("pageerror", (error) => console.error("pageerror", error.message));
   await mockApi(page);
@@ -171,7 +208,7 @@ test("chat renders a lightweight tool answer with provenance", async ({ page }) 
   await expect(page.getByText("持仓概览", { exact: true })).toBeVisible();
   await expect(page.getByText("600519.SH")).toBeVisible();
   await page.getByText("调用详情", { exact: true }).click();
-  await expect(page.getByText(/2026-07-10/)).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" }).getByText(/2026-07-10/)).toBeVisible();
 });
 
 test("audit separates decisions, executions, outcomes, and sample gate", async ({ page }) => {
@@ -180,5 +217,5 @@ test("audit separates decisions, executions, outcomes, and sample gate", async (
   await expect(page.getByText("决策—执行—收益—反思")).toBeVisible();
   await expect(page.getByText("样本不足", { exact: true })).toBeVisible();
   await expect(page.getByText("600519.SH")).toBeVisible();
-  await expect(page.getByText("候选量化规则回测")).toBeVisible();
+  await expect(page.getByRole("link", { name: "前往策略研究" })).toHaveAttribute("href", "/research");
 });

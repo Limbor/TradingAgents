@@ -102,6 +102,7 @@ export function useChatWebSocket() {
             role: "assistant",
             content: String(payload.content ?? "我还没有找到合适的技能。"),
           });
+          useChatStore.getState().setResponseScope(null);
         }
       } else if (message.type === "chat_answer") {
         const payload = message.payload;
@@ -111,6 +112,8 @@ export function useChatWebSocket() {
           content: String(payload.content ?? ""),
           citations: payload.citations as ChatMessage["citations"] | undefined,
         });
+        setRunning(false);
+        useChatStore.getState().setResponseScope(null);
       } else if (message.type === "tool_answer") {
         const payload = message.payload;
         useChatStore.getState().addToolMessage({
@@ -121,12 +124,16 @@ export function useChatWebSocket() {
           display: String(payload.display ?? "text"),
           citations: payload.citations as ChatMessage["citations"] | undefined,
         });
+        setRunning(false);
+        useChatStore.getState().setResponseScope(null);
       } else if (message.type === "clarify") {
         const payload = message.payload;
         useChatStore.getState().addClarifyMessage({
           content: String(payload.question ?? "请问您需要什么帮助？"),
           options: Array.isArray(payload.options) ? (payload.options as string[]) : undefined,
         });
+        setRunning(false);
+        useChatStore.getState().setResponseScope(null);
       } else if (message.type === "skill_progress" || message.type === "progress_update") {
         addTaskStep(message.run_id, {
           label: progressStepLabel(message.payload),

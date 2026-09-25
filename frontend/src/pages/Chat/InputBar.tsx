@@ -13,6 +13,11 @@ const QUICK_ACTIONS: Array<{ label: string; prompt: string; icon: typeof Sparkle
   { label: "分析个股...", prompt: "", icon: TrendingUp },
   { label: "扫描A股", prompt: "筛选A股 top 3 score 60", icon: Rocket, hint: marketScannerHint(3, 60) },
 ];
+const PAPER_ACTIONS: typeof QUICK_ACTIONS = [
+  { label: "解释策略切换", prompt: "为什么这个模拟盘选择或切换了当前子策略？", icon: Sparkles },
+  { label: "核对成交", prompt: "核对这个模拟盘近期成交与当前持仓", icon: TrendingUp },
+  { label: "检查下日计划", prompt: "解释这个模拟盘的下一交易日计划和风险", icon: ShieldAlert },
+];
 
 interface InputBarProps {
   input: string;
@@ -21,16 +26,17 @@ interface InputBarProps {
   running: boolean;
   onSubmit: (e: FormEvent) => void;
   onQuickAction: (prompt: string, hint?: IntentHint) => void;
+  paperMode?: boolean;
 }
 
-export function InputBar({ input, setInput, canSend, running, onSubmit, onQuickAction }: InputBarProps) {
+export function InputBar({ input, setInput, canSend, running, onSubmit, onQuickAction, paperMode = false }: InputBarProps) {
   return (
     <div className="border-t border-stone-800 pt-3">
       <form onSubmit={onSubmit} className="flex gap-2">
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="例如: 帮我看看茅台 / 每日选股 / 分析持仓风险..."
+          placeholder={paperMode ? "问这次换仓、收益、风险或下一交易日计划..." : "例如: 帮我看看茅台 / 每日选股 / 分析持仓风险..."}
           className="min-w-0 flex-1 rounded-lg border border-stone-700 bg-stone-900 px-4 py-2.5 text-sm outline-none transition focus:border-teal-400"
         />
         <button
@@ -43,7 +49,7 @@ export function InputBar({ input, setInput, canSend, running, onSubmit, onQuickA
 
       {/* Quick action chips */}
       <div className="mt-2.5 flex flex-wrap gap-2 pb-1">
-        {QUICK_ACTIONS.map((action) => (
+        {(paperMode ? PAPER_ACTIONS : QUICK_ACTIONS).map((action) => (
           <button
             key={action.label}
             onClick={() => onQuickAction(action.prompt, action.hint)}

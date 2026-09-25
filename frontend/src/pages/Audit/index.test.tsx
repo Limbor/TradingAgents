@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { expect, test, vi } from "vitest";
 import Audit from ".";
 
@@ -43,11 +44,11 @@ vi.mock("@/api/client", () => ({
 }));
 
 test("shows the audit ledger and blocks claims with insufficient samples", async () => {
-  render(<QueryClientProvider client={new QueryClient()}><Audit /></QueryClientProvider>);
+  render(<QueryClientProvider client={new QueryClient()}><MemoryRouter><Audit /></MemoryRouter></QueryClientProvider>);
   expect(await screen.findByText("600519.SH")).toBeInTheDocument();
   expect(screen.getByText("样本不足", { selector: "div" })).toBeInTheDocument();
   expect(screen.getByText(/至少需要 20 个已实现样本/)).toBeInTheDocument();
-  expect(screen.getByText("候选量化规则回测")).toBeInTheDocument();
+  expect(screen.getByText("前往策略研究 →")).toHaveAttribute("href", "/research");
   expect(screen.getByText(/同源同日同标的重复样本 1 条/)).toBeInTheDocument();
   expect(screen.getAllByText(/daily_pipeline/).length).toBeGreaterThan(0);
   expect(screen.getAllByText("记录执行")).toHaveLength(1);

@@ -54,18 +54,26 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
 
 test("composite decision is readable and Agent chat stays bound to its account", async ({ page }) => {
   const sessionId = "paper:allocator:demo:follow";
+  const otherSessionId = "paper:other";
   let sentContext: Record<string, unknown> | undefined;
+  let replies = 0;
   await page.routeWebSocket(/\/ws\/chat/, (ws) => {
     ws.onMessage((message) => {
       const data = JSON.parse(message) as { context?: Record<string, unknown> };
       sentContext = data.context;
-      ws.send(JSON.stringify({ type: "chat_answer", run_id: "", timestamp: "2026-09-24T00:00:00Z", payload: { content: "当前由 wfo 子策略运行。" } }));
+      replies += 1;
+      ws.send(JSON.stringify({ type: "chat_answer", run_id: "", timestamp: "2026-09-24T00:00:00Z", payload: { content: replies === 1 ? "当前由 wfo 子策略运行。" : "第二个会话已单独核对。" } }));
     });
   });
   await page.route("**/api/v1/**", async (route) => {
     const { pathname } = new URL(route.request().url());
     let body: unknown = {};
-    if (pathname === "/api/v1/paper/sessions") body = [{ session_id: sessionId, mode: "paper", strategy: "allocator", config_name: "demo", initial_cash: 100000, last_date: "2026-09-24", params: { kind: "composite", allocator_config_path: "config/allocators/demo.json" } }];
+    if (pathname === "/api/v1/paper/sessions") body = [
+      { session_id: sessionId, mode: "paper", strategy: "allocator", config_name: "demo", initial_cash: 100000, last_date: "2026-09-24", params: { kind: "composite", allocator_config_path: "config/allocators/demo.json" } },
+      { session_id: otherSessionId, mode: "paper", strategy: "other", config_name: "", initial_cash: 100000, last_date: "2026-09-24", params: {} },
+    ];
+    else if (pathname === "/api/v1/paper/strategies") body = [{ name: "demo" }];
+    else if (pathname === "/api/v1/paper/configs") body = [];
     else if (pathname === "/api/v1/paper/allocator-configs") body = [{ name: "demo", path: "config/allocators/demo.json", description: "测试组合配置", status: "ready", initial_cash: 100000, start_date: "2026-07-01", sleeves: ["wfo", "csi"] }];
     else if (pathname.endsWith("/status")) body = {
       kind: "composite", session: { initial_cash: 100000 }, snapshot: { as_of_date: "2026-09-24", equity: 108000, cash: 20000, positions: {} }, trades_count: 3,
@@ -90,9 +98,18 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await expect(page.getByRole("combobox", { name: "组合配置" })).toHaveValue("config/allocators/demo.json");
   await expect(page.getByText(/测试组合配置/)).toBeVisible();
   await page.getByRole("button", { name: "问 Agent 原因" }).click();
-  await expect(page).toHaveURL(/paper_session=paper%3Aallocator%3Ademo%3Afollow/);
+  await expect(page).toHaveURL(/\/paper$/);
   await expect.poll(() => (sentContext?.paper_session_context as { session_id?: string } | undefined)?.session_id).toBe(sessionId);
   await expect(page.getByText("已绑定策略模拟盘")).toBeVisible();
+  await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
+  await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption(otherSessionId);
+  await expect(page.getByText("当前由 wfo 子策略运行。")).toHaveCount(0);
+  await page.getByRole("button", { name: "总结当前权益、持仓和近期成交" }).click();
+  await expect.poll(() => (sentContext?.paper_session_context as { session_id?: string } | undefined)?.session_id).toBe(otherSessionId);
+  await expect(page.getByText("第二个会话已单独核对。")).toBeVisible();
+  await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption(sessionId);
+  await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
+  expect(replies).toBe(2);
 });
 
 test("an advancing paper job can be observed again after page reload", async ({ page }) => {

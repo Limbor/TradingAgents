@@ -62,7 +62,7 @@ const HINT = analyzeStockHint("600519.SH");
 const PROMPT = "帮我分析 600519.SH";
 
 function chatInput(): HTMLInputElement {
-  return screen.getByPlaceholderText(/例如/) as HTMLInputElement;
+  return screen.getByPlaceholderText(/例如|问这次/) as HTMLInputElement;
 }
 
 function systemMessages(): string[] {

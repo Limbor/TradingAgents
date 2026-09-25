@@ -19,6 +19,7 @@ import {
 import { FilterPanel } from "../../components/FilterPanel";
 import { KPICard, TimelineItem, HoldingsTable } from "../../components/Dashboard";
 import { ReflectionQueueCard } from "../../components/Dashboard/ReflectionQueueCard";
+import { DecisionCandidatesPanel } from "./DecisionCandidatesPanel";
 import { buildPortfolioSummary, formatMoney } from "../../utils/portfolio";
 import {
   Activity,
@@ -204,11 +205,11 @@ export default function Dashboard() {
       <div className="flex flex-col justify-between gap-4 border-b border-stone-800 pb-5 lg:flex-row lg:items-end">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-300">
-            Trading cockpit
+            Today's desk
           </p>
-          <h2 className="mt-2 text-2xl font-semibold text-stone-50">今日概览</h2>
+          <h2 className="mt-2 text-2xl font-semibold text-stone-50">决策工作台</h2>
           <p className="mt-1 max-w-2xl text-sm text-stone-400">
-            持仓状态 · 今日动态 · 快捷操作
+            从量化候选到 Agent 判断，再到验证与模拟盘跟踪。
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-900 px-3 py-2 text-xs">
@@ -216,6 +217,21 @@ export default function Dashboard() {
           <span className="text-stone-300">MCP: {mcpStatus?.connected ? "Online" : "Offline"}</span>
         </div>
       </div>
+
+      <nav aria-label="交易决策流程" className="grid gap-2 rounded-2xl border border-stone-800 bg-stone-900/70 p-3 sm:grid-cols-4">
+        {[
+          { step: "01", title: "量化筛选", detail: "发现候选", target: "/market" },
+          { step: "02", title: "Agent 审查", detail: "核对证据与风险", target: "/chat" },
+          { step: "03", title: "回测验证", detail: "检验历史表现", target: "/research" },
+          { step: "04", title: "模拟盘观察", detail: "跟踪策略账本", target: "/paper" },
+        ].map((step) => <button key={step.step} onClick={() => navigate(step.target)} className="flex items-center gap-3 rounded-xl border border-stone-800 bg-stone-950/50 p-3 text-left transition hover:border-teal-500/40 hover:bg-teal-500/5"><span className="text-sm font-semibold text-teal-300">{step.step}</span><span><strong className="block text-sm text-stone-100">{step.title}</strong><small className="text-xs text-stone-500">{step.detail}</small></span></button>)}
+      </nav>
+
+      <DecisionCandidatesPanel artifacts={signalArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} onAsk={(item, candidate) => goChat({
+        prompt: `核对 ${candidate.symbol} 的量化判断、Agent 判断和风险证据`,
+        autoSend: true,
+        context: { selection_context: { symbol: candidate.symbol, decision: candidate.finalDecision, quant_decision: candidate.quantDecision, artifact_id: item.id, as_of_date: item.payload?.market_asof_date || item.payload?.trade_date } },
+      })} />
 
       {/* Market pulse strip: renders only when a market overview artifact exists */}
       <MarketPulseStrip data={marketOverviewQuery.data} onOpen={() => navigate("/market")} />
@@ -371,7 +387,6 @@ export default function Dashboard() {
             </div>
           </section>
 
-          <LatestSignalCard artifacts={signalArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} />
           <RiskTodoCard artifacts={riskArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} />
           <RiskEventCard
             events={riskEvents}
@@ -565,33 +580,6 @@ function RiskEventCard({
                 <button onClick={() => onResolve(event.id)} className="rounded border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300">标记解除</button>
               </div>
             </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function LatestSignalCard({ artifacts, onOpen }: { artifacts: ArtifactInfo[]; onOpen: (item: ArtifactInfo) => void }) {
-  return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <TrendingUp className="h-4 w-4 text-teal-300" />
-        <h3 className="text-sm font-semibold text-stone-100">最新信号</h3>
-      </div>
-      {artifacts.length === 0 ? (
-        <p className="text-xs text-stone-500">暂无选股或扫描产物。</p>
-      ) : (
-        <div className="space-y-2">
-          {artifacts.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => onOpen(item)}
-              className="w-full rounded border border-stone-800 bg-stone-950 p-2 text-left transition hover:border-teal-500/40"
-            >
-              <div className="truncate text-xs font-medium text-stone-200">{item.title}</div>
-              <div className="mt-1 line-clamp-2 text-xs text-stone-500">{item.summary || item.subtitle || item.artifact_type}</div>
-            </button>
           ))}
         </div>
       )}

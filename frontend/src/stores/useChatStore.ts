@@ -15,6 +15,7 @@ export interface ChatTaskStep {
 
 export interface ChatMessage {
   id: string;
+  scope?: string;
   role: ChatRole;
   kind?: ChatMessageKind;
   content: string;
@@ -38,10 +39,14 @@ export interface ChatMessage {
 
 interface ChatState {
   messages: ChatMessage[];
+  activeScope: string;
+  responseScope: string | null;
   connected: boolean;
   running: boolean;
   currentRunId: string | null;
   setConnected: (connected: boolean) => void;
+  setActiveScope: (scope: string) => void;
+  setResponseScope: (scope: string | null) => void;
   setRunning: (running: boolean) => void;
   setCurrentRunId: (runId: string | null) => void;
   addMessage: (message: Omit<ChatMessage, "id" | "timestamp">) => void;
@@ -126,10 +131,14 @@ export const useChatStore = create<ChatState>()(
       timestamp: now(),
     },
   ],
+  activeScope: "general",
+  responseScope: null,
   connected: false,
   running: false,
   currentRunId: null,
   setConnected: (connected) => set({ connected }),
+  setActiveScope: (activeScope) => set({ activeScope }),
+  setResponseScope: (responseScope) => set({ responseScope }),
   setRunning: (running) => set({ running }),
   setCurrentRunId: (runId) => set({ currentRunId: runId }),
   addMessage: (message) =>
@@ -139,6 +148,7 @@ export const useChatStore = create<ChatState>()(
         {
           ...message,
           id: crypto.randomUUID(),
+          scope: message.scope ?? state.responseScope ?? state.activeScope,
           kind: message.kind ?? "text",
           timestamp: now(),
         },
@@ -150,6 +160,7 @@ export const useChatStore = create<ChatState>()(
         ...state.messages,
         {
           id: crypto.randomUUID(),
+          scope: state.responseScope ?? state.activeScope,
           role: "assistant" as const,
           kind: "tool" as const,
           content: msg.content,
@@ -170,6 +181,7 @@ export const useChatStore = create<ChatState>()(
         ...state.messages,
         {
           id: crypto.randomUUID(),
+          scope: state.responseScope ?? state.activeScope,
           role: "assistant" as const,
           kind: "text" as const,
           content: msg.content,
@@ -189,6 +201,7 @@ export const useChatStore = create<ChatState>()(
           ...state.messages,
           {
             id: `task-${task.runId}`,
+            scope: state.responseScope ?? state.activeScope,
             role: "assistant",
             kind: "task",
             content: task.title,
@@ -297,6 +310,8 @@ export const useChatStore = create<ChatState>()(
   reset: () =>
     set({
       messages: [],
+      activeScope: "general",
+      responseScope: null,
       connected: false,
       running: false,
       currentRunId: null,

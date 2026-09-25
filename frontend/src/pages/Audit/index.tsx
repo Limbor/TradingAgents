@@ -1,22 +1,20 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, CheckCircle2, FlaskConical, Link2, RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
 import {
-  createBacktest, evaluateDecisionAudit, getDecisionAuditSummary,
-  getBacktestCatalog, listBacktests, listDecisionRecords, recordDecisionExecution,
+  evaluateDecisionAudit, getDecisionAuditSummary,
+  listDecisionRecords, recordDecisionExecution,
 } from "@/api/client";
 
 export default function Audit() {
   const qc = useQueryClient();
   const summary = useQuery({ queryKey: ["decision-audit-summary"], queryFn: getDecisionAuditSummary });
   const decisions = useQuery({ queryKey: ["decision-audit-decisions"], queryFn: listDecisionRecords });
-  const backtests = useQuery({ queryKey: ["backtests"], queryFn: listBacktests, refetchInterval: 10_000 });
-  const catalog = useQuery({ queryKey: ["backtest-catalog"], queryFn: getBacktestCatalog, retry: false });
   const [busy, setBusy] = useState(false);
   const [auditBusy, setAuditBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [auditNotice, setAuditNotice] = useState<string | null>(null);
-  const [form, setForm] = useState({ start_date: "2024-01-01", end_date: "2026-01-01", strategy_name: "ff_residual_csi800_main", config_name: "prod_ff_residual_csi800_tv15" });
   const [execution, setExecution] = useState<{ decision_id: string; symbol: string; action: string; quantity: string; price: string } | null>(null);
   const data = summary.data;
 
@@ -49,12 +47,6 @@ export default function Audit() {
     }
     catch (e) { setError(e instanceof Error ? e.message : "评估失败"); }
     finally { setAuditBusy(false); }
-  };
-  const submitBacktest = async () => {
-    setBusy(true); setError(null);
-    try { await createBacktest(form); await backtests.refetch(); }
-    catch (e) { setError(e instanceof Error ? e.message : "回测提交失败"); }
-    finally { setBusy(false); }
   };
   const submitExecution = async () => {
     if (!execution) return;
@@ -107,17 +99,7 @@ export default function Audit() {
       })}</tbody></table></div>
       {execution && <div className="mt-3 flex flex-wrap items-end gap-2 rounded border border-stone-700 p-3"><label className="text-xs text-stone-400">数量<input aria-label="执行数量" value={execution.quantity} onChange={e => setExecution({...execution, quantity: e.target.value})} className="ml-2 w-28 rounded bg-stone-950 p-2 text-stone-100" /></label><label className="text-xs text-stone-400">成交价<input aria-label="执行价格" value={execution.price} onChange={e => setExecution({...execution, price: e.target.value})} className="ml-2 w-28 rounded bg-stone-950 p-2 text-stone-100" /></label><button disabled={busy || !(Number(execution.quantity) > 0) || !(Number(execution.price) > 0)} onClick={submitExecution} className="rounded bg-teal-500 px-3 py-2 text-xs font-semibold text-stone-950 disabled:opacity-40">确认记录</button><button onClick={() => setExecution(null)} className="px-2 py-2 text-xs text-stone-400">取消</button></div>}
     </section>
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
-      <h3 className="font-semibold text-stone-100">候选量化规则回测</h3>
-      <p className="mt-1 text-xs text-stone-500">从 StockManager 的版本化目录选择策略和配置。该回测为 DailyPipeline 提供量化证据，但不声称复现包含 LLM 复核的完整流程。</p>
-      <div className="mt-3 flex flex-wrap gap-2"><select aria-label="strategy_name" value={form.strategy_name} onChange={e => setForm({...form, strategy_name: e.target.value})} className="rounded border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-200">{(catalog.data?.strategies ?? [{name: form.strategy_name, sha1: ""}]).map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select><select aria-label="config_name" value={form.config_name} onChange={e => setForm({...form, config_name: e.target.value})} className="max-w-sm rounded border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-200">{(catalog.data?.configs ?? [{name: form.config_name, sha1: ""}]).map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select>{(["start_date", "end_date"] as const).map(k => <input key={k} aria-label={k} type="date" value={form[k]} onChange={e => setForm({...form, [k]: e.target.value})} className="rounded border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-200" />)}<button onClick={submitBacktest} disabled={busy || catalog.isError} className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-stone-950 disabled:opacity-40">提交回测</button></div>
-      <div className="mt-3 space-y-2">{(backtests.data ?? []).map(b => {
-        const validation = (b.result.validation ?? {}) as Record<string, unknown>;
-        const checks = (validation.threshold_checks ?? {}) as Record<string, boolean>;
-        const failedChecks = Object.entries(checks).filter(([, passed]) => !passed).map(([key]) => key);
-        return <div key={b.id} className="grid gap-2 rounded border border-stone-800 p-3 text-xs text-stone-300 sm:grid-cols-7"><span>{b.start_date} → {b.end_date}</span><span>收益 {pct(Number(b.result.total_return))}</span><span>Alpha {pct(Number(b.result.alpha))}</span><span>回撤 {pct(Number(b.result.max_drawdown))}</span><span>Sharpe {numberText(b.result.sharpe)}</span><span title={failedChecks.length ? `未通过：${failedChecks.join(", ")}` : undefined}>{validation.production_gate_passed === true ? "门禁通过" : "门禁未通过"}</span><span>{b.status}</span></div>;
-      })}</div>
-    </section>
+    <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-stone-800 bg-stone-900 p-4"><div><h3 className="font-semibold">需要验证策略表现？</h3><p className="mt-1 text-xs text-stone-500">历史回测已移到独立的策略研究工作台，和决策审计分别保留记录。</p></div><Link to="/research" className="rounded-lg border border-teal-500/30 px-3 py-2 text-sm text-teal-300">前往策略研究 →</Link></section>
   </div>;
 }
 
@@ -128,7 +110,6 @@ function actionForDecision(decision: string): "buy" | "sell" | null {
   if (["SELL", "REDUCE", "EXIT", "UNDERWEIGHT", "AVOID"].includes(normalized)) return "sell";
   return null;
 }
-function numberText(value: unknown) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed.toFixed(2) : "-"; }
 
 function Kpi({ icon: Icon, label, value }: { icon: typeof Activity; label: string; value: number | string }) {
   return <div className="rounded-lg border border-stone-800 bg-stone-900 p-4"><Icon className="h-4 w-4 text-teal-300"/><div className="mt-2 text-xs text-stone-500">{label}</div><div className="mt-1 text-lg font-semibold text-stone-100">{value}</div></div>;

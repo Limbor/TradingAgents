@@ -13,6 +13,7 @@ const Settings = lazy(() => import("./pages/Settings"));
 const Audit = lazy(() => import("./pages/Audit"));
 const Reflection = lazy(() => import("./pages/Reflection"));
 const Paper = lazy(() => import("./pages/Paper"));
+const Research = lazy(() => import("./pages/Research"));
 
 const queryClient = new QueryClient();
 
@@ -38,6 +39,7 @@ export default function App() {
               <Route path="/analysis" element={<Analysis />} />
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/paper" element={<Paper />} />
+              <Route path="/research" element={<Research />} />
               <Route path="/library" element={<Library />} />
               <Route path="/audit" element={<Audit />} />
               <Route path="/reflection" element={<Reflection />} />
