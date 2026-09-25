@@ -247,6 +247,29 @@ class TestFusionFormula:
         assert result["final_score"] == 71.4
         assert result["final_decision"] == "HOLD_REVIEW"
 
+    def test_explicit_direction_score_is_separate_from_confidence(self):
+        candidate = {
+            "quant_score": 80.0,
+            "quant_decision": "BUY",
+            "tradability": {"is_tradable": True},
+            "risk_flags": [],
+        }
+        result = fuse_candidate_signal(
+            candidate,
+            "medium_term",
+            {
+                "llm_view": "strong_negative",
+                "llm_score": 10,
+                "llm_confidence": 95,
+                "catalyst_strength": "none",
+            },
+        )
+        assert result["llm_score"] == 10
+        assert result["llm_confidence"] == 95
+        assert result["llm_score_source"] == "explicit"
+        assert result["final_score"] == 48.5
+        assert result["final_decision"] == "HOLD_REVIEW"
+
     def test_critical_risk_gates_buy(self):
         """Critical risk severity skips the candidate."""
         candidate = {

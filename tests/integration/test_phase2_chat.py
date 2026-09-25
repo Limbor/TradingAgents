@@ -14,8 +14,10 @@ from tradingagents.default_config import DEFAULT_CONFIG
 class _FakeChatAgent:
     def __init__(self, response: ChatResponse):
         self.response = response
+        self.calls = 0
 
     async def handle(self, user_text, session_id, context=None):
+        self.calls += 1
         return self.response
 
 
@@ -83,12 +85,16 @@ def test_ws_chat_rejects_untrusted_browser_origin(tmp_path, monkeypatch):
 def test_ws_chat_routes_to_market_scanner_and_streams_result(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat.db"))
     monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "market_scanner_demo_fallback", True)
     monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
     app = create_app()
     with TestClient(app) as client:
         db = Database(tmp_path / "chat.db")
         client.app.state.db = db
         client.app.state.run_manager = RunManager(db=db)
+        # ChatAgent is the primary router now; disable it to exercise the
+        # deterministic regex fallback path.
+        client.app.state.chat_agent = None
         client.app.state.orchestrator = Orchestrator(
             client.app.state.registry,
             client.app.state.config,
@@ -120,6 +126,7 @@ def test_ws_chat_routes_portfolio_update_to_persistence(tmp_path, monkeypatch):
         db = Database(tmp_path / "chat-portfolio.db")
         client.app.state.db = db
         client.app.state.run_manager = RunManager(db=db)
+        client.app.state.chat_agent = None
         client.app.state.orchestrator = Orchestrator(
             client.app.state.registry,
             client.app.state.config,
@@ -136,3 +143,115 @@ def test_ws_chat_routes_portfolio_update_to_persistence(tmp_path, monkeypatch):
         assert holding is not None
         assert holding["quantity"] == 100
         assert holding["avg_cost"] == 18
+
+
+def test_ws_chat_skill_run_carries_extracted_params(tmp_path, monkeypatch):
+    """ChatAgent skill_run params (limit/industries) must reach the created run."""
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat-params.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    app = create_app()
+    with TestClient(app) as client:
+        client.app.state.chat_agent = _FakeChatAgent(
+            ChatResponse(
+                intent="skill_run",
+                skill_id="market_scanner",
+                skill_params={"top_n": 2, "min_score": 60},
+            )
+        )
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_json({"message": "选2只半导体设备股票"})
+            message = websocket.receive_json()
+
+    assert message["type"] == "chat_reply"
+    assert message["payload"]["skill_triggered"] == "market_scanner"
+    assert message["payload"]["params"]["top_n"] == 2
+    assert message["payload"]["reason"] == "ChatAgent skill_run"
+
+
+def test_ws_chat_degraded_chat_agent_falls_back_to_regex(tmp_path, monkeypatch):
+    """When ChatAgent degrades (LLM timeout/error), regex routing must take over."""
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat-degraded.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    app = create_app()
+    with TestClient(app) as client:
+        client.app.state.chat_agent = _FakeChatAgent(
+            ChatResponse(intent="chat_answer", content="抱歉，处理请求超时。", degraded=True)
+        )
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_json({"message": "筛选A股 top 2 score 60"})
+            message = websocket.receive_json()
+
+    # Regex fallback routed to market_scanner instead of echoing the apology.
+    assert message["type"] == "chat_reply"
+    assert message["payload"]["skill_triggered"] == "market_scanner"
+
+
+def test_ws_chat_intent_hint_bypasses_chat_agent(tmp_path, monkeypatch):
+    """A valid intent_hint must create the run deterministically — zero
+    ChatAgent/LLM involvement."""
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat-hint.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    app = create_app()
+    with TestClient(app) as client:
+        agent = _FakeChatAgent(ChatResponse(intent="chat_answer", content="不应被调用"))
+        client.app.state.chat_agent = agent
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_json({
+                "message": "扫描A股机会",
+                "intent_hint": {"skill_id": "market_scanner", "params": {"limit": 2}},
+            })
+            message = websocket.receive_json()
+
+    assert agent.calls == 0
+    assert message["type"] == "chat_reply"
+    assert message["payload"]["skill_triggered"] == "market_scanner"
+    assert message["payload"]["params"]["limit"] == 2
+    assert message["payload"]["reason"] == "intent_hint"
+    assert message["payload"]["confidence"] == 1.0
+
+
+def test_ws_chat_invalid_intent_hint_degrades_to_chat_agent(tmp_path, monkeypatch):
+    """A hint that fails validation must fall through to normal text routing
+    so the button always gets a reply."""
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat-hint-bad.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    app = create_app()
+    with TestClient(app) as client:
+        agent = _FakeChatAgent(ChatResponse(intent="chat_answer", content="我来处理。"))
+        client.app.state.chat_agent = agent
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_json({
+                "message": "帮我分析",
+                "intent_hint": {"skill_id": "no_such_skill", "params": {}},
+            })
+            message = websocket.receive_json()
+
+    assert agent.calls == 1
+    assert message["type"] == "chat_answer"
+    assert message["payload"]["content"] == "我来处理。"
+
+
+def test_ws_chat_rejects_oversized_context(tmp_path, monkeypatch):
+    """Oversized page context is rejected before any routing / LLM work."""
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "chat-oversize.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    app = create_app()
+    with TestClient(app) as client:
+        agent = _FakeChatAgent(ChatResponse(intent="chat_answer", content="不应被调用"))
+        client.app.state.chat_agent = agent
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_json({
+                "message": "分析一下",
+                "context": {"holding_context": {"note": "x" * 20_000}},
+            })
+            message = websocket.receive_json()
+
+    assert agent.calls == 0
+    assert message["type"] == "chat_reply"
+    assert "上下文过大" in message["payload"]["content"]
+    assert "context exceeds" in message["payload"]["reason"]

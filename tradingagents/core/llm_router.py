@@ -54,6 +54,11 @@ class LLMRouter:
         # Built lazily on first use so a missing API key does not break __init__.
         self._llm_with_tools: Any = None
 
+    def reconfigure(self, config: dict[str, Any]) -> None:
+        """Apply runtime settings and rebuild the cached provider client lazily."""
+        self.config = config
+        self._llm_with_tools = None
+
     def _get_llm_with_tools(self) -> Any:
         """Return a cached LLM client with skill tools bound, built lazily."""
         if self._llm_with_tools is None:
@@ -112,10 +117,12 @@ class LLMRouter:
             "role": "system",
             "content": (
                 "你是 A 股交易工作台的路由器。根据用户消息选择调用哪个 skill 工具，并提取参数。\n\n"
-                "可用 skill：个股深度分析、每日选股（早报）、市场扫描、组合管理、风险监控、收盘复盘。\n\n"
+                "可用 skill：个股深度分析、每日选股（早报）、市场全景/板块分析、市场扫描、组合管理、风险监控、收盘复盘。\n\n"
                 "## 路由规则\n"
                 "- 用户明确要求“分析/研报/怎么样”某只具体股票 → stock_analysis。\n"
                 "- 用户要求“每日选股/早报/今日机会/扫描选股”（无具体标的或要批量筛） → daily_pipeline。\n"
+                "- 用户询问行业/板块的驱动、逻辑、趋势或持续性 → market_overview，并把板块词填入 focus_industries。\n"
+                "- 用户明确要求某行业选股、候选股或哪些股票 → daily_pipeline，并把板块词填入 industries。\n"
                 "- 用户要求“扫描/筛选/找股票”按主题或条件 → market_scanner。\n"
                 "- 用户要求“收盘复盘/次日计划” → daily_review。\n"
                 "- 涉及持仓增删改查/调仓 → portfolio_management。\n"

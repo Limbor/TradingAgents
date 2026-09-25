@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS holdings (
     avg_cost REAL NOT NULL,
     current_price REAL,
     notes TEXT,
+    version INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
 
@@ -208,6 +209,10 @@ CREATE TABLE IF NOT EXISTS plans (
     id TEXT PRIMARY KEY,
     symbol TEXT NOT NULL,
     name TEXT,
+    plan_action TEXT NOT NULL DEFAULT 'HOLD',
+    action_zone TEXT NOT NULL DEFAULT '[]',
+    invalidation_level REAL,
+    objective_levels TEXT NOT NULL DEFAULT '[]',
     entry_zone TEXT NOT NULL DEFAULT '[]',
     stop_loss REAL,
     targets TEXT NOT NULL DEFAULT '[]',
@@ -218,6 +223,10 @@ CREATE TABLE IF NOT EXISTS plans (
     source TEXT NOT NULL DEFAULT 'analysis',
     artifact_id TEXT NOT NULL DEFAULT '',
     reflection_case_id TEXT NOT NULL DEFAULT '',
+    lifecycle_state TEXT NOT NULL DEFAULT 'draft',
+    expires_at TEXT,
+    reliability_score REAL,
+    review_snapshot TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     triggered_at TEXT,
@@ -309,6 +318,7 @@ CREATE TABLE IF NOT EXISTS trade_executions (
     executed_at TEXT NOT NULL,
     realized_pnl REAL,
     source TEXT NOT NULL DEFAULT 'user_confirmed',
+    idempotency_key TEXT NOT NULL DEFAULT '',
     payload_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_trade_executions_decision ON trade_executions(decision_id);
@@ -379,6 +389,63 @@ class Database:
                     conn.execute(f"SELECT {_col} FROM plans LIMIT 0")
                 except sqlite3.OperationalError:
                     conn.execute(f"ALTER TABLE plans ADD COLUMN {_col} TEXT")
+            # Canonical action-oriented plan fields. Legacy level columns remain
+            # readable while clients migrate, but new code no longer overloads
+            # "entry" and "stop loss" with bearish semantics.
+            for _col, _definition in (
+                ("plan_action", "TEXT NOT NULL DEFAULT 'HOLD'"),
+                ("action_zone", "TEXT NOT NULL DEFAULT '[]'"),
+                ("invalidation_level", "REAL"),
+                ("objective_levels", "TEXT NOT NULL DEFAULT '[]'"),
+                ("lifecycle_state", "TEXT NOT NULL DEFAULT 'draft'"),
+                ("expires_at", "TEXT"),
+                ("reliability_score", "REAL"),
+                ("review_snapshot", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                try:
+                    conn.execute(f"SELECT {_col} FROM plans LIMIT 0")
+                except sqlite3.OperationalError:
+                    conn.execute(f"ALTER TABLE plans ADD COLUMN {_col} {_definition}")
+            conn.execute(
+                "UPDATE plans SET action_zone = entry_zone "
+                "WHERE action_zone = '[]' AND entry_zone != '[]'"
+            )
+            conn.execute(
+                "UPDATE plans SET invalidation_level = stop_loss "
+                "WHERE invalidation_level IS NULL AND stop_loss IS NOT NULL"
+            )
+            conn.execute(
+                "UPDATE plans SET objective_levels = targets "
+                "WHERE objective_levels = '[]' AND targets != '[]'"
+            )
+            conn.execute(
+                """UPDATE plans SET plan_action = CASE lower(coalesce(rating, ''))
+                    WHEN 'buy' THEN 'ENTER' WHEN 'overweight' THEN 'ADD'
+                    WHEN 'underweight' THEN 'REDUCE' WHEN 'sell' THEN 'EXIT'
+                    ELSE plan_action END
+                    WHERE plan_action = 'HOLD'"""
+            )
+            for _table, _col, _definition in (
+                ("holdings", "version", "INTEGER NOT NULL DEFAULT 0"),
+                ("trade_executions", "idempotency_key", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                try:
+                    conn.execute(f"SELECT {_col} FROM {_table} LIMIT 0")
+                except sqlite3.OperationalError:
+                    conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_definition}")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_executions_idempotency "
+                "ON trade_executions(idempotency_key) WHERE idempotency_key != ''"
+            )
+            conn.execute(
+                """DELETE FROM run_events WHERE id NOT IN (
+                    SELECT MIN(id) FROM run_events GROUP BY run_id, seq
+                )"""
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_unique_seq "
+                "ON run_events(run_id, seq)"
+            )
             # Audit retry metadata was added after the initial decision ledger.
             # Keep the migration additive so existing user databases upgrade in
             # place without rebuilding the ledger.
@@ -751,7 +818,7 @@ class Database:
         try:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO run_events (run_id, seq, event_type, payload_json, created_at) "
+                    "INSERT OR IGNORE INTO run_events (run_id, seq, event_type, payload_json, created_at) "
                     "VALUES (?, ?, ?, ?, ?)",
                     (
                         run_id,
@@ -1314,14 +1381,16 @@ class Database:
     def save_trade_execution(self, *, execution_id: str, symbol: str, action: str,
                              quantity: float, price: float, executed_at: str,
                              decision_id: str = "", realized_pnl: float | None = None,
-                             source: str = "user_confirmed", payload: dict | None = None) -> dict:
+                             source: str = "user_confirmed", payload: dict | None = None,
+                             idempotency_key: str = "") -> dict:
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO trade_executions
                 (id, decision_id, symbol, action, quantity, price, executed_at,
-                 realized_pnl, source, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 realized_pnl, source, idempotency_key, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (execution_id, decision_id, symbol.upper(), action.lower(), quantity, price,
-                 executed_at, realized_pnl, source,
+                 executed_at, realized_pnl, source, idempotency_key,
                  json.dumps(payload or {}, ensure_ascii=False, default=str)),
             )
         return self.get_trade_execution(execution_id) or {}
@@ -1653,6 +1722,10 @@ class Database:
         *,
         symbol: str,
         name: str | None = None,
+        plan_action: str = "HOLD",
+        action_zone: list[float] | None = None,
+        invalidation_level: float | None = None,
+        objective_levels: list[float] | None = None,
         entry_zone: list[float] | None = None,
         stop_loss: float | None = None,
         targets: list[float] | None = None,
@@ -1663,27 +1736,45 @@ class Database:
         source: str = "analysis",
         artifact_id: str = "",
         reflection_case_id: str = "",
+        lifecycle_state: str = "draft",
+        expires_at: str | None = None,
+        reliability_score: float | None = None,
+        review_snapshot: dict[str, Any] | None = None,
     ) -> None:
-        """Save or replace a trade plan (entry/stop/targets/conditions)."""
+        """Save or replace a trade plan using explicit action semantics."""
         now = datetime.now(timezone.utc).isoformat()
+        canonical_zone = action_zone if action_zone is not None else entry_zone
+        canonical_invalidation = (
+            invalidation_level if invalidation_level is not None else stop_loss
+        )
+        canonical_objectives = (
+            objective_levels if objective_levels is not None else targets
+        )
         with self._conn() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO plans (
-                    id, symbol, name, entry_zone, stop_loss, targets, position_pct,
+                    id, symbol, name, plan_action, action_zone,
+                    invalidation_level, objective_levels,
+                    entry_zone, stop_loss, targets, position_pct,
                     conditions, rating, status, source, artifact_id, reflection_case_id,
+                    lifecycle_state, expires_at, reliability_score, review_snapshot,
                     created_at, updated_at, triggered_at, trigger_reason,
                     last_checked_trade_date, last_checked_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan_id,
                     symbol.strip().upper(),
                     name,
-                    json.dumps(entry_zone or [], ensure_ascii=False),
-                    stop_loss,
-                    json.dumps(targets or [], ensure_ascii=False),
+                    plan_action.upper(),
+                    json.dumps(canonical_zone or [], ensure_ascii=False),
+                    canonical_invalidation,
+                    json.dumps(canonical_objectives or [], ensure_ascii=False),
+                    json.dumps(canonical_zone or [], ensure_ascii=False),
+                    canonical_invalidation,
+                    json.dumps(canonical_objectives or [], ensure_ascii=False),
                     position_pct,
                     json.dumps(conditions or [], ensure_ascii=False),
                     rating,
@@ -1691,6 +1782,10 @@ class Database:
                     source,
                     artifact_id or "",
                     reflection_case_id or "",
+                    lifecycle_state,
+                    expires_at,
+                    reliability_score,
+                    json.dumps(review_snapshot or {}, ensure_ascii=False),
                     now,
                     now,
                     None,
@@ -1708,6 +1803,7 @@ class Database:
         triggered_at: str | None = None,
         trigger_reason: str | None = None,
         reflection_case_id: str | None = None,
+        lifecycle_state: str | None = None,
         last_checked_at: str | None = None,
         last_checked_trade_date: str | None = None,
     ) -> None:
@@ -1726,6 +1822,9 @@ class Database:
         if reflection_case_id is not None:
             sets.append("reflection_case_id = ?")
             values.append(reflection_case_id)
+        if lifecycle_state is not None:
+            sets.append("lifecycle_state = ?")
+            values.append(lifecycle_state)
         if last_checked_at is not None:
             sets.append("last_checked_at = ?")
             values.append(last_checked_at)
@@ -1774,11 +1873,17 @@ class Database:
             return int(cur.rowcount or 0)
 
     def _decode_plan(self, row: dict) -> dict:
-        for key in ("entry_zone", "targets", "conditions"):
+        for key in (
+            "action_zone", "objective_levels", "entry_zone", "targets", "conditions"
+        ):
             try:
                 row[key] = json.loads(row.get(key) or "[]")
             except (json.JSONDecodeError, TypeError):
                 row[key] = []
+        try:
+            row["review_snapshot"] = json.loads(row.get("review_snapshot") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            row["review_snapshot"] = {}
         return row
 
     def save_strategy_lesson(
@@ -1984,6 +2089,7 @@ class Database:
                     avg_cost = excluded.avg_cost,
                     current_price = excluded.current_price,
                     notes = excluded.notes,
+                    version = holdings.version + 1,
                     updated_at = excluded.updated_at
                 """,
                 (normalized, quantity, avg_cost, current_price, notes, now),
@@ -2012,6 +2118,155 @@ class Database:
                 "SELECT * FROM holdings WHERE symbol = ?", (normalized,)
             ).fetchone()
             return dict(row) if row else None
+
+    def adjust_holding_atomic(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        quantity: float,
+        price: float,
+        idempotency_key: str,
+        decision_id: str = "",
+    ) -> dict:
+        """Atomically change a holding and append its immutable execution row.
+
+        ``BEGIN IMMEDIATE`` serializes competing read/modify/write operations.
+        Replaying an identical idempotency key returns the first result; reusing
+        the key for different trade parameters is rejected.
+        """
+        import uuid
+
+        normalized = symbol.strip().upper()
+        if action not in {"add", "reduce"}:
+            raise ValueError("action must be 'add' or 'reduce'")
+        if quantity <= 0 or price <= 0:
+            raise ValueError("quantity and price must be positive")
+        if not idempotency_key.strip():
+            raise ValueError("idempotency_key is required")
+
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing_row = conn.execute(
+                "SELECT * FROM trade_executions WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing_row is not None:
+                existing = self._decode_json_columns(dict(existing_row), ("payload_json",))
+                if (
+                    existing["symbol"] != normalized
+                    or existing["action"] != action
+                    or float(existing["quantity"]) != float(quantity)
+                    or float(existing["price"]) != float(price)
+                    or str(existing.get("decision_id") or "") != decision_id
+                ):
+                    raise ValueError("idempotency_key was already used for a different trade")
+                saved = dict(existing.get("payload") or {}).get("adjustment_result")
+                if not isinstance(saved, dict):
+                    raise RuntimeError("idempotent execution is missing its saved result")
+                return {**saved, "execution": existing, "idempotent_replay": True}
+
+            holding_row = conn.execute(
+                "SELECT * FROM holdings WHERE symbol = ?", (normalized,)
+            ).fetchone()
+            if holding_row is None:
+                raise KeyError("Holding not found")
+            holding = dict(holding_row)
+            if decision_id:
+                decision = conn.execute(
+                    "SELECT symbol FROM decision_records WHERE id = ?", (decision_id,)
+                ).fetchone()
+                if decision is None:
+                    raise KeyError("Decision not found")
+                if str(decision["symbol"] or "").upper() != normalized:
+                    raise ValueError("Decision symbol does not match holding")
+
+            old_qty = float(holding.get("quantity") or 0.0)
+            old_avg = float(holding.get("avg_cost") or 0.0)
+            old_version = int(holding.get("version") or 0)
+            if action == "reduce" and quantity > old_qty:
+                raise ValueError("减仓数量超过当前持仓数量")
+            if action == "reduce":
+                from tradingagents.core.order_constraints import (
+                    is_cn_a_symbol,
+                    validate_cn_a_sell_quantity,
+                )
+
+                if is_cn_a_symbol(normalized):
+                    valid, reason = validate_cn_a_sell_quantity(old_qty, quantity)
+                    if not valid:
+                        raise ValueError(reason)
+
+            now = datetime.now(timezone.utc).isoformat()
+            realized_pnl: float | None = None
+            closed = False
+            next_holding: dict | None
+            if action == "add":
+                new_qty = old_qty + quantity
+                new_avg = (old_qty * old_avg + quantity * price) / new_qty
+                cursor = conn.execute(
+                    """UPDATE holdings SET quantity=?, avg_cost=?, current_price=?,
+                       version=version+1, updated_at=? WHERE symbol=? AND version=?""",
+                    (new_qty, new_avg, price, now, normalized, old_version),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("holding changed concurrently; retry with a new request")
+            else:
+                realized_pnl = quantity * (price - old_avg)
+                new_qty = old_qty - quantity
+                if new_qty <= 0:
+                    cursor = conn.execute(
+                        "DELETE FROM holdings WHERE symbol=? AND version=?",
+                        (normalized, old_version),
+                    )
+                    closed = True
+                else:
+                    cursor = conn.execute(
+                        """UPDATE holdings SET quantity=?, current_price=?,
+                           version=version+1, updated_at=? WHERE symbol=? AND version=?""",
+                        (new_qty, price, now, normalized, old_version),
+                    )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("holding changed concurrently; retry with a new request")
+
+            next_row = conn.execute(
+                "SELECT * FROM holdings WHERE symbol = ?", (normalized,)
+            ).fetchone()
+            next_holding = dict(next_row) if next_row is not None else None
+            result = {
+                "symbol": normalized,
+                "action": action,
+                "holding": next_holding,
+                "realized_pnl": realized_pnl,
+                "closed": closed,
+            }
+            execution_id = str(uuid.uuid4())
+            payload = {
+                "old_quantity": old_qty,
+                "old_avg_cost": old_avg,
+                "adjustment_result": result,
+            }
+            conn.execute(
+                """INSERT INTO trade_executions
+                (id, decision_id, symbol, action, quantity, price, executed_at,
+                 realized_pnl, source, idempotency_key, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user_confirmed', ?, ?)""",
+                (
+                    execution_id, decision_id, normalized, action, quantity, price,
+                    now, realized_pnl, idempotency_key,
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                ),
+            )
+            if decision_id:
+                conn.execute(
+                    "UPDATE decision_records SET status='partially_realized', updated_at=? WHERE id=?",
+                    (now, decision_id),
+                )
+            execution_row = conn.execute(
+                "SELECT * FROM trade_executions WHERE id = ?", (execution_id,)
+            ).fetchone()
+            execution = self._decode_json_columns(dict(execution_row), ("payload_json",))
+            return {**result, "execution": execution, "idempotent_replay": False}
 
     def update_holding_price(self, symbol: str, current_price: float) -> bool:
         """Update only ``current_price`` for a holding.
@@ -2462,7 +2717,9 @@ class Database:
         backfilled from arbitrary historical dates. Delegates to the same pure
         ``build_scorecard`` aggregator and passes ``style_alpha_priors`` so the
         result carries per-style RankIC. This is display/offline-analysis only
-        and NEVER feeds any production weight or gate.
+        and can feed adaptive-alpha only when that production feature is
+        explicitly enabled.  Eval rows remain isolated from decision records,
+        live scorecards, reflection learning and automatic lesson activation.
         """
         from tradingagents.core.prediction_metrics import build_scorecard
         from tradingagents.core.reflection_enroll import BACKTEST_EVAL_SOURCE_TYPE

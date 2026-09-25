@@ -12,7 +12,7 @@ from .akshare_cn_specific import (
 )
 
 # AKShare vendor (A-share / CN market)
-from .akshare_common import AKShareRateLimitError
+from .akshare_common import AKShareError
 from .akshare_macro import get_macro_calendar as get_akshare_macro_calendar
 from .akshare_news import (
     get_global_news as get_akshare_global_news,
@@ -305,7 +305,7 @@ _TICKER_FIRST_METHODS = {
 }
 
 # Rate-limit exceptions from CN vendors (caught during fallback chain)
-_FALLBACK_EXCEPTIONS: tuple = (AKShareRateLimitError, TuShareRateLimitError)
+_FALLBACK_EXCEPTIONS: tuple = (AKShareError, TuShareRateLimitError)
 
 # Vendors that only serve US market data — excluded when market == "cn_a"
 _US_ONLY_VENDORS = {"yfinance"}

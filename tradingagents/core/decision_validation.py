@@ -21,8 +21,16 @@ def validate_decision_history(cases: list[dict[str, Any]], min_samples: int = 20
             continue
         raw_return = float(actual_return)
         short_direction = decision in {"SELL", "AVOID", "UNDERWEIGHT", "REDUCE", "EXIT"}
-        eligible.append({"snapshot": snapshot, "outcome": outcome, "return": raw_return,
-                         "directional_return": -raw_return if short_direction else raw_return})
+        eligible.append({
+            "snapshot": snapshot,
+            "outcome": outcome,
+            "return": raw_return,
+            "directional_return": -raw_return if short_direction else raw_return,
+            "source_type": str(case.get("source_type") or "unknown"),
+            "symbol": str(case.get("symbol") or ""),
+            "signal_date": str(case.get("signal_date") or ""),
+            "horizon_days": case.get("horizon_days"),
+        })
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in eligible:
@@ -30,7 +38,28 @@ def validate_decision_history(cases: list[dict[str, Any]], min_samples: int = 20
         grouped[decision].append(item)
 
     by_decision = {key: _metrics(rows, min_samples) for key, rows in sorted(grouped.items())}
+    grouped_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in eligible:
+        grouped_source[item["source_type"]].append(item)
+    by_source = {
+        key: _metrics(rows, min_samples)
+        for key, rows in sorted(grouped_source.items())
+        if key != "unknown"
+    }
     overall = _metrics(eligible, min_samples)
+    unique_signal_keys = {
+        (
+            item["source_type"],
+            item["signal_date"],
+            item["symbol"],
+            str(item["snapshot"].get("final_decision") or "UNKNOWN").upper(),
+            item["horizon_days"],
+        )
+        for item in eligible
+    }
+    unique_symbols = {item["symbol"] for item in eligible if item["symbol"]}
+    unique_dates = {item["signal_date"] for item in eligible if item["signal_date"]}
+    duplicate_signal_count = max(0, len(eligible) - len(unique_signal_keys))
     warnings: list[str] = []
     if overall["sample_count"] < min_samples:
         warnings.append(
@@ -39,9 +68,18 @@ def validate_decision_history(cases: list[dict[str, Any]], min_samples: int = 20
     pending_ratio = 1.0 - (len(eligible) / len(cases)) if cases else 0.0
     if pending_ratio > 0.2:
         warnings.append(f"{pending_ratio:.1%} of loaded cases lack realized returns.")
+    if duplicate_signal_count:
+        warnings.append(
+            f"{duplicate_signal_count} duplicated source/date/symbol/decision samples are correlated."
+        )
     return {
         "overall": overall,
         "by_decision": by_decision,
+        "by_source": by_source,
+        "unique_signal_count": len(unique_signal_keys),
+        "unique_symbol_count": len(unique_symbols),
+        "unique_signal_date_count": len(unique_dates),
+        "duplicate_signal_count": duplicate_signal_count,
         "loaded_cases": len(cases),
         "realized_cases": len(eligible),
         "pending_ratio": round(pending_ratio, 4),

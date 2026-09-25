@@ -6,10 +6,12 @@ a condition tagged ``stop`` / ``take_profit`` / ``full`` is satisfied.
 Entry-level touches and ``entry`` conditions are informational (an opportunity,
 not a close event) so they do not mark the plan triggered.
 
-Price-level checks are exact; indicator conditions (golden / death cross via
-MA5/MA20, operating cash flow positive) are best-effort — when the data source
-is unavailable the condition is reported as ``pending`` so the user can review
-manually instead of being silently ignored.
+Price-level checks follow the plan direction: long plans trigger below their
+stop or above their targets, while reduce/exit plans trigger above their
+invalidation level or below their downside targets. Indicator conditions
+(golden / death cross via MA5/MA20, operating cash flow positive) are
+best-effort — when the data source is unavailable the condition is reported as
+``pending`` so the user can review manually instead of being silently ignored.
 """
 
 from __future__ import annotations
@@ -54,19 +56,28 @@ async def evaluate_plan(
             "trade_date": None,
         }
 
-    stop_loss = _float(plan.get("stop_loss"))
-    targets = plan.get("targets") or []
-    entry_zone = plan.get("entry_zone") or []
+    stop_loss = _float(plan.get("invalidation_level", plan.get("stop_loss")))
+    targets = plan.get("objective_levels") or plan.get("targets") or []
+    entry_zone = plan.get("action_zone") or plan.get("entry_zone") or []
 
-    if stop_loss is not None and price <= stop_loss:
-        triggered = True
-        reason = f"stop_loss hit {price} <= {stop_loss}"
-        details.append(reason)
+    is_exit = _is_exit_plan(plan)
+
+    if stop_loss is not None:
+        stop_hit = price >= stop_loss if is_exit else price <= stop_loss
+        if stop_hit:
+            triggered = True
+            comparator = ">=" if is_exit else "<="
+            reason_kind = "risk_limit" if is_exit else "stop_loss"
+            reason = f"{reason_kind} hit {price} {comparator} {stop_loss}"
+            details.append(reason)
     for t in targets:
         tv = _float(t)
-        if tv is not None and price >= tv:
+        target_hit = tv is not None and (price <= tv if is_exit else price >= tv)
+        if target_hit:
             triggered = True
-            reason = f"take_profit hit {price} >= {tv}"
+            comparator = "<=" if is_exit else ">="
+            reason_kind = "downside_target" if is_exit else "take_profit"
+            reason = f"{reason_kind} hit {price} {comparator} {tv}"
             details.append(reason)
             break
     if entry_zone and not triggered:
@@ -74,20 +85,28 @@ async def evaluate_plan(
         hi = _float(entry_zone[-1])
         if lo is not None and hi is not None and lo <= price <= hi:
             details.append(f"price {price} within entry_zone [{lo}, {hi}]")
+            if str(plan.get("lifecycle_state") or "") == "waiting_trigger":
+                triggered = True
+                reason = f"action_zone hit {lo} <= {price} <= {hi}"
 
     for cond in plan.get("conditions") or []:
         kind = str(cond.get("kind") or "").lower()
+        trigger_action = str(cond.get("trigger_action") or "").upper()
         text = f"{cond.get('description') or ''} {cond.get('source') or ''}".lower()
         cond_result = await _evaluate_condition_text(text, kind, symbol, provider)
         if cond_result:
-            details.append(f"condition[{kind}]: {cond_result}")
+            action_label = trigger_action or kind
+            details.append(f"condition[{action_label}]: {cond_result}")
             if (
                 "satisfied" in cond_result
-                and kind in ("stop", "take_profit")
+                and (
+                    trigger_action in ("ENTER", "ADD", "REDUCE", "EXIT")
+                    or kind in ("stop", "take_profit")
+                )
                 and not reason
             ):
                 triggered = True
-                reason = f"condition[{kind}] satisfied: {cond_result}"
+                reason = f"condition[{action_label}] satisfied: {cond_result}"
 
     return {
         "triggered": triggered,
@@ -95,6 +114,11 @@ async def evaluate_plan(
         "details": details,
         "price": price,
         "trade_date": trade_date,
+        "next_lifecycle_state": (
+            "cancelled" if triggered and ("stop_loss" in reason or "risk_limit" in reason)
+            else "executable" if triggered and "action_zone hit" in reason
+            else None
+        ),
     }
 
 
@@ -199,6 +223,24 @@ def _extract_daily_rows(payload: Any, symbol: str) -> list[dict[str, Any]]:
         if isinstance(r, dict) and r.get("close") is not None:
             out.append({"trade_date": r.get("trade_date"), "close": r.get("close")})
     return out
+
+
+def _is_exit_plan(plan: dict[str, Any]) -> bool:
+    """Return direction from the canonical action, with legacy fallbacks."""
+    action = str(plan.get("plan_action") or "").upper()
+    if action in ("REDUCE", "EXIT"):
+        return True
+    if action in ("ENTER", "ADD"):
+        return False
+    rating = str(plan.get("rating") or "").lower()
+    if any(token in rating for token in ("sell", "underweight", "reduce", "减持", "减仓", "卖出", "偏空")):
+        return True
+
+    entries = [_float(value) for value in (plan.get("action_zone") or plan.get("entry_zone") or [])]
+    targets = [_float(value) for value in (plan.get("objective_levels") or plan.get("targets") or [])]
+    valid_entries = [value for value in entries if value is not None]
+    valid_targets = [value for value in targets if value is not None]
+    return bool(valid_entries and valid_targets and max(valid_targets) < min(valid_entries))
 
 
 def _float(value: Any) -> float | None:

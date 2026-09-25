@@ -8,12 +8,21 @@ AKShare vendor functions should route remote calls through
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 from .rate_limiter import acquire_akshare
 
 logger = logging.getLogger(__name__)
+
+# Hard wall-clock cap per remote call. AKShare issues bare ``requests``
+# calls without timeouts, so a broken proxy/TUN route can hang a call
+# forever and stall the whole pipeline. 30s is generous for any healthy
+# endpoint; override via AKSHARE_CALL_TIMEOUT if needed.
+_CALL_TIMEOUT = float(os.environ.get("AKSHARE_CALL_TIMEOUT", "30"))
+_CALL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="akshare-call")
 
 
 class AKShareError(RuntimeError):
@@ -22,6 +31,10 @@ class AKShareError(RuntimeError):
 
 class AKShareRateLimitError(AKShareError):
     """Raised when AKShare rejects a request due to upstream throttling."""
+
+
+class AKShareCallError(AKShareError):
+    """Raised for upstream availability/parsing failures that may use fallback."""
 
 
 def akshare_call(func: Callable[..., Any], *args, **kwargs) -> Any:
@@ -38,16 +51,32 @@ def akshare_call(func: Callable[..., Any], *args, **kwargs) -> Any:
     the error text is preserved in the exception message.
     """
     acquire_akshare()
+    # A bounded executor limits abandoned upstream calls to eight worker
+    # threads. Per-call daemon threads previously accumulated without bound
+    # whenever a proxy/socket stayed hung after the caller timed out.
+    future = _CALL_EXECUTOR.submit(func, *args, **kwargs)
     try:
-        return func(*args, **kwargs)
-    except AKShareRateLimitError:
-        raise  # already wrapped — pass through
+        return future.result(timeout=_CALL_TIMEOUT)
+    except FutureTimeoutError as exc:
+        name = getattr(func, "__name__", str(func))
+        logger.warning("akshare call %s timed out after %.0fs", name, _CALL_TIMEOUT)
+        future.cancel()
+        raise AKShareCallError(
+            f"{name} timed out after {_CALL_TIMEOUT:.0f}s (no response from upstream)"
+        ) from exc
     except Exception as exc:
-        # AKShare vendors (East Money, Sina, etc.) return Chinese
-        # error messages like "请求太频繁" that won't match English
-        # keywords.  Convert **all** remote failures so the fallback
-        # chain in route_to_vendor always kicks in.
-        raise AKShareRateLimitError(str(exc)) from exc
+        if isinstance(exc, AKShareRateLimitError):
+            raise exc  # already wrapped — pass through
+        message = str(exc).lower()
+        if any(token in message for token in (
+            "请求太频繁", "访问频繁", "rate limit", "too many requests", "429",
+        )):
+            raise AKShareRateLimitError(str(exc)) from exc
+        # Surface caller/programming errors instead of mislabelling them as an
+        # upstream throttle; this makes broken adapters visible in tests/logs.
+        if isinstance(exc, (TypeError, AttributeError, KeyError, AssertionError)):
+            raise
+        raise AKShareCallError(str(exc)) from exc
 
 
 def ak_lazy_import():

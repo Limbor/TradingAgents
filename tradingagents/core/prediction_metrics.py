@@ -129,16 +129,23 @@ def extract_features(case: dict[str, Any]) -> dict[str, Any] | None:
         horizon = int(horizon) if horizon is not None else None
     except (TypeError, ValueError):
         horizon = None
+    llm_score = _pick_number(snapshot, candidate, key="llm_score")
+    if llm_score is None:
+        llm_score = _pick_number(snapshot, candidate, key="llm_confidence")
 
     return {
         "symbol": str(case.get("symbol") or ""),
+        "signal_date": str(case.get("signal_date") or ""),
         "decision": decision or "",
         "investment_style": _pick_str(snapshot, candidate, key="investment_style"),
         "quant_score": _pick_number(snapshot, candidate, key="quant_score"),
+        "llm_score": llm_score,
         "llm_confidence": _pick_number(snapshot, candidate, key="llm_confidence"),
         "fusion_mode": _pick_str(snapshot, candidate, key="fusion_mode"),
         "actual_return": float(actual_return),
         "excess_return": float(excess) if excess is not None else None,
+        "target_return": float(excess) if excess is not None else float(actual_return),
+        "target_return_basis": "excess" if excess is not None else "absolute",
         "horizon_days": horizon,
     }
 
@@ -150,6 +157,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Count / hit_rate / avg_return / avg_excess over a group of features."""
     n = len(rows)
     returns = [r["actual_return"] for r in rows]
+    targets = [r["target_return"] for r in rows]
     excesses = [r["excess_return"] for r in rows if r["excess_return"] is not None]
     directional = [
         c
@@ -162,6 +170,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "directional_count": len(directional),
         "hit_rate": hit_rate,
         "avg_return": round(sum(returns) / n, 4) if n else None,
+        "avg_target_return": round(sum(targets) / n, 4) if n else None,
         "avg_excess": round(sum(excesses) / len(excesses), 4) if excesses else None,
     }
 
@@ -253,12 +262,12 @@ def build_scorecard(
         }
 
     quant_pairs = [
-        (f["quant_score"], f["actual_return"]) for f in features if f["quant_score"] is not None
+        (f["quant_score"], f["target_return"]) for f in features if f["quant_score"] is not None
     ]
     llm_pairs = [
-        (f["llm_confidence"], f["actual_return"])
+        (f["llm_score"], f["target_return"])
         for f in features
-        if f["llm_confidence"] is not None
+        if f["llm_score"] is not None
     ]
 
     horizon_dist: dict[str, int] = {}
@@ -287,6 +296,10 @@ def build_scorecard(
                 "value": llm_ic,
                 "n": len(llm_pairs),
             },
+            "llm_score": {
+                "value": llm_ic,
+                "n": len(llm_pairs),
+            },
         },
         "fusion_comparison": {
             "quant_only": {"bucket": "quant_only", **_aggregate(quant_only)} if quant_only else None,
@@ -298,19 +311,34 @@ def build_scorecard(
             "decision": _bucketed(features, lambda f: (f["decision"] or "").upper(), DECISION_ORDER),
         },
         "horizon_distribution": horizon_dist,
+        "target_return_basis": {
+            "excess": sum(1 for f in features if f["target_return_basis"] == "excess"),
+            "absolute_fallback": sum(
+                1 for f in features if f["target_return_basis"] == "absolute"
+            ),
+        },
     }
 
     if alpha_prior is not None:
         from tradingagents.core.adaptive_alpha import suggest_alpha
 
         def _suggest_for(rows: list[dict[str, Any]], prior: float) -> dict[str, Any]:
-            q_pairs = [(r["quant_score"], r["actual_return"]) for r in rows if r["quant_score"] is not None]
-            l_pairs = [(r["llm_confidence"], r["actual_return"]) for r in rows if r["llm_confidence"] is not None]
-            q_n, l_n = len(q_pairs), len(l_pairs)
-            eff_n = min(q_n, l_n) if q_n and l_n else q_n or l_n
-            return suggest_alpha(
+            paired = [
+                r for r in rows
+                if r["quant_score"] is not None and r["llm_score"] is not None
+            ]
+            q_pairs = [(r["quant_score"], r["target_return"]) for r in paired]
+            l_pairs = [(r["llm_score"], r["target_return"]) for r in paired]
+            periods = {r["signal_date"] for r in paired if r.get("signal_date")}
+            # Same-date cross-section rows are correlated; when dates are
+            # available use distinct decision periods as the effective sample.
+            eff_n = len(periods) if periods else len(paired)
+            suggestion = suggest_alpha(
                 spearman_rankic(q_pairs), spearman_rankic(l_pairs), eff_n, prior=prior
             )
+            suggestion["n_pairs"] = len(paired)
+            suggestion["n_periods"] = len(periods) if periods else None
+            return suggestion
 
         suggestion = _suggest_for(features, alpha_prior)
         suggestion["style"] = style

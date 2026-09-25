@@ -33,6 +33,7 @@ from typing import Any
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tradingagents.core.llm_candidate_review import build_candidate_reviewer
 from tradingagents.core.mcp_client import StockManagerMCPClient, config_from_app_config
 from tradingagents.core.signal_fusion import fuse_candidate_signal
 from tradingagents.dataflows.mcp_adapter import (
@@ -50,14 +51,14 @@ def is_signal_correct(signal: str, forward_return_pct: float) -> bool:
 
     BUY → return > 0%
     WATCHLIST/HOLD → |return| < 3%
-    AVOID → return < 0%
+    SKIP/AVOID/HOLD_REVIEW → return <= 0%
     """
     signal = signal.upper()
     if signal == "BUY":
         return forward_return_pct > 0
-    if signal == "AVOID":
-        return forward_return_pct < 0
-    # WATCHLIST / HOLD → correct if market stayed flat-ish
+    if signal in {"SKIP", "AVOID", "HOLD_REVIEW", "SELL"}:
+        return forward_return_pct <= 0
+    # WATCHLIST / MONITOR / HOLD → correct if market stayed flat-ish
     return abs(forward_return_pct) < 3.0
 
 
@@ -69,8 +70,6 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(results)
     correct = sum(1 for r in results if r["direction_correct"])
     buy_results = [r for r in results if r["signal"] == "BUY"]
-    avoid_results = [r for r in results if r["signal"] == "AVOID"]
-    watchlist_results = [r for r in results if r["signal"] in ("WATCHLIST", "HOLD")]
 
     buy_correct = sum(1 for r in buy_results if r["direction_correct"])
     buy_returns = [r["forward_return_pct"] for r in buy_results]
@@ -79,9 +78,8 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "total_signals": total,
         "overall_hit_rate": round(correct / total * 100, 1) if total else 0,
         "signal_distribution": {
-            "BUY": len(buy_results),
-            "WATCHLIST": len(watchlist_results),
-            "AVOID": len(avoid_results),
+            signal: sum(1 for r in results if r["signal"] == signal)
+            for signal in sorted({r["signal"] for r in results})
         },
         "buy_hit_rate": round(buy_correct / len(buy_results) * 100, 1) if buy_results else None,
         "avg_buy_return": round(sum(buy_returns) / len(buy_returns), 2) if buy_returns else None,
@@ -101,6 +99,42 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     return metrics
 
 
+def compute_comparison_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Paired champion/challenger metrics over identical date-symbol samples."""
+    variants = {
+        variant: compute_metrics([r for r in results if r.get("variant") == variant])
+        for variant in ("quant_only", "fused")
+    }
+    grouped: dict[tuple[str, str, int], dict[str, dict[str, Any]]] = {}
+    for row in results:
+        key = (row["trade_date"], row["symbol"], int(row["horizon"]))
+        grouped.setdefault(key, {})[str(row.get("variant"))] = row
+    pairs = [rows for rows in grouped.values() if {"quant_only", "fused"} <= set(rows)]
+    improved = sum(
+        1 for rows in pairs
+        if not rows["quant_only"]["direction_correct"] and rows["fused"]["direction_correct"]
+    )
+    degraded = sum(
+        1 for rows in pairs
+        if rows["quant_only"]["direction_correct"] and not rows["fused"]["direction_correct"]
+    )
+    delta = (
+        100.0 * sum(
+            int(rows["fused"]["direction_correct"])
+            - int(rows["quant_only"]["direction_correct"])
+            for rows in pairs
+        ) / len(pairs)
+        if pairs else None
+    )
+    return {
+        "variants": variants,
+        "paired_count": len(pairs),
+        "fused_improved": improved,
+        "fused_degraded": degraded,
+        "paired_accuracy_delta_pp": round(delta, 2) if delta is not None else None,
+    }
+
+
 def _factor_profile_for_style(style: str) -> str:
     if style == "short_term":
         return "short_term_momentum"
@@ -118,11 +152,77 @@ def _default_filters() -> dict[str, Any]:
     }
 
 
+async def fuse_for_backtest(
+    candidate: dict[str, Any],
+    *,
+    style: str,
+    mode: str,
+    reviewer: Any | None = None,
+) -> dict[str, Any]:
+    """Fuse one historical candidate, failing closed in requested LLM mode."""
+    if mode == "quant_only":
+        return fuse_candidate_signal(candidate, style)
+    if mode != "fused":
+        raise ValueError(f"Unsupported backtest mode: {mode}")
+    if reviewer is None:
+        raise RuntimeError("fused backtest requested but LLM reviewer is unavailable")
+    review = await reviewer.review(candidate)
+    payload = review.as_fusion_payload() if hasattr(review, "as_fusion_payload") else review
+    if not isinstance(payload, dict):
+        raise TypeError("LLM reviewer returned an unsupported fusion payload")
+    return fuse_candidate_signal(candidate, style, payload)
+
+
+def calculate_net_forward_return(
+    rows: list[dict[str, Any]],
+    *,
+    signal_date: str,
+    horizon: int,
+    transaction_cost_bps: float,
+    slippage_bps: float,
+) -> float | None:
+    """Next-session-open to horizon-close return after round-trip costs."""
+    if horizon < 1 or not rows:
+        return None
+
+    def _date(row: dict[str, Any]) -> str:
+        return str(
+            row.get("trade_date") or row.get("date") or row.get("Date") or ""
+        ).replace("-", "")
+
+    ordered = sorted(rows, key=_date)
+    cutoff = signal_date.replace("-", "")
+    entry_idx = next((i for i, row in enumerate(ordered) if _date(row) > cutoff), None)
+    if entry_idx is None:
+        return None
+    exit_idx = entry_idx + horizon - 1
+    if exit_idx >= len(ordered):
+        return None
+
+    entry_row = ordered[entry_idx]
+    exit_row = ordered[exit_idx]
+    try:
+        entry = float(
+            entry_row.get("open") or entry_row.get("Open")
+            or entry_row.get("close") or entry_row.get("Close") or 0
+        )
+        exit_price = float(exit_row.get("close") or exit_row.get("Close") or 0)
+    except (TypeError, ValueError):
+        return None
+    if entry <= 0 or exit_price <= 0:
+        return None
+    side_cost = max(0.0, float(transaction_cost_bps) + float(slippage_bps)) / 10_000
+    net = exit_price * (1.0 - side_cost) / (entry * (1.0 + side_cost)) - 1.0
+    return round(net * 100, 4)
+
+
 async def get_forward_return(
     client: StockManagerMCPClient | None,
     symbol: str,
     signal_date: str,
     horizon: int,
+    transaction_cost_bps: float = 10.0,
+    slippage_bps: float = 5.0,
 ) -> float | None:
     """Get N-day forward return for a symbol from signal_date.
 
@@ -130,7 +230,7 @@ async def get_forward_return(
     """
     try:
         td = datetime.strptime(signal_date, "%Y-%m-%d")
-        end_date = (td + timedelta(days=horizon + 10)).strftime("%Y%m%d")
+        end_date = (td + timedelta(days=horizon * 2 + 10)).strftime("%Y%m%d")
         start_date = td.strftime("%Y%m%d")
 
         if client is not None:
@@ -142,12 +242,17 @@ async def get_forward_return(
             )
             if payload and isinstance(payload, dict):
                 rows = payload.get("rows") or payload.get("data", {}).get("rows") or []
-                if len(rows) > horizon:
-                    # rows should be sorted by date
-                    close_start = float(rows[0].get("close", 0))
-                    close_end = float(rows[min(horizon, len(rows) - 1)].get("close", 0))
-                    if close_start > 0:
-                        return round((close_end / close_start - 1) * 100, 2)
+                if isinstance(rows, dict):
+                    rows = rows.get(symbol) or rows.get(symbol.upper()) or []
+                value = calculate_net_forward_return(
+                    rows,
+                    signal_date=signal_date,
+                    horizon=horizon,
+                    transaction_cost_bps=transaction_cost_bps,
+                    slippage_bps=slippage_bps,
+                )
+                if value is not None:
+                    return value
     except Exception as exc:
         logger.debug("Forward return fetch failed for %s: %s", symbol, exc)
 
@@ -155,18 +260,20 @@ async def get_forward_return(
     try:
         from tradingagents.dataflows.akshare_stock import get_stock
         td = datetime.strptime(signal_date, "%Y-%m-%d")
-        end_dt = td + timedelta(days=horizon + 10)
+        end_dt = td + timedelta(days=horizon * 2 + 10)
         raw = get_stock(symbol, signal_date, end_dt.strftime("%Y-%m-%d"))
         if raw and not raw.startswith("Error"):
             import csv
             import io
             reader = csv.DictReader(io.StringIO(raw))
             rows = list(reader)
-            if len(rows) > horizon:
-                close_start = float(rows[0].get("Close") or rows[0].get("close") or 0)
-                close_end = float(rows[min(horizon, len(rows) - 1)].get("Close") or rows[min(horizon, len(rows) - 1)].get("close") or 0)
-                if close_start > 0:
-                    return round((close_end / close_start - 1) * 100, 2)
+            return calculate_net_forward_return(
+                rows,
+                signal_date=signal_date,
+                horizon=horizon,
+                transaction_cost_bps=transaction_cost_bps,
+                slippage_bps=slippage_bps,
+            )
     except Exception as exc:
         logger.debug("AKShare forward return fallback failed for %s: %s", symbol, exc)
 
@@ -182,6 +289,8 @@ async def run_backtest(
     mode: str = "quant_only",
     limit: int = 5,
     candidate_limit: int = 80,
+    transaction_cost_bps: float = 10.0,
+    slippage_bps: float = 5.0,
 ) -> list[dict[str, Any]]:
     """Run the historical backtest over a date range.
 
@@ -220,6 +329,15 @@ async def run_backtest(
     for i, trade_date in enumerate(trade_dates):
         logger.info("Processing %s (%d/%d)", trade_date, i + 1, len(trade_dates))
 
+        reviewer = None
+        if mode in {"fused", "compare"}:
+            reviewer = build_candidate_reviewer(config, style=style, trade_date=trade_date)
+            if reviewer is None:
+                await client.disconnect()
+                raise RuntimeError(
+                    "fused backtest requested but the configured LLM reviewer could not be built"
+                )
+
         try:
             payload = await client.rank_factor_candidates(
                 universe_index=universe,
@@ -243,31 +361,41 @@ async def run_backtest(
 
         for row in rows[:limit]:
             candidate = normalize_quant_candidate(row)
-            fusion = fuse_candidate_signal(candidate, style)
-            candidate.update(fusion)
-
             symbol = candidate["symbol"]
-            signal = candidate["signal"]
-            final_score = candidate["final_score"]
 
             # Get forward return
-            forward_return = await get_forward_return(client, symbol, trade_date, horizon)
+            forward_return = await get_forward_return(
+                client, symbol, trade_date, horizon,
+                transaction_cost_bps=transaction_cost_bps,
+                slippage_bps=slippage_bps,
+            )
             if forward_return is None:
                 logger.debug("No forward return for %s on %s", symbol, trade_date)
                 continue
 
-            results.append({
-                "trade_date": trade_date,
-                "symbol": symbol,
-                "name": candidate.get("name", ""),
-                "signal": signal,
-                "final_score": final_score,
-                "quant_score": candidate.get("quant_score"),
-                "forward_return_pct": forward_return,
-                "direction_correct": is_signal_correct(signal, forward_return),
-                "horizon": horizon,
-                "fusion_mode": candidate.get("fusion_mode", "quant_only"),
-            })
+            variants = ("quant_only", "fused") if mode == "compare" else (mode,)
+            for variant in variants:
+                fusion = await fuse_for_backtest(
+                    candidate, style=style, mode=variant, reviewer=reviewer
+                )
+                signal = fusion["signal"]
+                results.append({
+                    "trade_date": trade_date,
+                    "symbol": symbol,
+                    "name": candidate.get("name", ""),
+                    "variant": variant,
+                    "signal": signal,
+                    "final_score": fusion["final_score"],
+                    "quant_score": fusion.get("quant_score"),
+                    "llm_score": fusion.get("llm_score"),
+                    "llm_confidence": fusion.get("llm_confidence"),
+                    "llm_view": fusion.get("llm_view"),
+                    "forward_return_pct": forward_return,
+                    "direction_correct": is_signal_correct(signal, forward_return),
+                    "horizon": horizon,
+                    "fusion_mode": fusion.get("fusion_mode", "quant_only"),
+                    "return_basis": "next_session_open_to_horizon_close_net_costs",
+                })
 
     await client.disconnect()
     return results
@@ -275,7 +403,11 @@ async def run_backtest(
 
 def print_results(results: list[dict[str, Any]], args: argparse.Namespace) -> None:
     """Pretty-print backtest results."""
-    metrics = compute_metrics(results)
+    metrics = (
+        compute_comparison_metrics(results)
+        if args.mode == "compare"
+        else compute_metrics(results)
+    )
 
     print("\n═══════════════════════════════════════════")
     print(" Signal Fusion Backtest Results")
@@ -286,6 +418,15 @@ def print_results(results: list[dict[str, Any]], args: argparse.Namespace) -> No
     print(f" Style: {args.style}")
     print(f" Mode: {args.mode}")
     print("───────────────────────────────────────────")
+    if args.mode == "compare":
+        print(f" Paired samples: {metrics['paired_count']}")
+        print(f" Fused accuracy delta: {metrics['paired_accuracy_delta_pp']:+.2f} pp")
+        print(f" Improved / degraded: {metrics['fused_improved']} / {metrics['fused_degraded']}")
+        print("═══════════════════════════════════════════\n")
+        output_path = Path(__file__).parent / f"backtest_results_{args.start_date}_{args.end_date}.json"
+        output_path.write_text(json.dumps({"args": vars(args), "metrics": metrics, "signals": results}, ensure_ascii=False, indent=2))
+        print(f" Results saved to: {output_path}")
+        return
     print(f" Total signals: {metrics['total_signals']}")
 
     dist = metrics.get("signal_distribution", {})
@@ -324,9 +465,11 @@ def main() -> None:
     parser.add_argument("--horizon", type=int, default=5, help="Forward return horizon in trading days")
     parser.add_argument("--universe", default="000906.SH", help="Universe index (default CSI800)")
     parser.add_argument("--style", default="medium_term", choices=["short_term", "medium_term", "long_term"])
-    parser.add_argument("--mode", default="quant_only", choices=["quant_only", "fused"])
+    parser.add_argument("--mode", default="quant_only", choices=["quant_only", "fused", "compare"])
     parser.add_argument("--limit", type=int, default=5, help="Top N candidates per day")
     parser.add_argument("--candidate-limit", type=int, default=80, help="MCP candidate pool size")
+    parser.add_argument("--transaction-cost-bps", type=float, default=10.0)
+    parser.add_argument("--slippage-bps", type=float, default=5.0)
     args = parser.parse_args()
 
     results = asyncio.run(run_backtest(
@@ -338,6 +481,8 @@ def main() -> None:
         mode=args.mode,
         limit=args.limit,
         candidate_limit=args.candidate_limit,
+        transaction_cost_bps=args.transaction_cost_bps,
+        slippage_bps=args.slippage_bps,
     ))
 
     if not results:

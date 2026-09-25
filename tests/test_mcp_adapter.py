@@ -13,6 +13,9 @@ def test_evidence_card_from_mcp_payload():
             "source": "tushare",
             "adj_type": "qfq",
             "industry": "食品饮料",
+            "industry_code": "CI005019.CI",
+            "industry_taxonomy": "CITICS",
+            "industry_level": "L1",
             "tradability": {"is_st": False},
             "risk_flags": ["问询函"],
             "factor_snapshot": {"roe_pct": 0.9},
@@ -48,6 +51,9 @@ def test_normalize_quant_candidate_preserves_decision_fields():
             "ts_code": "600519.SH",
             "name": "贵州茅台",
             "industry": "食品饮料",
+            "industry_code": "CI005019.CI",
+            "industry_taxonomy": "CITICS",
+            "industry_level": "L1",
             "quant_score": 82.4,
             "decision": "BUY",
             "decision_reason": "quality/liquidity gates passed",
@@ -65,6 +71,9 @@ def test_normalize_quant_candidate_preserves_decision_fields():
     assert candidate["key_metrics"]["roe"] == 18.5
     assert candidate["data_coverage"]["flow"] == "missing"
     assert candidate["board"] == "main"
+    assert candidate["industry_code"] == "CI005019.CI"
+    assert candidate["industry_taxonomy"] == "CITICS"
+    assert candidate["industry_level"] == "L1"
 
 
 def test_normalize_quant_candidate_legacy_payload_falls_back_safely():

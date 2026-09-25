@@ -24,9 +24,11 @@ class DecisionAuditEngine:
 
     async def evaluate_due(self, *, as_of_date: str | None = None,
                            horizons: tuple[int, ...] = (1, 5, 10, 20),
-                           limit: int = 200) -> dict[str, Any]:
+                           limit: int = 200,
+                           include_standard_horizons: bool = True) -> dict[str, Any]:
         as_of = as_of_date or date.today().isoformat()
         evaluated = skipped = 0
+        attempted_outcomes = due_records = not_due_records = 0
         warnings: list[str] = []
         benchmark_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
         if hasattr(self.db, "list_due_decision_records"):
@@ -36,7 +38,10 @@ class DecisionAuditEngine:
                 status="open", limit=limit, oldest_first=True
             )
         for record in records:
-            requested = sorted({1, 5, 10, 20} | set(horizons) | {int(record.get("horizon_days") or 5)})
+            requested_horizons = set(horizons) | {int(record.get("horizon_days") or 5)}
+            if include_standard_horizons:
+                requested_horizons |= {1, 5, 10, 20}
+            requested = sorted(requested_horizons)
             existing = {int(row["horizon_days"]) for row in self.db.list_decision_outcomes(
                 decision_id=record["id"]
             )}
@@ -46,6 +51,7 @@ class DecisionAuditEngine:
                 if horizon in existing or advance_trading_days(record["decision_date"], horizon) > as_of:
                     continue
                 attempted += 1
+                attempted_outcomes += 1
                 outcome = await self.reflection.fetch_outcome(
                     record["symbol"], record["decision_date"], horizon
                 )
@@ -85,10 +91,13 @@ class DecisionAuditEngine:
                 )
                 evaluated += 1
             if attempted and hasattr(self.db, "record_decision_audit_attempt"):
+                due_records += 1
                 self.db.record_decision_audit_attempt(
                     record["id"],
                     error="; ".join(record_errors) if record_errors else None,
                 )
+            elif not attempted:
+                not_due_records += 1
             final_horizon = int(record.get("horizon_days") or 5)
             outcomes = self.db.list_decision_outcomes(decision_id=record["id"])
             final = next((row for row in outcomes if int(row["horizon_days"]) == final_horizon), None)
@@ -126,6 +135,9 @@ class DecisionAuditEngine:
                 )
         return {"evaluated_outcomes": evaluated, "skipped": skipped,
                 "selected_records": len(records),
+                "attempted_outcomes": attempted_outcomes,
+                "due_records": due_records,
+                "not_due_records": not_due_records,
                 "as_of_date": as_of, "warnings": warnings}
 
     async def _fetch_benchmark(self, symbol: str, signal_date: str,
@@ -163,6 +175,10 @@ def audit_summary(db: Any, *, min_samples: int = 20) -> dict[str, Any]:
                       if int(row["horizon_days"]) == int(decision["horizon_days"])), None)
         if final:
             realized_cases.append({
+                "source_type": decision["source_type"],
+                "symbol": decision["symbol"],
+                "signal_date": decision["decision_date"],
+                "horizon_days": decision["horizon_days"],
                 "snapshot_payload": {"final_decision": decision["decision"]},
                 "outcome_payload": {"actual_return": final["actual_return"]},
             })

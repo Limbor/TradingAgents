@@ -14,6 +14,7 @@ from unittest import mock
 import pandas as pd
 import pytest
 
+import tradingagents.default_config as default_config
 from tradingagents.dataflows import interface, stockstats_utils
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.symbol_utils import NoMarketDataError
@@ -48,6 +49,10 @@ class TestLoadOhlcvNoPoison(unittest.TestCase):
 
 @pytest.mark.unit
 class TestRouteToVendorSentinel(unittest.TestCase):
+    def setUp(self):
+        # Do not inherit vendor choices from earlier config-isolation tests.
+        set_config(default_config.DEFAULT_CONFIG)
+
     def test_no_data_from_all_vendors_returns_sentinel(self):
         def raises_no_data(symbol, *a, **k):
             raise NoMarketDataError(symbol, "GC=F", "no rows")

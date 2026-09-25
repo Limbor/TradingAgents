@@ -73,11 +73,40 @@ def test_plan_evaluator_price_triggers():
         data=FakeProvider(price=1490.0),
     ))
     assert not r["triggered"] and any("entry_zone" in d for d in r["details"])
+    # Waiting plans promote to executable when the action zone is reached.
+    r = asyncio.run(evaluate_plan(
+        {"symbol": "X", "stop_loss": 1400.0, "targets": [1650.0],
+         "entry_zone": [1480, 1500], "conditions": [], "lifecycle_state": "waiting_trigger"},
+        data=FakeProvider(price=1490.0),
+    ))
+    assert r["triggered"] and r["next_lifecycle_state"] == "executable"
     # no price
     r = asyncio.run(evaluate_plan(
         {"symbol": "X", "stop_loss": 1400.0, "conditions": []}, data=FakeProvider(price=None),
     ))
     assert not r["triggered"] and r["reason"] == "no latest close"
+
+
+def test_plan_evaluator_reverses_thresholds_for_reduce_plan():
+    plan = {
+        "symbol": "X",
+        "rating": "Underweight",
+        "stop_loss": 15.35,
+        "targets": [14.28, 13.74],
+        "entry_zone": [14.90, 15.10],
+        "conditions": [],
+    }
+
+    # A price inside the reduce zone is informational, not an immediate false
+    # stop/target trigger caused by applying long-plan comparisons backwards.
+    r = asyncio.run(evaluate_plan(plan, data=FakeProvider(price=15.00)))
+    assert not r["triggered"] and any("entry_zone" in d for d in r["details"])
+
+    r = asyncio.run(evaluate_plan(plan, data=FakeProvider(price=15.36)))
+    assert r["triggered"] and "risk_limit" in r["reason"]
+
+    r = asyncio.run(evaluate_plan(plan, data=FakeProvider(price=14.20)))
+    assert r["triggered"] and "downside_target" in r["reason"]
 
 
 def test_plan_evaluator_indicator_conditions():
@@ -117,6 +146,28 @@ def test_evaluate_active_plans_updates_and_alerts():
     assert safe["status"] == "active"
     assert safe["last_checked_trade_date"] == "2026-07-07"
     assert safe["last_checked_at"] is not None
+
+
+def test_plan_monitor_promotes_waiting_plan_and_expires_stale_recommendation():
+    db = _db()
+    db.save_plan(
+        "p-wait", symbol="600519.SH", action_zone=[1480, 1500],
+        invalidation_level=1400, objective_levels=[1650], status="active",
+        lifecycle_state="waiting_trigger", expires_at="2026-07-10",
+    )
+    db.save_plan(
+        "p-expired", symbol="300750.SZ", action_zone=[140, 160],
+        invalidation_level=100, objective_levels=[200], status="active",
+        lifecycle_state="waiting_trigger", expires_at="2026-07-01",
+    )
+    alerts = asyncio.run(evaluate_active_plans(
+        db, {}, data=_MultiProvider({"600519.SH": 1490.0, "300750.SZ": 150.0})
+    ))
+    assert [item["plan_id"] for item in alerts] == ["p-wait"]
+    assert db.get_plan("p-wait")["lifecycle_state"] == "executable"
+    expired = db.get_plan("p-expired")
+    assert expired["status"] == "closed"
+    assert expired["lifecycle_state"] == "expired"
 
 
 class _MultiProvider:

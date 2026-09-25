@@ -37,6 +37,12 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_DAILY_PIPELINE_BOARD_FILTER": "daily_pipeline_board_filter",
     "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_ENABLED": "daily_pipeline_deep_analysis_enabled",
     "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_LIMIT": "daily_pipeline_deep_analysis_limit",
+    "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_TIMEOUT": "daily_pipeline_deep_analysis_timeout_seconds",
+    "TRADINGAGENTS_DAILY_PIPELINE_SCHEDULED_DEEP_ANALYSIS_ENABLED": "daily_pipeline_scheduled_deep_analysis_enabled",
+    "TRADINGAGENTS_DAILY_PIPELINE_SCHEDULED_FOLLOWUP_ENABLED": "daily_pipeline_scheduled_followup_enabled",
+    "TRADINGAGENTS_MARKET_OVERVIEW_FETCH_TIMEOUT": "market_overview_fetch_timeout_seconds",
+    "TRADINGAGENTS_MARKET_OVERVIEW_LLM_STAGE_TIMEOUT": "market_overview_llm_stage_timeout_seconds",
+    "TRADINGAGENTS_ADAPTIVE_ALPHA_SOURCE": "adaptive_alpha_source",
 }
 
 
@@ -207,6 +213,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "backtest_min_win_rate": 0.45,
     "backtest_max_turnover": 10.0,
     "backtest_min_oos_sharpe": 0.5,
+    "backtest_min_walk_forward_folds": 3,
     # Legacy stdio path kept only for compatibility with older configs.
     "mcp_stockmanager_dir": os.path.expanduser("~/Documents/develop/StockManager"),
     # -------------------------------------------------------------------
@@ -219,7 +226,14 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # quick LLM only reviews the top N candidates to keep latency and cost
     # bounded.
     "daily_pipeline_llm_review_enabled": True,
-    "daily_pipeline_llm_review_limit": 8,
+    "daily_pipeline_llm_review_limit": 10,
+    # StockManager v2 profile computes the audited attack/defensive component
+    # formulas and exposes both scores. Older MCP servers safely fall back to
+    # their style profile when this name is unknown.
+    "daily_pipeline_factor_profile": "daily_pipeline_v2",
+    # Discovery-only expansion. Core Top 5 remains CSI800; CSI1000-only names
+    # are returned separately as shadow candidates until forward gates pass.
+    "daily_pipeline_shadow_universe_indices": ["000852.SH"],
     # Candidates ranked beyond the review limit but matching an ACTIVE strategy
     # lesson are pulled into the review window (bounded by this cap) so the
     # reflection loop's lessons actually influence matching candidates.
@@ -237,6 +251,26 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # bounded even when enabled.
     "daily_pipeline_deep_analysis_enabled": False,
     "daily_pipeline_deep_analysis_limit": 1,
+    # Scheduled screening must finish promptly. A manual run may still opt in
+    # to the heavyweight deep pass via the setting above, but the 08:30 job
+    # keeps it detached by default.
+    "daily_pipeline_scheduled_deep_analysis_enabled": False,
+    # Once the scheduled scanner has durably produced its shortlist, hand the
+    # Top-1 candidate to a separate StockAnalysis run.  Keeping this detached
+    # makes the shortlist available immediately while preserving the automatic
+    # scan -> full-analysis chain in the run history.
+    "daily_pipeline_scheduled_followup_enabled": True,
+    # Bound each optional full-graph pass so one unhealthy data/LLM provider
+    # cannot hold the whole screening run open indefinitely.
+    "daily_pipeline_deep_analysis_timeout_seconds": 300.0,
+    # Market overview fetches several public CN-market feeds. Treat the whole
+    # snapshot as one bounded operation instead of accumulating provider waits
+    # for hours when the network/proxy path is unhealthy.
+    "market_overview_fetch_timeout_seconds": 180.0,
+    # Each of the three structured summary calls degrades independently.  The
+    # deterministic market snapshot remains useful when an LLM provider is
+    # slow, so never let one call keep the refresh spinner alive indefinitely.
+    "market_overview_llm_stage_timeout_seconds": 60.0,
     # LLM-based intent routing (Phase 3). When enabled, messages that don't
     # match regex patterns with high confidence are forwarded to LLM for
     # tool_use-based intent recognition. Disabled by default.
@@ -278,4 +312,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # after enough directional samples accumulate (the suggestion shrinks to
     # the static prior on small/noisy samples regardless).
     "adaptive_alpha_enabled": False,
+    # Production overrides must come from the isolated point-in-time evaluation
+    # corpus, never the selected Top-N live reflection stream.
+    "adaptive_alpha_source": "evaluation",
 })

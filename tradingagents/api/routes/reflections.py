@@ -150,6 +150,7 @@ class CandidateActionRequest(BaseModel):
 class CandidateActionResponse(BaseModel):
     status: str
     case_id: str | None = None
+    plan_id: str | None = None
     message: str
 
 
@@ -320,14 +321,33 @@ async def save_candidate_action(request: Request, body: CandidateActionRequest):
     """Record user intent for a candidate without forcing it into strategy learning."""
     import uuid
 
-    from tradingagents.core.trading_time import get_temporal_context
+    from tradingagents.core.trading_time import advance_trading_days, get_temporal_context
 
     action = body.action.strip().lower()
+    trade_review = body.payload.get("trade_review") or {}
+    pretrade_gate = trade_review.get("pretrade_gate") or {}
+    gate_status = str(pretrade_gate.get("status") or "").lower()
+    gate_authority = str(trade_review.get("gate_authority") or "")
     if action in {"adopt", "plan", "executed"}:
+        if gate_status != "actionable" or gate_authority != "stockmanager_mcp":
+            return CandidateActionResponse(
+                status="blocked",
+                message="交易前复核尚未明确通过，不能直接纳入执行计划。",
+            )
         scope = "decision_grade"
         eligible = True
         source_type = "system_signal"
-        message = "已加入强反思闭环，后续会用于策略经验沉淀。"
+        message = "交易前复核已通过，已加入主动监控计划和强反思闭环。"
+    elif action == "wait_trigger":
+        if gate_status != "wait" or gate_authority != "stockmanager_mcp":
+            return CandidateActionResponse(
+                status="blocked",
+                message="没有 MCP 正式门控的等待状态不能创建交易计划。",
+            )
+        scope = "candidate_pool"
+        eligible = False
+        source_type = "system_signal"
+        message = "已加入等待触发计划；条件满足前不会视为可执行信号。"
     elif action in {"watch", "observe"}:
         scope = "candidate_pool"
         eligible = False
@@ -367,7 +387,47 @@ async def save_candidate_action(request: Request, body: CandidateActionRequest):
         },
         status="pending",
     )
-    return CandidateActionResponse(status="saved", case_id=case_id, message=message)
+    plan_id: str | None = None
+    if action in {"adopt", "plan", "wait_trigger"}:
+        candidate_plan = body.payload.get("action_plan") or {}
+        action_zone = body.payload.get("entry_zone") or candidate_plan.get("action_zone") or candidate_plan.get("entry_zone")
+        invalidation = body.payload.get("stop_loss") or candidate_plan.get("invalidation_level") or candidate_plan.get("stop_loss")
+        objectives = body.payload.get("targets") or candidate_plan.get("objective_levels") or candidate_plan.get("take_profit")
+        plan_action = str(candidate_plan.get("plan_action") or body.payload.get("plan_action") or "ENTER").upper()
+        if plan_action not in {"ENTER", "ADD", "HOLD", "REDUCE", "EXIT"}:
+            plan_action = "ENTER"
+        plan_id = f"plan:{uuid.uuid4()}"
+        reliability = trade_review.get("recommendation_reliability") or {}
+        request.app.state.db.save_plan(
+            plan_id,
+            symbol=body.symbol,
+            name=body.name,
+            plan_action=plan_action,
+            action_zone=action_zone,
+            invalidation_level=invalidation,
+            objective_levels=objectives,
+            conditions=[{
+                "kind": "pretrade_gate",
+                "trigger_action": plan_action,
+                "description": (
+                    f"初始状态={gate_status}; 可靠性={reliability.get('score', 'n/a')}; "
+                    f"复核日={trade_review.get('effective_trade_date') or trade_date}"
+                ),
+                "source": gate_authority or "degraded",
+            }],
+            rating=str(body.payload.get("final_decision") or ""),
+            status="active",
+            source="selection",
+            artifact_id=body.artifact_id,
+            reflection_case_id=case_id,
+            lifecycle_state="executable" if gate_status == "actionable" else "waiting_trigger",
+            expires_at=advance_trading_days(str(trade_date), 5),
+            reliability_score=float(reliability.get("score")) if reliability.get("score") is not None else None,
+            review_snapshot=trade_review,
+        )
+    return CandidateActionResponse(
+        status="saved", case_id=case_id, plan_id=plan_id, message=message
+    )
 
 
 @router.post("/reflections/trigger", response_model=TriggerResponse)

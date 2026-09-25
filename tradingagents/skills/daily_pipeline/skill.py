@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -14,6 +15,13 @@ from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.core.adaptive_alpha import resolve_alpha_override
 from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.candidate_review_runner import apply_llm_reviews
+from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
+from tradingagents.core.industry_taxonomy import (
+    INDUSTRY_SELECTION_ALIASES,
+    SW_L1_INDUSTRIES,
+    expand_industry_selection_terms,
+    resolve_sw_l1_industries,
+)
 from tradingagents.core.mcp_client import get_mcp_client
 from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
@@ -22,6 +30,7 @@ from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_eviden
 from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.dataflows.mcp_adapter import (
     normalize_quant_candidate,
+    payload_error_message,
     payload_rows,
     payload_warnings,
 )
@@ -32,8 +41,10 @@ from tradingagents.skills._shared import (
     candidate_rationale,
     default_filters,
     demo_candidates,
+    drive_with_progress,
     factor_profile_for_style,
     optional_float,
+    rank_progress_detail,
     resolve_board_filter,
     resolve_temporal_context,
 )
@@ -45,8 +56,20 @@ logger = logging.getLogger(__name__)
 class DailyPipelineInput(BaseModel):
     trade_date: str = Field(default_factory=lambda: date.today().isoformat())
     universe_index: str = Field(default="000906.SH", description="Default CSI800")
+    shadow_universe_indices: list[str] = Field(
+        default_factory=list,
+        description="Discovery-only index pools. Their candidates never backfill the core Top 5.",
+    )
     limit: int = Field(default=5, ge=1, le=20)
-    candidate_limit: int = Field(default=80, ge=5, le=800)
+    candidate_limit: int = Field(
+        default=120,
+        ge=5,
+        le=800,
+        description=(
+            "Expensive factor-compute budget. StockManager v2 batch-prefilters the complete "
+            "eligible universe before applying this limit."
+        ),
+    )
     board_filter: Literal["all", "main_board", "dual_growth_only"] = Field(
         default="all",
         description="A-share board filter: all, main_board (exclude STAR/ChiNext), or dual_growth_only.",
@@ -55,11 +78,41 @@ class DailyPipelineInput(BaseModel):
         default_factory=list,
         description="Additional board exclusions: star, chinext, beijing, main.",
     )
+    industries: list[str] = Field(
+        default_factory=list,
+        description=(
+            "行业/板块限定关键词，如 ['半导体', '煤炭']。非空时只保留行业字段匹配的候选，"
+            "并作为 sector_prefs 传给量化层加分。"
+        ),
+    )
+    concepts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "需要精确限定成分股的概念板块名称，如 ['CXO概念']。成功解析时通过 "
+            "MCP include_symbols 在 candidate_limit 截断前筛选；失败时回退 industries。"
+        ),
+    )
+    industry_taxonomy: Literal["CITICS", "SW2021"] | None = Field(
+        default=None,
+        description="标准行业分类协议；与 industry_codes 配套使用。",
+    )
+    industry_level: Literal["L1", "L2", "L3"] | None = Field(
+        default=None,
+        description="标准行业层级；与 industry_codes 配套使用。",
+    )
+    industry_codes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "标准行业代码白名单。优先于中文名称过滤，由 Market 页面直接传给 "
+            "StockManager，避免同名、别名和分类体系错配。"
+        ),
+    )
 
 
 class DailyPipelineOutput(BaseModel):
     trade_date: str
     candidates: list[dict[str, Any]]
+    shadow_candidates: list[dict[str, Any]] = Field(default_factory=list)
     profile: dict[str, Any]
     mcp_used: bool
 
@@ -102,11 +155,18 @@ class DailyPipelineSkill(BaseSkill):
         alpha_override: float | None = None
         alpha_meta: dict[str, Any] = {"enabled": False}
         if config.get("adaptive_alpha_enabled"):
-            scorecard = db.get_prediction_scorecard()
+            alpha_source = str(config.get("adaptive_alpha_source") or "evaluation")
+            if alpha_source == "evaluation":
+                scorecard = db.get_evaluation_scorecard()
+            elif alpha_source == "prediction":
+                # Explicit legacy escape hatch for controlled comparisons only.
+                scorecard = db.get_prediction_scorecard()
+            else:
+                raise ValueError(f"unsupported adaptive_alpha_source: {alpha_source}")
             alpha_override, alpha_meta = resolve_alpha_override(
                 scorecard, str(profile.get("investment_style") or "medium_term")
             )
-            alpha_meta = {"enabled": True, **alpha_meta}
+            alpha_meta = {"enabled": True, "source": alpha_source, **alpha_meta}
 
         yield SkillEvent(
             event_type="skill_start",
@@ -118,15 +178,29 @@ class DailyPipelineSkill(BaseSkill):
                 "info_cutoff": temporal_context.info_cutoff,
                 "temporal_context": temporal_context.to_dict(),
                 "universe_index": input_params.universe_index,
+                "shadow_universe_indices": _shadow_universe_indices(input_params, config),
                 "board_filter": input_params.board_filter,
                 "exclude_boards": input_params.exclude_boards,
+                "industries": input_params.industries,
+                "concepts": input_params.concepts,
+                "industry_taxonomy": input_params.industry_taxonomy,
+                "industry_level": input_params.industry_level,
+                "industry_codes": input_params.industry_codes,
             },
         )
         yield skill_progress(
             stage_id="prepare",
             stage_label="准备每日选股",
             status="completed",
-            detail=f"{input_params.trade_date} · {input_params.universe_index} · {input_params.board_filter}",
+            detail=(
+                f"{input_params.trade_date} · {input_params.universe_index} · {input_params.board_filter}"
+                + (f" · 行业限定: {'/'.join(input_params.industries)}" if input_params.industries else "")
+                + (
+                    f" · {input_params.industry_taxonomy}/{input_params.industry_level or 'L1'}"
+                    if input_params.industry_codes and input_params.industry_taxonomy else ""
+                )
+                + (f" · 概念限定: {'/'.join(input_params.concepts)}" if input_params.concepts else "")
+            ),
             progress_pct=5,
         )
         yield SkillEvent(
@@ -142,9 +216,37 @@ class DailyPipelineSkill(BaseSkill):
             progress_pct=15,
         )
 
-        candidates, mcp_used, warnings, quant_meta = await _rank_candidates(
-            input_params, config, profile, alpha_override=alpha_override
-        )
+        # Stream MCP ranking-job progress (async_mode) into the timeline while
+        # the quant ranking runs; falls back transparently to the sync call.
+        candidates: list[dict[str, Any]] = []
+        mcp_used = False
+        warnings: list[str] = []
+        quant_meta: dict[str, Any] = {}
+        async for kind, value in drive_with_progress(
+            lambda on_progress: _rank_candidates(
+                input_params,
+                config,
+                profile,
+                alpha_override=alpha_override,
+                progress_callback=on_progress,
+            )
+        ):
+            if kind == "progress":
+                pct = value.get("progress_pct")
+                yield skill_progress(
+                    stage_id="universe",
+                    stage_label="候选池与交易日上下文",
+                    status="running",
+                    detail=rank_progress_detail(value),
+                    agent="Factor Scorer",
+                    progress_pct=(
+                        15 + float(pct) * 0.2 if isinstance(pct, (int, float)) else None
+                    ),
+                )
+            else:
+                candidates, mcp_used, warnings, quant_meta = value
+        if not candidates and alpha_meta.get("applied"):
+            alpha_meta = {**alpha_meta, "applied": False, "reason": "no_candidates"}
         if alpha_meta.get("applied"):
             warnings = [
                 *warnings,
@@ -224,6 +326,7 @@ class DailyPipelineSkill(BaseSkill):
                 progress_pct=84,
             )
         strategy_meta = quant_meta.get("strategy_meta") or {}
+        shadow_candidates = quant_meta.get("shadow_candidates") or []
         quant_candidates = _candidate_cards(candidates, include_llm=False)
         reviewed_candidates = _candidate_cards(candidates, include_llm=True)
         for candidate in candidates:
@@ -248,6 +351,7 @@ class DailyPipelineSkill(BaseSkill):
                 "adaptive_alpha": alpha_meta,
                 "profile": profile,
                 "candidates": candidates,
+                "shadow_candidates": shadow_candidates,
                 "quant_candidates": quant_candidates,
                 "reviewed_candidates": reviewed_candidates,
                 "decision_pack": decision_pack,
@@ -323,6 +427,7 @@ class DailyPipelineSkill(BaseSkill):
                 "info_cutoff": temporal_context.info_cutoff,
                 "temporal_context": temporal_context.to_dict(),
                 "candidates": candidates,
+                "shadow_candidates": shadow_candidates,
                 "profile": profile,
                 "mcp_used": mcp_used,
                 "quant_meta": quant_meta,
@@ -367,6 +472,7 @@ async def _rank_candidates(
     config: dict[str, Any],
     profile: dict[str, Any],
     alpha_override: float | None = None,
+    progress_callback: Any = None,
 ) -> tuple[list[dict[str, Any]], bool, list[str], dict[str, Any]]:
     client = await get_mcp_client(config)
     if client is None:
@@ -374,35 +480,144 @@ async def _rank_candidates(
             return demo_candidates(input_params.limit, profile["investment_style"], include_board=True), False, [
                 "StockManager MCP unavailable; using explicit demo fallback."
             ], {"source": "demo_fallback"}
-        return [], False, ["StockManager MCP unavailable; quant ranking not available."], {"source": "unavailable"}
+        raise RuntimeError("StockManager MCP 不可用，无法执行真实量化排名")
 
     mcp_limit = _mcp_fetch_limit(input_params)
+    concept_symbols, concept_warnings = await asyncio.to_thread(
+        _resolve_concept_symbol_filter,
+        input_params,
+    )
+    if concept_symbols and not _client_supports_tool_feature(
+        client,
+        "rank_factor_candidates",
+        "symbol_whitelist_prefilter",
+    ):
+        concept_warnings.append(
+            "StockManager MCP does not declare symbol_whitelist_prefilter; "
+            "fell back to the mapped SW L1 industry scope."
+        )
+        concept_symbols = []
+    if input_params.concepts and not concept_symbols and not _mcp_include_industries(input_params):
+        detail = concept_warnings[-1] if concept_warnings else "concept constituents unavailable"
+        raise RuntimeError(
+            f"无法解析 {'/'.join(input_params.concepts)} 的精确成分股，且没有可靠行业代理；"
+            f"已停止选股，避免错误放宽到全市场。{detail}"
+        )
+    rank_filters = _daily_filters(
+        input_params,
+        config,
+        include_symbols=concept_symbols,
+        taxonomy_supported=_client_supports_tool_feature(
+            client,
+            "rank_factor_candidates",
+            "industry_taxonomy_v1",
+        ),
+    )
     payload = await client.rank_factor_candidates(
         universe_index=input_params.universe_index,
         trade_date=input_params.trade_date,
+        universe_indices=(
+            _shadow_universe_indices(input_params, config)
+            if _client_supports_tool_feature(
+                client, "rank_factor_candidates", "multi_index_universe_v1"
+            )
+            else None
+        ),
         style=profile["investment_style"],
         limit=mcp_limit,
         candidate_limit=input_params.candidate_limit,
-        factor_profile=factor_profile_for_style(profile["investment_style"]),
-        filters=default_filters(
-            board_filter=input_params.board_filter,
-            exclude_boards=input_params.exclude_boards,
-            config=config,
-        ),
-        sector_prefs=profile.get("sector_prefs") or [],
+        factor_profile=_daily_factor_profile(config, profile),
+        filters=rank_filters,
+        sector_prefs=_merged_sector_prefs(input_params, profile),
         return_factor_snapshot=True,
         enable_decision=True,
         max_per_industry=config.get("daily_pipeline_max_per_industry", 2),
         decision_config=config.get("daily_pipeline_decision_config"),
+        progress_callback=progress_callback,
     )
-    warnings = payload_warnings(payload)
+    warnings = [*concept_warnings, *payload_warnings(payload)]
     rows = payload_rows(payload)
     status = (payload or {}).get("status")
-    if status == "error" or not rows:
-        message = (payload or {}).get("message") or "StockManager returned no ranked candidates."
-        if _is_universe_empty(message):
+    if status == "error":
+        message = payload_error_message(payload, "StockManager 量化排名失败")
+        relaxed_payload, relaxation_warnings, relaxations = await _retry_explicit_scope_with_relaxations(
+            client,
+            input_params,
+            profile,
+            config,
+            rank_filters=rank_filters,
+            failed_payload=payload,
+            progress_callback=progress_callback,
+        )
+        relaxed_rows = payload_rows(relaxed_payload)
+        if relaxed_rows:
+            payload = {
+                **(relaxed_payload or {}),
+                "filter_relaxation": relaxations[-1] if relaxations else {},
+                "filter_relaxations": relaxations,
+            }
+            rows = relaxed_rows
+            warnings = [
+                *warnings,
+                (
+                    f"初始显式板块筛选为空（{message}）；"
+                    f"分级放宽风格上限后恢复 {len(relaxed_rows)} 个候选。"
+                ),
+                *relaxation_warnings,
+                *payload_warnings(relaxed_payload),
+            ]
+        elif (input_params.industries or input_params.concepts or input_params.industry_codes) and (
+            _is_candidate_empty(payload)
+            or _is_candidate_empty(message)
+            or relaxations
+        ):
+            # An explicit concept/industry request that legitimately has no
+            # eligible stocks is a valid screening outcome, not a system
+            # failure. Never silently widen it to the whole market/industry.
+            final_payload = relaxed_payload or payload or {}
+            final_message = payload_error_message(final_payload, str(message))
+            empty_scope = {
+                "reason": "explicit_scope_no_eligible_candidates",
+                "message": final_message,
+                "industries": list(input_params.industries),
+                "concepts": list(input_params.concepts),
+                "industry_taxonomy": input_params.industry_taxonomy,
+                "industry_level": input_params.industry_level,
+                "industry_codes": list(input_params.industry_codes),
+                "relaxations_attempted": relaxations,
+            }
+            payload = {
+                **final_payload,
+                "status": "success",
+                "rows": [],
+                "filter_relaxation": relaxations[-1] if relaxations else {},
+                "filter_relaxations": relaxations,
+                "empty_scope": empty_scope,
+            }
+            warnings = [
+                *warnings,
+                str(message),
+                *relaxation_warnings,
+                *payload_warnings(final_payload),
+                (
+                    "精确行业范围保持不变："
+                    f"{input_params.industry_taxonomy or '名称口径'} "
+                    f"{input_params.industry_level or ''} "
+                    f"{','.join(input_params.industry_codes) or '/'.join(input_params.industries)}。"
+                ),
+                (
+                    "显式板块范围内仍无符合条件的标的；任务按“完成但无候选”结束。"
+                    "未扩大到全市场，也未将概念静默替换为宽泛行业。"
+                ),
+            ]
+            rows = []
+        elif _is_universe_empty(payload) or _is_universe_empty(message):
             fallback_payload, fallback_warning = await _rank_candidates_with_previous_universe(
-                client, input_params, profile, config
+                client,
+                input_params,
+                profile,
+                config,
+                rank_filters=rank_filters,
             )
             fallback_rows = payload_rows(fallback_payload)
             if fallback_rows:
@@ -410,12 +625,45 @@ async def _rank_candidates(
                 rows = fallback_rows
                 warnings = [*warnings, str(message), fallback_warning]
             else:
-                return [], True, [*warnings, str(message)], _quant_meta(payload, input_params, profile)
+                raise RuntimeError(f"StockManager 候选池不可用：{message}")
         else:
-            return [], True, [*warnings, str(message)], _quant_meta(payload, input_params, profile)
+            raise RuntimeError(f"StockManager 量化排名失败：{message}")
+    elif not rows:
+        message = (payload or {}).get("message") or "StockManager returned no ranked candidates."
+        return [], True, [*warnings, str(message)], _quant_meta(payload, input_params, profile)
+
+    # MCP has already applied the exact industry/concept scope and exhausted
+    # the auditable relaxation chain.  Do not run the empty result through the
+    # local board/name filters: doing so produces misleading diagnostics such
+    # as "board filter left 0" or "industry kept 0 of 0", even though the
+    # actual funnel became empty inside MCP.
+    if not rows and (payload or {}).get("empty_scope"):
+        return [], True, warnings, _quant_meta(payload, input_params, profile)
+
+    # Multi-index v2 keeps the formal Top 5 anchored to the core universe.
+    # Expansion-only names are exposed as shadow observations and can never
+    # silently backfill a missing core candidate.
+    shadow_rows: list[dict[str, Any]] = []
+    shadow_indices = _shadow_universe_indices(input_params, config)
+    if shadow_indices and any("is_core_universe" in row for row in rows):
+        shadow_rows = [row for row in rows if row.get("is_core_universe") is False]
+        rows = [row for row in rows if row.get("is_core_universe") is not False]
+        if shadow_rows:
+            warnings.append(
+                f"扩展发现池返回 {len(shadow_rows)} 个候选；保持 shadow，不回填核心 Top {input_params.limit}。"
+            )
 
     rows, board_warnings = _filter_rows_by_board(rows, input_params)
     warnings.extend(board_warnings)
+    rows = _attach_fine_industry(rows)
+    if concept_symbols:
+        warnings.append(
+            f"Exact concept constituent restriction applied ({'/'.join(input_params.concepts)}); "
+            f"MCP whitelist contained {len(concept_symbols)} symbols before universe intersection."
+        )
+    else:
+        rows, restrict_warnings = _restrict_rows_to_industries(rows, input_params)
+        warnings.extend(restrict_warnings)
     rows, demote_warnings = _deprioritize_demoted_rows(rows)
     warnings.extend(demote_warnings)
     rows, industry_warnings = _limit_rows_by_industry(rows, input_params, config)
@@ -425,6 +673,8 @@ async def _rank_candidates(
     for row in rows[: input_params.limit]:
         candidate = normalize_quant_candidate(row)
         candidate["board"] = board_for_symbol(candidate.get("symbol") or candidate.get("ts_code"))
+        if row.get("industry_detail"):
+            candidate["industry_detail"] = str(row["industry_detail"])
         _attach_payload_meta(candidate, payload)
         candidates.append(candidate)
     await _fill_latest_prices(client, candidates, input_params.trade_date, warnings, config)
@@ -435,7 +685,138 @@ async def _rank_candidates(
         candidate.update(fusion)
         candidate["quant_evidence"] = quant_evidence_markdown(candidate)
         candidate["rationale"] = candidate_rationale(candidate, include_llm=True)
-    return candidates, True, warnings, _quant_meta(payload, input_params, profile)
+    shadow_candidates: list[dict[str, Any]] = []
+    for row in shadow_rows[: input_params.limit]:
+        candidate = normalize_quant_candidate(row)
+        candidate["board"] = board_for_symbol(candidate.get("symbol") or candidate.get("ts_code"))
+        candidate["shadow_only"] = True
+        candidate["decision_stage"] = "expanded_universe_shadow"
+        candidate["final_decision"] = "MONITOR"
+        _attach_payload_meta(candidate, payload)
+        shadow_candidates.append(candidate)
+    quant_meta = _quant_meta(payload, input_params, profile)
+    quant_meta["shadow_universe_indices"] = shadow_indices
+    quant_meta["shadow_candidates"] = shadow_candidates
+    return candidates, True, warnings, quant_meta
+
+
+_RELAXABLE_EXPLICIT_FILTERS: tuple[tuple[str, str], ...] = (
+    ("max_market_cap", "市值上限"),
+    ("max_price", "股价上限"),
+    ("max_pe", "PE 上限"),
+    ("max_pb", "PB 上限"),
+    ("max_turnover_rate", "换手率上限"),
+)
+
+
+async def _retry_explicit_scope_with_relaxations(
+    client: Any,
+    input_params: DailyPipelineInput,
+    profile: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    rank_filters: dict[str, Any],
+    failed_payload: dict[str, Any] | None,
+    progress_callback: Any = None,
+) -> tuple[dict[str, Any] | None, list[str], list[dict[str, Any]]]:
+    """Progressively relax style ceilings for an explicit concept/industry.
+
+    The requested semantic scope and all safety/tradability floors remain
+    fixed. Only upper bounds expressing an investment style are removed, one
+    at a time, so every fallback is auditable and a broad market result can
+    never masquerade as a concept result.
+    """
+    if not (input_params.industries or input_params.concepts or input_params.industry_codes):
+        return None, [], []
+
+    payload = failed_payload
+    relaxed_filters = dict(rank_filters)
+    warnings: list[str] = []
+    relaxations: list[dict[str, Any]] = []
+    attempted: set[str] = set()
+    labels = dict(_RELAXABLE_EXPLICIT_FILTERS)
+
+    while _is_candidate_empty(payload) or _is_candidate_empty(
+        payload_error_message(payload, "")
+    ):
+        message = payload_error_message(payload, "")
+        # Batch-stage failures cannot be caused by max_price; hard-tradability
+        # failures have already passed PE/PB/turnover, so try max_price first.
+        if "批量预筛" in message:
+            preferred = ("max_market_cap", "max_pe", "max_pb", "max_turnover_rate")
+        elif "无可交易标的" in message or "过滤后" in message:
+            # The MCP hard-filter message is intentionally aggregate.  A
+            # narrow max_market_cap/max_pe/max_turnover pool may leave one
+            # symbol which is subsequently rejected for price, liquidity or
+            # trading state.  Relax all *upper* style ceilings in a stable
+            # order instead of stopping after max_price; safety/tradability
+            # floors remain untouched.
+            preferred = (
+                "max_price",
+                "max_market_cap",
+                "max_pe",
+                "max_pb",
+                "max_turnover_rate",
+            )
+        else:
+            preferred = tuple(field for field, _label in _RELAXABLE_EXPLICIT_FILTERS)
+
+        field = next(
+            (
+                candidate
+                for candidate in preferred
+                if candidate not in attempted
+                and (optional_float(relaxed_filters.get(candidate)) or 0) > 0
+            ),
+            None,
+        )
+        if field is None:
+            break
+
+        attempted.add(field)
+        old_value = optional_float(relaxed_filters.get(field))
+        relaxed_filters[field] = 0
+        relaxation = {
+            "reason": "explicit_scope_empty_after_filter",
+            "field": field,
+            "from": old_value,
+            "to": None,
+            "trigger": message,
+        }
+        relaxations.append(relaxation)
+        warnings.append(
+            f"显式板块与{labels[field]}冲突：已将 {field} 从 {old_value:g} 放宽为不限；"
+            "概念/行业、板别、ST、停牌、一字板、最低市值、上市天数和最低流动性保持不变。"
+        )
+
+        payload = await client.rank_factor_candidates(
+            universe_index=input_params.universe_index,
+            trade_date=input_params.trade_date,
+            universe_indices=(
+                _shadow_universe_indices(input_params, config)
+                if _client_supports_tool_feature(
+                    client, "rank_factor_candidates", "multi_index_universe_v1"
+                )
+                else None
+            ),
+            style=profile["investment_style"],
+            limit=_mcp_fetch_limit(input_params),
+            candidate_limit=input_params.candidate_limit,
+            factor_profile=_daily_factor_profile(config, profile),
+            filters=dict(relaxed_filters),
+            sector_prefs=_merged_sector_prefs(input_params, profile),
+            return_factor_snapshot=True,
+            enable_decision=True,
+            max_per_industry=config.get("daily_pipeline_max_per_industry", 2),
+            decision_config=config.get("daily_pipeline_decision_config"),
+            progress_callback=progress_callback,
+        )
+        if payload_rows(payload):
+            break
+        if (payload or {}).get("status") != "error":
+            break
+
+    return payload, warnings, relaxations
 
 
 async def _rank_candidates_with_previous_universe(
@@ -443,6 +824,8 @@ async def _rank_candidates_with_previous_universe(
     input_params: DailyPipelineInput,
     profile: dict[str, Any],
     config: dict[str, Any] | None = None,
+    *,
+    rank_filters: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     config = config or {}
     fallback_dates = _fallback_universe_dates(input_params.trade_date)
@@ -450,16 +833,19 @@ async def _rank_candidates_with_previous_universe(
         payload = await client.rank_factor_candidates(
             universe_index=input_params.universe_index,
             trade_date=fallback_date,
+            universe_indices=(
+                _shadow_universe_indices(input_params, config)
+                if _client_supports_tool_feature(
+                    client, "rank_factor_candidates", "multi_index_universe_v1"
+                )
+                else None
+            ),
             style=profile["investment_style"],
             limit=_mcp_fetch_limit(input_params),
             candidate_limit=input_params.candidate_limit,
-            factor_profile=factor_profile_for_style(profile["investment_style"]),
-            filters=default_filters(
-                board_filter=input_params.board_filter,
-                exclude_boards=input_params.exclude_boards,
-                config=config,
-            ),
-            sector_prefs=profile.get("sector_prefs") or [],
+            factor_profile=_daily_factor_profile(config, profile),
+            filters=rank_filters or _daily_filters(input_params, config),
+            sector_prefs=_merged_sector_prefs(input_params, profile),
             return_factor_snapshot=True,
             enable_decision=True,
             max_per_industry=config.get("daily_pipeline_max_per_industry", 2),
@@ -510,9 +896,295 @@ def _is_universe_empty(message: Any) -> bool:
     return "UNIVERSE_EMPTY" in text or "成分股为空" in text
 
 
+def _is_candidate_empty(value: Any) -> bool:
+    text = str(value)
+    return _is_universe_empty(value) or any(
+        marker in text
+        for marker in (
+            "FILTER_EMPTY",
+            "无候选股票",
+            "无候选标的",
+            "无可交易标的",
+            "预筛后无候选",
+            "预筛后无股票",
+        )
+    )
+
+
 def _mcp_fetch_limit(input_params: DailyPipelineInput) -> int:
-    """Fetch a wider pool so local board/industry filters can still fill the final limit."""
+    """Fetch a wider pool so local board/industry filters can still fill the final limit.
+
+    With an industry restriction the pool must be as deep as possible: the MCP
+    ranking is market-wide, so a single industry may only hold a handful of
+    rows even in the full candidate pool.
+    """
+    if input_params.industries or input_params.concepts or input_params.industry_codes:
+        return input_params.candidate_limit
     return min(input_params.candidate_limit, max(input_params.limit * 8, input_params.limit + 20))
+
+
+def _daily_factor_profile(config: dict[str, Any], profile: dict[str, Any]) -> str:
+    """Resolve the MCP factor contract used by the daily pipeline.
+
+    The v2 name is intentionally configuration-driven so an operator can
+    revert to the legacy style profile without code changes while shadow
+    evidence accumulates.
+    """
+    configured = str(config.get("daily_pipeline_factor_profile") or "daily_pipeline_v2").strip()
+    if configured:
+        return configured
+    return factor_profile_for_style(str(profile.get("investment_style") or "medium_term"))
+
+
+def _shadow_universe_indices(
+    input_params: DailyPipelineInput,
+    config: dict[str, Any],
+) -> list[str]:
+    configured = (
+        input_params.shadow_universe_indices
+        or config.get("daily_pipeline_shadow_universe_indices")
+        or []
+    )
+    core = str(input_params.universe_index).strip().upper()
+    return list(dict.fromkeys(
+        str(index).strip().upper()
+        for index in configured
+        if str(index).strip() and str(index).strip().upper() != core
+    ))
+
+
+# Compatibility aliases retained for tests and older imports. Resolution itself
+# lives in core.industry_taxonomy so Market and DailyPipeline cannot drift.
+_INDUSTRY_L1_SYNONYMS: dict[str, str] = {
+    alias: groups[0]
+    for alias, groups in INDUSTRY_SELECTION_ALIASES
+    if len(groups) == 1
+}
+
+
+def _expand_industry_terms(keyword: str) -> list[str]:
+    """Return the keyword plus any SW L1 group it maps to."""
+    return expand_industry_selection_terms(keyword)
+
+
+# SW2021 申万一级行业全集。用于判断行业词能否翻译成 MCP 认识的精确 L1 名：
+# MCP 的 filters.include_industries 是精确 set 匹配，混入非 L1 词会把池子筛空。
+_SW_L1_NAMES = SW_L1_INDUSTRIES
+
+
+def _resolve_sw_l1(keyword: str) -> list[str]:
+    """Translate one industry word into SW L1 names ([] when unresolvable)."""
+    return resolve_sw_l1_industries(keyword)
+
+
+def _mcp_include_industries(input_params: DailyPipelineInput) -> list[str]:
+    """SW L1 names for MCP ``filters.include_industries``.
+
+    Only push the filter down when EVERY requested keyword translates to a
+    valid SW L1 name; a partial translation would over-filter at the MCP
+    (exact match) while the local substring fallback could still hit. When
+    this returns [], filtering stays local via _restrict_rows_to_industries.
+    """
+    keywords = [str(k).strip() for k in input_params.industries if str(k).strip()]
+    if not keywords:
+        return []
+    resolved: list[str] = []
+    for kw in keywords:
+        groups = _resolve_sw_l1(kw)
+        if not groups:
+            return []
+        for group in groups:
+            if group not in resolved:
+                resolved.append(group)
+    return resolved
+
+
+def _daily_filters(
+    input_params: DailyPipelineInput,
+    config: dict[str, Any],
+    *,
+    include_symbols: list[str] | None = None,
+    taxonomy_supported: bool = False,
+) -> dict[str, Any]:
+    """MCP filters with exact symbols/codes preferred over Chinese-name proxies."""
+    filters = default_filters(
+        board_filter=input_params.board_filter,
+        exclude_boards=input_params.exclude_boards,
+        config=config,
+    )
+    symbols = list(dict.fromkeys(include_symbols or []))
+    if symbols:
+        filters.pop("include_industries", None)
+        filters.pop("include_industry_codes", None)
+        filters.pop("industry_taxonomy", None)
+        filters.pop("industry_level", None)
+        filters["include_symbols"] = symbols
+    elif input_params.industry_codes and input_params.industry_taxonomy and taxonomy_supported:
+        filters.pop("include_industries", None)
+        filters["industry_taxonomy"] = input_params.industry_taxonomy
+        filters["industry_level"] = input_params.industry_level or "L1"
+        filters["include_industry_codes"] = list(dict.fromkeys(
+            str(code).strip() for code in input_params.industry_codes if str(code).strip()
+        ))
+    else:
+        include = _mcp_include_industries(input_params)
+        if include:
+            filters["include_industries"] = include
+    return filters
+
+
+def _client_supports_tool_feature(client: Any, tool: str, feature: str) -> bool:
+    """Feature detection that remains compatible with lightweight test/legacy clients."""
+    supports = getattr(client, "supports_tool_feature", None)
+    if not callable(supports):
+        return False
+    try:
+        return bool(supports(tool, feature))
+    except Exception:
+        return False
+
+
+def _resolve_concept_symbol_filter(
+    input_params: DailyPipelineInput,
+) -> tuple[list[str], list[str]]:
+    """Resolve every requested concept or atomically fall back to industries."""
+    concepts = [str(item).strip() for item in input_params.concepts if str(item).strip()]
+    if not concepts:
+        return [], []
+    from tradingagents.dataflows.akshare_cn_specific import get_concept_constituents
+
+    symbols: list[str] = []
+    warnings: list[str] = []
+    for concept in concepts:
+        payload = get_concept_constituents(concept)
+        resolved = [
+            str(row.get("ts_code") or "").strip().upper()
+            for row in payload.get("rows") or []
+            if str(row.get("ts_code") or "").strip()
+        ]
+        if not resolved:
+            fallback = "/".join(_mcp_include_industries(input_params)) or "无可用行业代理"
+            warnings.append(
+                f"Concept constituents unavailable ({concept}); exact selection disabled, "
+                f"fell back to MCP industry scope: {fallback}."
+            )
+            return [], warnings
+        for symbol in resolved:
+            if symbol not in symbols:
+                symbols.append(symbol)
+        warnings.append(
+            f"Concept constituents resolved ({concept}): {len(resolved)} current members "
+            f"via {payload.get('source') or 'unknown'}; membership snapshot is not point-in-time."
+        )
+    return symbols, warnings
+
+
+def _merged_sector_prefs(
+    input_params: DailyPipelineInput, profile: dict[str, Any]
+) -> list[str]:
+    """Explicit industry restriction (plus SW L1 expansion) first, then profile prefs."""
+    merged: list[str] = []
+    expanded_industries = [
+        term for kw in input_params.industries for term in _expand_industry_terms(str(kw).strip())
+    ]
+    for item in [*expanded_industries, *(profile.get("sector_prefs") or [])]:
+        text = str(item).strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
+def _attach_fine_industry(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Annotate rows with TuShare 细分行业 (``industry_detail``), best-effort.
+
+    MCP 的 industry 字段是申万一级口径；这里额外标注一层更细的
+    TuShare 行业（半导体/元器件...）供展示与精细化过滤，拉不到
+    映射时静默跳过，不影响既有链路。
+    """
+    if not rows:
+        return rows
+    try:
+        from tradingagents.dataflows.tushare_common import get_fine_industry_map
+
+        mapping = get_fine_industry_map()
+    except Exception:
+        return rows
+    if not mapping:
+        return rows
+    for row in rows:
+        code = str(row.get("ts_code") or row.get("symbol") or "").strip().upper()
+        detail = mapping.get(code)
+        if detail:
+            row["industry_detail"] = detail
+    return rows
+
+
+def _restrict_rows_to_industries(
+    rows: list[dict[str, Any]],
+    input_params: DailyPipelineInput,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Hard-filter rows to the requested industry keywords.
+
+    Two tiers: the coarse tier is bidirectional-substring over the keyword
+    AND its 申万一级 expansion (the MCP industry field carries SW L1 names,
+    so “半导体设备” must also match rows labelled “电子”). The fine tier
+    additionally matches the raw keywords against ``industry_detail``
+    (TuShare 细分行业); when enough fine matches exist they replace the
+    coarse pool, otherwise they are ranked first and backfilled from it.
+    Rows without an industry field never match a restriction.
+    """
+    keywords = [str(k).strip() for k in input_params.industries if str(k).strip()]
+    if not keywords:
+        return rows, []
+    expanded = {kw: _expand_industry_terms(kw) for kw in keywords}
+    fine_kept: list[dict[str, Any]] = []
+    coarse_kept: list[dict[str, Any]] = []
+    for row in rows:
+        text = str(row.get("industry") or row.get("theme") or "").strip()
+        if not text or not any(
+            term in text or text in term
+            for terms in expanded.values()
+            for term in terms
+        ):
+            continue
+        detail = str(row.get("industry_detail") or "").strip()
+        if detail and any(kw in detail or detail in kw for kw in keywords):
+            fine_kept.append(row)
+        else:
+            coarse_kept.append(row)
+    if fine_kept and len(fine_kept) >= input_params.limit:
+        kept = fine_kept
+    else:
+        kept = [*fine_kept, *coarse_kept]
+    applied = "; ".join(
+        kw if len(terms) == 1 else f"{kw}→{'/'.join(terms[1:])}"
+        for kw, terms in expanded.items()
+    )
+    warnings = [
+        f"Industry restriction applied ({applied}); "
+        f"kept {len(kept)} of {len(rows)} candidates."
+    ]
+    if fine_kept and len(fine_kept) >= input_params.limit:
+        warnings.append(
+            f"Fine-grained industry match ({'/'.join(keywords)}): "
+            f"{len(fine_kept)} candidates; dropped {len(coarse_kept)} broader SW L1 rows."
+        )
+    elif fine_kept:
+        warnings.append(
+            f"Fine-grained industry match ({'/'.join(keywords)}) found only "
+            f"{len(fine_kept)} candidate(s); ranked first, backfilled from the SW L1 pool."
+        )
+    if not kept:
+        warnings.append(
+            "No candidates matched the industry restriction; "
+            "try a broader keyword or drop the restriction."
+        )
+    elif len(kept) < input_params.limit:
+        warnings.append(
+            f"Industry restriction left only {len(kept)} candidates for requested limit "
+            f"{input_params.limit}."
+        )
+    return kept, warnings
 
 
 def _filter_rows_by_board(
@@ -582,6 +1254,11 @@ def _limit_rows_by_industry(
     input_params: DailyPipelineInput,
     config: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    # An explicit industry restriction contradicts the diversity cap: the user
+    # wants N stocks from ONE industry, so capping per-industry slots would
+    # silently shrink the result below the requested limit.
+    if input_params.industries or input_params.concepts or input_params.industry_codes:
+        return rows, []
     max_per_industry = int(config.get("daily_pipeline_max_per_industry", 2) or 0)
     if max_per_industry <= 0:
         return rows, []
@@ -853,6 +1530,10 @@ def _reflection_snapshot(
         "strategy_lesson_hits",
         "lesson_adjustment_reason",
         "deep_analysis",
+        "selection_alignment",
+        "pre_deep_final_decision",
+        "pre_deep_action_plan",
+        "deep_analysis_review_required",
     ]
     snapshot = {key: candidate.get(key) for key in keys if key in candidate}
     # Record the run's investment style so the prediction scorecard can bucket
@@ -893,6 +1574,11 @@ def _save_daily_pipeline_artifacts(
         "universe_index": input_params.universe_index,
         "board_filter": input_params.board_filter,
         "exclude_boards": input_params.exclude_boards,
+        "industries": input_params.industries,
+        "concepts": input_params.concepts,
+        "industry_taxonomy": input_params.industry_taxonomy,
+        "industry_level": input_params.industry_level,
+        "industry_codes": input_params.industry_codes,
         "warnings": warnings,
         "quant_meta": quant_meta,
         "signal_result": signal_result,
@@ -1042,22 +1728,48 @@ async def _apply_deep_analysis(
         analysis_skill = StockAnalysisSkill()
 
     warnings: list[str] = []
+    timeout_seconds = max(
+        1.0,
+        float(config.get("daily_pipeline_deep_analysis_timeout_seconds", 300.0) or 300.0),
+    )
     for candidate in candidates[:limit]:
         symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "").strip()
         if not symbol:
             continue
         selection_context = _selection_context_for(candidate, input_params.trade_date)
         try:
-            conclusion = await _run_deep_analysis_once(
-                analysis_skill, symbol, input_params.trade_date, selection_context, config
+            conclusion = await asyncio.wait_for(
+                _run_deep_analysis_once(
+                    analysis_skill, symbol, input_params.trade_date, selection_context, config
+                ),
+                timeout=timeout_seconds,
             )
+        except asyncio.TimeoutError:
+            meta["failed"] = int(meta["failed"]) + 1
+            warnings.append(
+                f"Deep analysis timed out for {symbol} after {timeout_seconds:.0f}s."
+            )
+            logger.warning(
+                "Daily pipeline deep analysis timed out for %s after %.0fs",
+                symbol,
+                timeout_seconds,
+            )
+            continue
         except Exception as exc:  # best-effort: one failure must not abort the batch
             meta["failed"] = int(meta["failed"]) + 1
             warnings.append(f"Deep analysis failed for {symbol}: {exc}")
             logger.warning("Daily pipeline deep analysis failed for %s: %s", symbol, exc)
             continue
         if conclusion:
+            alignment = reconcile_selection_analysis(
+                selection_context,
+                conclusion,
+                analysis_date=input_params.trade_date,
+            )
+            conclusion["selection_alignment"] = alignment
             candidate["deep_analysis"] = conclusion
+            candidate["selection_alignment"] = alignment
+            _apply_deep_analysis_safety_gate(candidate, alignment)
             meta["analyzed"] = int(meta["analyzed"]) + 1
             meta["symbols"].append(symbol)
     meta["available"] = int(meta["analyzed"]) > 0
@@ -1102,12 +1814,70 @@ def _selection_context_for(candidate: dict[str, Any], trade_date: str) -> dict[s
         "final_decision": candidate.get("final_decision") or candidate.get("signal"),
         "display_score": candidate.get("display_score") or candidate.get("final_score"),
         "quant_score": candidate.get("quant_score"),
-        "entry_zone": action_plan.get("entry_zone"),
-        "stop_loss": action_plan.get("stop_loss"),
-        "targets": action_plan.get("targets"),
+        "quant_decision": candidate.get("quant_decision"),
+        "llm_score": candidate.get("llm_score"),
+        "llm_view": candidate.get("llm_view"),
+        "catalyst_strength": candidate.get("catalyst_strength"),
+        "risk_assessment": candidate.get("risk_assessment"),
+        "score_confidence": candidate.get("score_confidence"),
+        "factor_scores": candidate.get("factor_scores"),
+        "data_coverage": candidate.get("data_coverage"),
+        "quant_gate_reasons": candidate.get("quant_gate_reasons"),
+        "gate_reasons": candidate.get("gate_reasons"),
+        "risk_flags": candidate.get("risk_flags"),
+        "key_catalysts": candidate.get("key_catalysts"),
+        "key_risks": candidate.get("key_risks"),
+        "entry_zone": candidate.get("entry_zone") or action_plan.get("entry_zone"),
+        "stop_loss": candidate.get("stop_loss") or action_plan.get("stop_loss"),
+        "targets": (
+            candidate.get("targets")
+            or action_plan.get("targets")
+            or action_plan.get("take_profit")
+        ),
         "action_plan": action_plan,
         "reasoning": candidate.get("reasoning") or candidate.get("rationale"),
         "trade_date": candidate.get("price_trade_date") or trade_date,
+    }
+
+
+def _apply_deep_analysis_safety_gate(
+    candidate: dict[str, Any],
+    alignment: dict[str, Any],
+) -> None:
+    """Prevent a deep-analysis conflict from silently retaining a BUY action.
+
+    Deep analysis may never auto-promote a non-BUY selection.  When it removes
+    conviction from an existing BUY, the candidate is deterministically moved
+    to HOLD_REVIEW and its executable sizing/levels are suspended.  The prior
+    plan is retained for audit and compare replay.
+    """
+    if not alignment.get("requires_review"):
+        return
+
+    current = str(candidate.get("final_decision") or candidate.get("signal") or "").upper()
+    candidate["pre_deep_final_decision"] = current or None
+    candidate["deep_analysis_review_required"] = True
+    reasons = list(candidate.get("gate_reasons") or [])
+    marker = f"deep_analysis_conflict:{alignment.get('analysis_rating') or 'unknown'}"
+    if marker not in reasons:
+        reasons.append(marker)
+    candidate["gate_reasons"] = reasons
+
+    # Never promote WATCHLIST/MONITOR/SKIP from a deep LLM pass. They remain in
+    # their already-safe state but carry the explicit review marker.
+    if current != "BUY":
+        return
+
+    candidate["pre_deep_action_plan"] = candidate.get("action_plan")
+    candidate["final_decision"] = "HOLD_REVIEW"
+    candidate["signal"] = "HOLD_REVIEW"
+    candidate["decision_stage"] = "deep_analysis_reconciliation"
+    candidate["position_pct"] = 0.0
+    candidate["action_plan"] = {
+        "entry_condition": "深度分析与选股 BUY 结论不一致，暂停建仓并等待复核",
+        "position_pct": 0.0,
+        "stop_loss": None,
+        "take_profit": None,
     }
 
 
@@ -1126,6 +1896,7 @@ def _candidate_cards(candidates: list[dict[str, Any]], *, include_llm: bool) -> 
             "symbol": item.get("symbol"),
             "name": item.get("name"),
             "industry": item.get("industry"),
+            "industry_detail": item.get("industry_detail"),
             "board": item.get("board"),
             "rank": item.get("rank"),
             "quant_score": item.get("quant_score"),
@@ -1141,6 +1912,15 @@ def _candidate_cards(candidates: list[dict[str, Any]], *, include_llm: bool) -> 
             "data_coverage": item.get("data_coverage"),
             "quant_gate_reasons": item.get("quant_gate_reasons"),
             "warnings": item.get("warnings"),
+            # 价格与交易计划：前端 TradePlanBlock 依赖这些字段，不透传会
+            # 被渲染成“数据源缺失/未生成”。
+            "latest_price": item.get("latest_price"),
+            "close": item.get("close"),
+            "price_trade_date": item.get("price_trade_date"),
+            "price_source": item.get("price_source"),
+            "entry_zone": item.get("entry_zone"),
+            "stop_loss": item.get("stop_loss"),
+            "targets": item.get("targets"),
         }
         if include_llm:
             card.update(
@@ -1161,6 +1941,9 @@ def _candidate_cards(candidates: list[dict[str, Any]], *, include_llm: bool) -> 
                     "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
                     "reasoning": item.get("reasoning"),
                     "deep_analysis": item.get("deep_analysis"),
+                    "selection_alignment": item.get("selection_alignment"),
+                    "pre_deep_final_decision": item.get("pre_deep_final_decision"),
+                    "deep_analysis_review_required": item.get("deep_analysis_review_required", False),
                 }
             )
         cards.append(card)
@@ -1185,6 +1968,9 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
             "decision_id": item.get("decision_id"),
             "deep_analysis": item.get("deep_analysis"),
+            "selection_alignment": item.get("selection_alignment"),
+            "pre_deep_final_decision": item.get("pre_deep_final_decision"),
+            "deep_analysis_review_required": item.get("deep_analysis_review_required", False),
         }
         for item in candidates
     ]
@@ -1211,6 +1997,9 @@ def _quant_meta(payload: dict[str, Any] | None, input_params: DailyPipelineInput
         "strategy_meta_available": bool(payload.get("strategy_meta")),
         "selection_meta": payload.get("selection_meta") or {},
         "concentration_meta": payload.get("concentration_meta") or {},
+        "filter_relaxation": payload.get("filter_relaxation") or {},
+        "filter_relaxations": payload.get("filter_relaxations") or [],
+        "empty_scope": payload.get("empty_scope") or {},
     }
 
 
@@ -1286,6 +2075,16 @@ def _render_report(
         f"- Source: **{'StockManager MCP quant ranking' if mcp_used else 'unavailable/demo'}**",
         f"- Factor source: **{FACTOR_DATA_SOURCE if mcp_used else 'demo/unavailable'}**",
     ]
+    if input_params.concepts:
+        lines.append(f"- Exact concept scope: **{' / '.join(input_params.concepts)}**")
+    elif input_params.industries:
+        lines.append(f"- Industry scope: **{' / '.join(input_params.industries)}**")
+        if input_params.industry_codes and input_params.industry_taxonomy:
+            lines.append(
+                f"- Industry taxonomy: **{input_params.industry_taxonomy} "
+                f"{input_params.industry_level or 'L1'}** "
+                f"(`{'`, `'.join(input_params.industry_codes)}`)"
+            )
     if warnings:
         lines.append(f"- Warnings: {'; '.join(warnings)}")
     lines.extend(

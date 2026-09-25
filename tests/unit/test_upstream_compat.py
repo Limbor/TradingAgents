@@ -1,6 +1,9 @@
 from pydantic import BaseModel
 
-from tradingagents.agents.utils.structured import invoke_structured_or_freetext
+from tradingagents.agents.utils.structured import (
+    invoke_structured_or_freetext,
+    invoke_structured_or_freetext_with_model,
+)
 from tradingagents.reporting import write_report_sections, write_report_tree
 
 
@@ -21,6 +24,11 @@ class PlainLLM:
         return Response()
 
 
+class StructuredLLM:
+    def invoke(self, prompt):
+        return DummySchema(value="validated")
+
+
 def test_structured_output_none_falls_back_to_free_text():
     result = invoke_structured_or_freetext(
         NoneStructuredLLM(),
@@ -31,6 +39,19 @@ def test_structured_output_none_falls_back_to_free_text():
     )
 
     assert result == "free text fallback"
+
+
+def test_structured_output_can_be_carried_without_markdown_reparse():
+    text, model = invoke_structured_or_freetext_with_model(
+        StructuredLLM(),
+        PlainLLM(),
+        "prompt",
+        lambda item: f"value={item.value}",
+        "Test Agent",
+    )
+
+    assert text == "value=validated"
+    assert model == DummySchema(value="validated")
 
 
 def test_write_report_sections_creates_tree_and_complete_report(tmp_path):

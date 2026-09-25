@@ -121,6 +121,7 @@ async def audit_backtest_result(client: Any, result: dict[str, Any],
         "min_win_rate": float(config.get("backtest_min_win_rate", 0.45)),
         "max_turnover": float(config.get("backtest_max_turnover", 10.0)),
         "min_oos_sharpe": float(config.get("backtest_min_oos_sharpe", 0.5)),
+        "min_walk_forward_folds": int(config.get("backtest_min_walk_forward_folds", 3)),
     }
     oos_sharpe = _cv_sharpe(cv)
     threshold_checks = {
@@ -131,7 +132,11 @@ async def audit_backtest_result(client: Any, result: dict[str, Any],
         "win_rate": _at_least(enriched.get("win_rate"), thresholds["min_win_rate"]),
         "turnover": _at_most(enriched.get("turnover"), thresholds["max_turnover"]),
         "oos_sharpe": oos_sharpe is not None and oos_sharpe >= thresholds["min_oos_sharpe"],
-        "walk_forward": not walk_forward.get("available") or bool(walk_forward.get("consistent")),
+        "walk_forward": (
+            bool(walk_forward.get("available"))
+            and int(walk_forward.get("n_folds") or 0) >= thresholds["min_walk_forward_folds"]
+            and bool(walk_forward.get("consistent"))
+        ),
     }
     metric_thresholds_passed = all(threshold_checks.values())
     # Execution slippage + ablation contribution are opt-in, best-effort MCP
@@ -186,7 +191,9 @@ def _at_most(value: Any, maximum: float) -> bool:
 
 def _drawdown_within(value: Any, maximum_loss: float) -> bool:
     parsed = _as_float(value)
-    return parsed is not None and parsed >= -abs(maximum_loss)
+    # Providers disagree on whether max drawdown is serialized as -0.20 or
+    # +0.20.  Treat it as a magnitude so neither convention bypasses the gate.
+    return parsed is not None and abs(parsed) <= abs(maximum_loss)
 
 
 def _cv_sharpe(cv: Any) -> float | None:
@@ -263,8 +270,8 @@ def summarize_walk_forward(cv: Any) -> dict[str, Any]:
         summary["positive_fold_ratio"] = round(len(positive) / len(fold_sharpes), 4)
         summary["min_fold_sharpe"] = round(min(fold_sharpes), 4)
         summary["max_fold_sharpe"] = round(max(fold_sharpes), 4)
-        # All folds must clear zero for the walk-forward to be "consistent";
-        # this is informational only (does not gate production readiness).
+        # All folds must clear zero for the walk-forward to be "consistent".
+        # Production readiness fails closed when fold details are absent.
         summary["consistent"] = all(v > 0 for v in fold_sharpes)
     if is_sharpe is not None and oos_sharpe is not None:
         summary["is_sharpe"] = round(is_sharpe, 4)

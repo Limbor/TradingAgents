@@ -141,6 +141,23 @@ def payload_warnings(payload: dict[str, Any] | None) -> list[str]:
     return warnings
 
 
+def payload_error_message(
+    payload: dict[str, Any] | None,
+    fallback: str = "StockManager MCP request failed",
+) -> str:
+    """Extract a human-readable message from the standard MCP error envelope."""
+    if not payload:
+        return fallback
+    error = payload.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        return str(error["message"])
+    if error:
+        return str(error)
+    if payload.get("message"):
+        return str(payload["message"])
+    return fallback
+
+
 def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize MCP quant-rank rows into the Skill candidate shape."""
     symbol = str(row.get("ts_code") or row.get("symbol") or "").upper()
@@ -182,6 +199,11 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "ts_code": symbol,
         "name": str(row.get("name") or symbol),
         "industry": str(row.get("industry") or ""),
+        "industry_code": str(row.get("industry_code") or ""),
+        "industry_taxonomy": str(row.get("industry_taxonomy") or ""),
+        "industry_level": str(row.get("industry_level") or ""),
+        "universe_memberships": [str(item) for item in row.get("universe_memberships") or []],
+        "is_core_universe": bool(row.get("is_core_universe", True)),
         "theme": str(row.get("industry") or row.get("theme") or "综合"),
         "rank": row.get("rank"),
         "board": row.get("board"),
@@ -199,6 +221,11 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "quant_gate_reasons": row.get("gate_reasons") if isinstance(row.get("gate_reasons"), list) else [],
         "universe_percentile": row.get("universe_percentile"),
         "factor_scores": factor_scores,
+        "strategy_scores": (
+            row.get("strategy_scores") if isinstance(row.get("strategy_scores"), dict) else {}
+        ),
+        "active_sleeve": str(row.get("active_sleeve") or ""),
+        "base_factor_score": _float_or(row.get("base_factor_score"), None),
         "factor_snapshot": factor_snapshot,
         "key_metrics": key_metrics,
         "data_coverage": data_coverage,
@@ -218,6 +245,10 @@ def normalize_quant_candidate(row: dict[str, Any]) -> dict[str, Any]:
     if latest_price is not None:
         normalized["latest_price"] = latest_price
         normalized["close"] = latest_price
+    # Requirements doc R2: ranking rows now carry same-day pct_chg directly.
+    pct_chg = _float_or(row.get("pct_chg"), None)
+    if pct_chg is not None:
+        normalized["pct_chg"] = pct_chg
     return normalized
 
 

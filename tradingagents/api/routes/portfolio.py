@@ -1,5 +1,8 @@
 """Portfolio holding endpoints."""
 
+import asyncio
+import uuid
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -31,6 +34,11 @@ class AdjustPositionInput(BaseModel):
     quantity: float = Field(gt=0)
     price: float = Field(gt=0)
     decision_id: str = ""
+    # Generated only for legacy callers. First-party clients always send a
+    # stable key so transport retries are deduplicated.
+    idempotency_key: str = Field(
+        default_factory=lambda: str(uuid.uuid4()), min_length=8, max_length=128
+    )
 
 
 @router.get("/holdings")
@@ -137,78 +145,23 @@ async def adjust_position(request: Request, symbol: str, body: AdjustPositionInp
         raise HTTPException(status_code=400, detail="action must be 'add' or 'reduce'")
     resolved = await resolve_portfolio_symbol_async(symbol)
     db = request.app.state.db
-    holding = db.get_holding(resolved)
-    if holding is None:
-        raise HTTPException(status_code=404, detail="Holding not found")
-    if body.decision_id:
-        decision = db.get_decision_record(body.decision_id)
-        if decision is None:
-            raise HTTPException(status_code=404, detail="Decision not found")
-        if str(decision.get("symbol") or "").upper() != resolved.upper():
-            raise HTTPException(status_code=400, detail="Decision symbol does not match holding")
-
-    old_qty = float(holding.get("quantity") or 0.0)
-    old_avg = float(holding.get("avg_cost") or 0.0)
-    notes = holding.get("notes")
-    qty = body.quantity
-    price = body.price
-
-    def record_execution(realized_pnl: float | None = None) -> dict:
-        import uuid
-        from datetime import datetime, timezone
-
-        execution = db.save_trade_execution(
-            execution_id=str(uuid.uuid4()), decision_id=body.decision_id,
-            symbol=resolved, action=body.action, quantity=qty, price=price,
-            executed_at=datetime.now(timezone.utc).isoformat(),
-            realized_pnl=realized_pnl,
-            payload={"old_quantity": old_qty, "old_avg_cost": old_avg},
+    try:
+        result = await asyncio.to_thread(
+            db.adjust_holding_atomic,
+            symbol=resolved,
+            action=body.action,
+            quantity=body.quantity,
+            price=body.price,
+            decision_id=body.decision_id,
+            idempotency_key=body.idempotency_key,
         )
-        if body.decision_id and db.get_decision_record(body.decision_id):
-            db.update_decision_record(body.decision_id, status="partially_realized")
-        return execution
-
-    if body.action == "reduce" and qty > old_qty:
-        raise HTTPException(status_code=400, detail="减仓数量超过当前持仓数量")
-
-    if body.action == "add":
-        new_qty = old_qty + qty
-        new_avg = (old_qty * old_avg + qty * price) / new_qty if new_qty else price
-        updated = db.upsert_holding(resolved, new_qty, new_avg, price, notes)
-        execution = record_execution()
-        return {
-            "symbol": resolved,
-            "action": "add",
-            "holding": _with_holding_name(db, updated),
-            "realized_pnl": None,
-            "closed": False,
-            "execution": execution,
-        }
-
-    # reduce
-    realized_pnl = qty * (price - old_avg)
-    new_qty = old_qty - qty
-    if new_qty <= 0:
-        db.delete_holding(resolved)
-        execution = record_execution(realized_pnl)
-        return {
-            "symbol": resolved,
-            "action": "reduce",
-            "holding": None,
-            "realized_pnl": realized_pnl,
-            "closed": True,
-            "execution": execution,
-        }
-    updated = db.upsert_holding(resolved, new_qty, old_avg, price, notes)
-    execution = record_execution(realized_pnl)
-    return {
-        "symbol": resolved,
-        "action": "reduce",
-        "holding": _with_holding_name(db, updated),
-        "realized_pnl": realized_pnl,
-        "closed": False,
-        "execution": execution,
-    }
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'")) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409 if isinstance(exc, RuntimeError) else 400, detail=str(exc)) from exc
+    if result.get("holding") is not None:
+        result["holding"] = _with_holding_name(db, result["holding"])
+    return result
 
 
 @router.delete("/holdings/{symbol}")

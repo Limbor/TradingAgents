@@ -12,6 +12,7 @@ from tradingagents.core.signal_fusion import fuse_candidate_signal, quant_eviden
 from tradingagents.core.trading_time import get_temporal_context
 from tradingagents.dataflows.mcp_adapter import (
     normalize_quant_candidate,
+    payload_error_message,
     payload_rows,
     payload_warnings,
 )
@@ -20,7 +21,9 @@ from tradingagents.skills._shared import (
     candidate_rationale,
     default_filters,
     demo_candidates,
+    drive_with_progress,
     factor_profile_for_style,
+    rank_progress_detail,
 )
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
@@ -104,7 +107,31 @@ class MarketScannerSkill(BaseSkill):
 
         temporal_context = get_temporal_context(config, market="cn_a") if input_params.market == "cn_a" else None
         market_asof = temporal_context.market_asof_date if temporal_context else ""
-        candidates, mcp_used, warnings, quant_meta = await _rank_candidates(input_params, config, market_asof)
+        # Stream MCP ranking-job progress (async_mode) into the timeline while
+        # the quant ranking runs; falls back transparently to the sync call.
+        candidates: list[dict[str, Any]] = []
+        mcp_used = False
+        warnings: list[str] = []
+        quant_meta: dict[str, Any] = {}
+        async for kind, value in drive_with_progress(
+            lambda on_progress: _rank_candidates(
+                input_params, config, market_asof, progress_callback=on_progress
+            )
+        ):
+            if kind == "progress":
+                pct = value.get("progress_pct")
+                yield skill_progress(
+                    stage_id="quant_rank",
+                    stage_label="量化候选池排名",
+                    status="running",
+                    detail=rank_progress_detail(value),
+                    agent="Market Scanner",
+                    progress_pct=(
+                        25 + float(pct) * 0.3 if isinstance(pct, (int, float)) else None
+                    ),
+                )
+            else:
+                candidates, mcp_used, warnings, quant_meta = value
         yield skill_progress(
             stage_id="quant_rank",
             stage_label="量化候选池排名",
@@ -239,6 +266,7 @@ async def _rank_candidates(
     input_params: MarketScannerInput,
     config: dict[str, Any],
     market_asof_date: str,
+    progress_callback: Any = None,
 ) -> tuple[list[dict[str, Any]], bool, list[str], dict[str, Any]]:
     if input_params.market == "us":
         candidates = [_score_us_sample(item) for item in _US_SAMPLE_UNIVERSE]
@@ -248,7 +276,7 @@ async def _rank_candidates(
     if client is None:
         if config.get("market_scanner_demo_fallback", False):
             return _demo_candidates(), False, ["StockManager MCP 不可用，当前为显式 demo fallback。"], {"source": "demo_fallback"}
-        return [], False, ["StockManager MCP 不可用，已停止真实 A 股筛选。"], {"source": "unavailable"}
+        raise RuntimeError("StockManager MCP 不可用，无法执行真实 A 股筛选")
 
     payload = await client.rank_factor_candidates(
         universe_index=str(config.get("market_scanner_universe_index") or "000906.SH"),
@@ -259,11 +287,15 @@ async def _rank_candidates(
         factor_profile=factor_profile_for_style(str(config.get("investment_style") or "medium_term")),
         filters=default_filters(),
         return_factor_snapshot=True,
+        progress_callback=progress_callback,
     )
     warnings = payload_warnings(payload)
     rows = payload_rows(payload)
     status = (payload or {}).get("status")
-    if status == "error" or not rows:
+    if status == "error":
+        message = payload_error_message(payload, "StockManager 量化排名失败")
+        raise RuntimeError(f"StockManager 量化排名失败：{message}")
+    if not rows:
         message = (payload or {}).get("message") or "StockManager returned no ranked candidates."
         return [], True, [*warnings, str(message)], _quant_meta(payload)
 

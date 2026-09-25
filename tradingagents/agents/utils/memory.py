@@ -1,9 +1,24 @@
 """Append-only markdown decision log for TradingAgents."""
 
 import re
+import tempfile
+import threading
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 
 from tradingagents.agents.utils.rating import parse_rating
+
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _synchronized(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._file_lock():
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class TradingMemoryLog:
@@ -27,6 +42,7 @@ class TradingMemoryLog:
 
     # --- Write path (Phase A) ---
 
+    @_synchronized
     def store_decision(
         self,
         ticker: str,
@@ -50,6 +66,7 @@ class TradingMemoryLog:
 
     # --- Read path (Phase A) ---
 
+    @_synchronized
     def load_entries(self) -> list[dict]:
         """Parse all entries from log. Returns list of dicts."""
         if not self._log_path or not self._log_path.exists():
@@ -96,6 +113,7 @@ class TradingMemoryLog:
 
     # --- Update path (Phase B) ---
 
+    @_synchronized
     def update_with_outcome(
         self,
         ticker: str,
@@ -157,10 +175,9 @@ class TradingMemoryLog:
 
         new_blocks = self._apply_rotation(new_blocks)
         new_text = self._SEPARATOR.join(new_blocks)
-        tmp_path = self._log_path.with_suffix(".tmp")
-        tmp_path.write_text(new_text, encoding="utf-8")
-        tmp_path.replace(self._log_path)
+        self._atomic_write(new_text)
 
+    @_synchronized
     def batch_update_with_outcomes(self, updates: list[dict]) -> None:
         """Apply multiple outcome updates in a single read + atomic write.
 
@@ -211,11 +228,45 @@ class TradingMemoryLog:
 
         new_blocks = self._apply_rotation(new_blocks)
         new_text = self._SEPARATOR.join(new_blocks)
-        tmp_path = self._log_path.with_suffix(".tmp")
-        tmp_path.write_text(new_text, encoding="utf-8")
-        tmp_path.replace(self._log_path)
+        self._atomic_write(new_text)
 
     # --- Helpers ---
+
+    @contextmanager
+    def _file_lock(self):
+        """Serialize readers/writers across threads and local processes."""
+        if self._log_path is None:
+            yield
+            return
+        key = str(self._log_path.resolve())
+        with _PATH_LOCKS_GUARD:
+            lock = _PATH_LOCKS.setdefault(key, threading.RLock())
+        with lock:
+            lock_path = self._log_path.with_suffix(self._log_path.suffix + ".lock")
+            with open(lock_path, "a+", encoding="utf-8") as lock_file:
+                try:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                except ImportError:  # pragma: no cover - Windows fallback
+                    fcntl = None
+                try:
+                    yield
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _atomic_write(self, text: str) -> None:
+        """Write through a unique same-directory temp file then atomically replace."""
+        assert self._log_path is not None
+        # Clean up the fixed-name temp used by older releases.
+        self._log_path.with_suffix(".tmp").unlink(missing_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=self._log_path.parent,
+            prefix=f".{self._log_path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            handle.write(text)
+            temp_path = Path(handle.name)
+        temp_path.replace(self._log_path)
 
     def _apply_rotation(self, blocks: list[str]) -> list[str]:
         """Drop oldest resolved blocks when their count exceeds max_entries.

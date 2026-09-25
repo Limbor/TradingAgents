@@ -36,6 +36,12 @@ class CandidateLLMReview(BaseModel):
     key_risks: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     reasoning: str = ""
+    llm_score: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Directional score: 0 strongly bearish, 50 neutral, 100 strongly bullish.",
+    )
     llm_confidence: float | None = Field(default=None, ge=0, le=100)
     catalyst_score: float | None = Field(default=None, ge=0, le=100)
 
@@ -65,6 +71,7 @@ class CandidateLLMReview(BaseModel):
 
     def as_fusion_payload(self) -> dict[str, Any]:
         return {
+            "llm_score": self.llm_score,
             "llm_confidence": self.llm_confidence,
             "llm_view": self.llm_view,
             "catalyst_strength": self.catalyst_strength,
@@ -266,6 +273,7 @@ def _build_prompt(
   "key_risks": ["..."],
   "risk_flags": ["..."],
   "reasoning": "一句话（≤60字）说明量化信号仍成立/需观察/应被否定，及对应决策门控倾向",
+  "llm_score": 0-100,
   "llm_confidence": 0-100,
   "catalyst_score": 0-100
 }}
@@ -275,6 +283,8 @@ def _build_prompt(
 - 如果量化高分主要来自单一动量且风险控制/波动/回撤偏弱，降低 llm_confidence。
 - 如果 ST、停牌、一字涨跌停、重大风险标记、因子缺失严重，设置 risk_override 或 invalidates_quant。
 - 没有明确催化剂时不要为了迎合买入而给高置信度。
+- llm_score 是方向分：0=强烈看空、50=中性、100=强烈看多；必须与 llm_view 一致。
+- llm_confidence 是对上述判断可靠性的把握，不代表看多程度；高置信度看空时应是低 llm_score、高 llm_confidence。
 - 如果有重大利空公告（退市预警、业绩暴雷、违规处罚、问询函），应设置 risk_override=true。
 - 如果有明确利好催化（重组、增持、业绩超预期），可上调 catalyst_score 和 llm_confidence。
 - 估值分位 > 80% 且无强催化 → risk_assessment 至少 high。

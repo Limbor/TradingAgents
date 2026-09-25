@@ -424,7 +424,8 @@ class TradingAgentsGraph:
             self.graph = self.workflow.compile(checkpointer=saver)
 
             step = checkpoint_step(
-                self.config["data_cache_dir"], company_name, str(trade_date)
+                self.config["data_cache_dir"], company_name, str(trade_date),
+                str(self.config.get("checkpoint_run_id") or self.config.get("run_id") or "") or None,
             )
             if step is not None:
                 logger.info(
@@ -461,7 +462,10 @@ class TradingAgentsGraph:
 
         # Inject thread_id so same ticker+date resumes, different date starts fresh.
         if self.config.get("checkpoint_enabled"):
-            tid = thread_id(company_name, str(trade_date))
+            checkpoint_run_id = str(
+                self.config.get("checkpoint_run_id") or self.config.get("run_id") or ""
+            ) or None
+            tid = thread_id(company_name, str(trade_date), checkpoint_run_id)
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
         if self.debug:
@@ -496,7 +500,8 @@ class TradingAgentsGraph:
         # Clear checkpoint on successful completion to avoid stale state.
         if self.config.get("checkpoint_enabled"):
             clear_checkpoint(
-                self.config["data_cache_dir"], company_name, str(trade_date)
+                self.config["data_cache_dir"], company_name, str(trade_date),
+                str(self.config.get("checkpoint_run_id") or self.config.get("run_id") or "") or None,
             )
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
@@ -531,6 +536,7 @@ class TradingAgentsGraph:
             },
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
+            "structured_portfolio_decision": final_state.get("structured_portfolio_decision"),
         }
 
         # Save to file. Reject ticker values that would escape the
@@ -608,9 +614,14 @@ class TradingAgentsGraph:
             checkpointer_ctx = get_checkpointer(self.config["data_cache_dir"], ticker)
             saver = checkpointer_ctx.__enter__()
             graph = workflow.compile(checkpointer=saver)
-            tid = thread_id(ticker, str(date))
+            checkpoint_run_id = str(
+                self.config.get("checkpoint_run_id") or self.config.get("run_id") or ""
+            ) or None
+            tid = thread_id(ticker, str(date), checkpoint_run_id)
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
-            step = checkpoint_step(self.config["data_cache_dir"], ticker, str(date))
+            step = checkpoint_step(
+                self.config["data_cache_dir"], ticker, str(date), checkpoint_run_id
+            )
             if step is not None:
                 logger.info("Resuming from step %d for %s on %s (streaming)", step, ticker, date)
             else:
@@ -620,6 +631,7 @@ class TradingAgentsGraph:
 
         seen_agents = set()
         final_sections: dict[str, str] = {}
+        structured_portfolio_decision: dict[str, Any] | None = None
 
         try:
             async for event in graph.astream_events(
@@ -646,6 +658,9 @@ class TradingAgentsGraph:
                     # Extract report sections from the node's output
                     output = data.get("output")
                     if isinstance(output, dict):
+                        raw_decision = output.get("structured_portfolio_decision")
+                        if isinstance(raw_decision, dict):
+                            structured_portfolio_decision = raw_decision
                         for key in REPORT_KEYS:
                             if key in output and output[key]:
                                 final_sections[key] = output[key]
@@ -675,6 +690,7 @@ class TradingAgentsGraph:
                         "sections": final_sections,
                         "ticker": ticker,
                         "date": date,
+                        "structured_portfolio_decision": structured_portfolio_decision,
                     },
                 }
 
@@ -688,7 +704,9 @@ class TradingAgentsGraph:
 
             # Clear checkpoint on successful completion to avoid stale state.
             if checkpointer_ctx is not None:
-                clear_checkpoint(self.config["data_cache_dir"], ticker, str(date))
+                clear_checkpoint(
+                    self.config["data_cache_dir"], ticker, str(date), checkpoint_run_id
+                )
         finally:
             if checkpointer_ctx is not None:
                 checkpointer_ctx.__exit__(None, None, None)

@@ -215,6 +215,38 @@ def test_primary_outcome_reflects_while_long_horizons_keep_tracking(tmp_path, mo
     assert {row["horizon_days"] for row in db.list_decision_outcomes(decision_id=decision["id"])} == {1, 5}
 
 
+def test_manual_audit_can_evaluate_primary_horizon_only(tmp_path, monkeypatch):
+    db = Database(tmp_path / "primary-only.db")
+    seed_decision(db, day="2025-01-02")
+    engine = DecisionAuditEngine(db, {})
+    fetched_horizons: list[int] = []
+
+    async def outcome(_symbol, _day, horizon):
+        fetched_horizons.append(horizon)
+        return {
+            "actual_return": 0.02,
+            "close_at_signal": 100,
+            "close_at_horizon": 102,
+            "source": "fixture",
+        }
+
+    async def benchmark(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(engine.reflection, "fetch_outcome", outcome)
+    monkeypatch.setattr(engine, "_fetch_benchmark", benchmark)
+    result = asyncio.run(engine.evaluate_due(
+        as_of_date="2025-03-01",
+        horizons=(),
+        include_standard_horizons=False,
+    ))
+
+    assert fetched_horizons == [5]
+    assert result["attempted_outcomes"] == 1
+    assert result["due_records"] == 1
+    assert result["evaluated_outcomes"] == 1
+
+
 def test_decision_audit_api_and_confirmed_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "api.db"))
     monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
@@ -277,7 +309,8 @@ def test_backtest_job_submission_and_recovery(tmp_path, monkeypatch):
                     "equity_curve": [{"date": "2024-01-01", "value": 1.0}]}
 
         async def compute_purged_cv_sharpe(self, equity_curve, n_splits, purge_days):
-            return {"mean_sharpe": 0.9, "splits": n_splits, "purge_days": purge_days}
+            return {"mean_sharpe": 0.9, "fold_sharpes": [0.7, 0.9, 1.1],
+                    "splits": n_splits, "purge_days": purge_days}
 
     async def get_client(_config):
         return MCP()
@@ -398,7 +431,7 @@ def test_strategy_backtest_skill_persists_audited_sync_result(tmp_path, monkeypa
                     "equity_curve": [{"date": "2024-01-01", "value": 1.0}]}
 
         async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
-            return {"mean_sharpe": 0.8}
+            return {"mean_sharpe": 0.8, "fold_sharpes": [0.6, 0.8, 1.0]}
 
     async def get_client(_config):
         return MCP()
@@ -424,7 +457,7 @@ def test_strategy_backtest_skill_persists_audited_sync_result(tmp_path, monkeypa
 def test_backtest_gate_rejects_missing_provenance_and_lookahead_evidence():
     class MCP:
         async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
-            return {"mean_sharpe": 1.0}
+            return {"mean_sharpe": 1.0, "fold_sharpes": [0.8, 1.0, 1.2]}
 
     result = asyncio.run(audit_backtest_result(
         MCP(),
@@ -525,6 +558,46 @@ def test_summarize_walk_forward_graceful_without_folds():
     assert summary["n_folds"] == 0
 
 
+def test_backtest_gate_fails_closed_without_walk_forward_folds():
+    class MCP:
+        async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
+            return {"mean_sharpe": 1.0}
+
+    result = asyncio.run(audit_backtest_result(
+        MCP(),
+        {"total_return": 0.1, "alpha": 0.02,
+         "max_drawdown": -0.1, "sharpe": 1.0,
+         "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
+         "data_version": "v1", "lookahead_bias_check_passed": True,
+         "survivorship_bias_check_passed": True,
+         "transaction_cost_bps": 10, "slippage_bps": 5,
+         "equity_curve": [{"date": "2024-01-01", "value": 1.0}]},
+        {},
+    ))
+    assert result["validation"]["threshold_checks"]["walk_forward"] is False
+    assert result["validation"]["production_gate_passed"] is False
+
+
+def test_backtest_gate_normalizes_positive_drawdown_magnitude():
+    class MCP:
+        async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
+            return {"mean_sharpe": 1.0, "fold_sharpes": [0.8, 1.0, 1.2]}
+
+    result = asyncio.run(audit_backtest_result(
+        MCP(),
+        {"total_return": 0.1, "alpha": 0.02,
+         "max_drawdown": 0.4, "sharpe": 1.0,
+         "win_rate": 0.5, "turnover": 1.0, "source": "stockmanager",
+         "data_version": "v1", "lookahead_bias_check_passed": True,
+         "survivorship_bias_check_passed": True,
+         "transaction_cost_bps": 10, "slippage_bps": 5,
+         "equity_curve": [{"date": "2024-01-01", "value": 1.0}]},
+        {"backtest_max_drawdown": 0.25},
+    ))
+    assert result["validation"]["threshold_checks"]["max_drawdown"] is False
+    assert result["validation"]["production_gate_passed"] is False
+
+
 def test_audit_attaches_walk_forward_slippage_and_ablation():
     """When the result carries trades and the config declares ablations, the
     audit surfaces execution slippage + ablation contribution alongside the
@@ -577,7 +650,7 @@ def test_audit_skips_addons_without_inputs_or_support():
     core gate is unaffected (backward compatible with plain MCP mocks)."""
     class MCP:
         async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
-            return {"mean_sharpe": 1.0}
+            return {"mean_sharpe": 1.0, "fold_sharpes": [0.8, 1.0, 1.2]}
 
     result = asyncio.run(audit_backtest_result(
         MCP(),
@@ -603,7 +676,7 @@ def test_audit_addons_degrade_on_non_dict_mcp_result():
     available=False instead of raising AttributeError on (result or {}).get()."""
     class MCP:
         async def compute_purged_cv_sharpe(self, *_args, **_kwargs):
-            return {"mean_sharpe": 1.0}
+            return {"mean_sharpe": 1.0, "fold_sharpes": [0.8, 1.0, 1.2]}
 
         async def analyze_execution_slippage(self, trades, participation_rates=None):
             return "ok"  # not a dict

@@ -109,3 +109,36 @@ class TestModuleBuckets:
         rate_limiter._config_synced = True  # skip auto-sync
         rate_limiter.acquire_akshare()
         assert fake_clock.t == pytest.approx(t0)
+
+
+@pytest.mark.unit
+class TestAkshareCallTimeout:
+    """akshare_call must never hang: results, errors and stuck sockets."""
+
+    @pytest.fixture(autouse=True)
+    def _no_throttle(self, monkeypatch):
+        from tradingagents.dataflows import akshare_common
+        monkeypatch.setattr(akshare_common, "acquire_akshare", lambda: None)
+        self.mod = akshare_common
+
+    def test_returns_result(self):
+        assert self.mod.akshare_call(lambda x: x + 1, 41) == 42
+
+    def test_wraps_remote_error(self):
+        def boom():
+            raise ValueError("请求太频繁")
+        with pytest.raises(self.mod.AKShareRateLimitError, match="请求太频繁"):
+            self.mod.akshare_call(boom)
+
+    def test_hung_call_times_out(self, monkeypatch):
+        import threading
+        monkeypatch.setattr(self.mod, "_CALL_TIMEOUT", 0.2)
+        release = threading.Event()
+
+        def stuck():
+            # Simulate a socket with no timeout stuck in the network stack.
+            release.wait(5.0)
+
+        with pytest.raises(self.mod.AKShareCallError, match="timed out"):
+            self.mod.akshare_call(stuck)
+        release.set()  # let the leaked worker thread finish promptly

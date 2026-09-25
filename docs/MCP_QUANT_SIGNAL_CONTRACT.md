@@ -4,6 +4,74 @@
 
 目标不是让 TradingAgents 在 Agent 进程内重写量化框架，而是让 MCP 侧提供稳定、可回测、可解释的横截面量化信号；TradingAgents 负责调度、Agent 深度分析、信号融合、前端展示和历史闭环。
 
+## 交易前复核快照（2026-08 增补）
+
+TradingAgents 展开候选详情时按需调用 StockManager MCP 的
+`get_trade_review_snapshot`。StockManager 对以下内容负责：
+
+- 严格按 `trade_date` 截断的 OHLCV，禁止混入信号日后的 K 线；
+- MA5/10/20/60、量比、ATR、波动率和计划价位叠加；
+- 停牌、ST、一字涨跌停等可交易性检查；
+- 确定性的 `actionable | wait | reject` 门控及逐项 checks。
+
+TradingAgents 负责缓存与本地看图降级、量化/LLM/数据覆盖的可靠性融合、
+推荐有效期和计划生命周期。MCP 不可用时只允许返回 `wait`，LLM 可以解释 checks，
+但不得覆写 MCP 的门控结论。候选计划默认 5 个交易日失效；`waiting_trigger` 在行动区
+命中后晋级为 `executable`，超期则转为 `expired`。
+
+### 筹码成本分布（可选增强）
+
+StockManager 可声明 `get_chip_distribution_snapshot`，也可将同结构的
+`chip_profile` 直接包含在 `get_trade_review_snapshot` 中。该能力应在 MCP 侧基于严格
+按 `trade_date` 截断的 OHLC 与换手率计算并缓存，不依赖收费的供应商筹码接口。
+
+```json
+{
+  "ts_code": "600519.SH",
+  "trade_date": "2026-08-07",
+  "lookback_days": 120,
+  "adj_type": "qfq"
+}
+```
+
+响应中的 `chip_profile` 至少包含：
+
+```json
+{
+  "status": "available",
+  "method": "turnover_decay_triangular_v1",
+  "advisory_only": true,
+  "sample_days": 120,
+  "current": {
+    "trade_date": "2026-08-07",
+    "close": 10.8,
+    "avg_cost": 10.1,
+    "profit_ratio": 0.72,
+    "cost_70_low": 9.4,
+    "cost_70_high": 10.5,
+    "concentration_70": 0.0553,
+    "cost_90_low": 8.8,
+    "cost_90_high": 11.2,
+    "concentration_90": 0.12
+  },
+  "trend": {
+    "state": "bullish_confirmed",
+    "confirmation_score": 75,
+    "reasons": ["现价位于估算平均成本上方"],
+    "risks": [],
+    "note": "仅用于趋势确认和风险提示，不独立构成买卖建议"
+  },
+  "series": []
+}
+```
+
+约束：
+
+- `advisory_only` 必须为 `true`；筹码证据不能单独把门控升级为 `actionable`。
+- 缺少换手率时返回 `status=unavailable`，禁止用成交量直接冒充换手率。
+- `avg_cost` 是概率分布的中位成本兼容字段，并非交易所披露的真实持仓成本。
+- 回测时必须使用当时可见数据和一致复权口径，禁止用最新复权因子重写历史结论。
+
 ## 1. 通信与基础约定
 
 ### 1.1 服务地址
@@ -267,7 +335,13 @@ TradingAgents 会重点检查：
     "exclude_suspended": true,
     "exclude_one_price_limit": true,
     "min_amount_20d": 300000000,
-    "max_risk_announcements_90d": 2
+    "max_risk_announcements_90d": 2,
+    "industry_taxonomy": "CITICS",
+    "industry_level": "L1",
+    "include_industry_codes": ["CI005009.CI"],
+    "include_industries": ["电子"],
+    "include_symbols": ["603259.SH", "300347.SZ"],
+    "exclude_industries": []
   },
   "sector_prefs": ["新能源", "消费"],
   "return_factor_snapshot": true
@@ -279,13 +353,14 @@ TradingAgents 会重点检查：
 | 字段 | 类型 | 必填 | 说明 |
 |---|---:|---:|---|
 | `universe_index` | string | 是 | 股票池指数，例如 `000906.SH` |
+| `universe_indices` | list[string] | 否 | 扩展发现池指数；与核心指数按 PIT 成分并集去重，行级返回 `universe_memberships` / `is_core_universe` |
 | `trade_date` | string | 是 | 信号日期 |
 | `style` | string | 是 | `short_term`、`medium_term`、`long_term` |
 | `limit` | int | 否 | 最终返回数量，默认 20 |
-| `candidate_limit` | int | 否 | 过滤后进入排序的上限，默认 200 |
+| `candidate_limit` | int | 否 | 昂贵逐股因子计算预算，默认 200；不得作为成分列表顺序截断 |
 | `factor_profile` | string | 否 | 预设因子组合 |
 | `weights` | object | 否 | 覆盖默认权重 |
-| `filters` | object | 否 | 交易可行性过滤 |
+| `filters` | object | 否 | 交易可行性过滤；标准行业优先使用 `industry_taxonomy` + `industry_level` + `include_industry_codes` / `exclude_industry_codes`，支持 `CITICS` 与 `SW2021`；旧版 `include_industries` / `exclude_industries` 继续按申万一级名称兼容；概念主题使用 `include_symbols` 股票白名单 |
 | `sector_prefs` | list[string] | 否 | 用户偏好行业，可做轻微加分，但必须返回加分说明 |
 | `return_factor_snapshot` | bool | 否 | 是否携带原始因子快照 |
 
@@ -293,10 +368,34 @@ TradingAgents 会重点检查：
 
 - `trade_date` 当天指数成分缺失时，必须回退到不晚于 `trade_date` 的最近可用成分日期，并在 `universe.constituent_as_of_date` 和 `warnings` 中说明；不得直接返回 `UNIVERSE_EMPTY`。
 - `candidate_limit` 是性能上限，不应改变排序语义。CSI800/中证全指这类大池子应使用缓存、增量更新或异步 job，避免前端同步等待数分钟。
+- 当合格池大于 `candidate_limit` 时，MCP 必须先用全池批量快照产生可审计的粗排，再进入逐股精算；禁止 `constituents[:candidate_limit]`。`selection_meta.factor_prefilter` 必须回传模式、输入数、精算数和覆盖率。
+- `universe_indices` 只用于扩展发现。TradingAgents 默认将 `is_core_universe=false` 的行放入 shadow 列表，不得回填正式 Top N 或生成买入信号。服务端通过 `multi_index_universe_v1` 声明能力。
+- `turnover_rate_20d` 是 daily_basic 近20日平均换手率（%），`amount_20d` 是近20日平均成交额（元），二者不得复用同一数值。FilterPanel 的均额输入单位为万元，进入 MCP 前换算为元。
+- 因子方向必须逐因子声明：PE/PB/波动率越低越好；最大回撤为负数，越接近0越好，禁止按整个 risk_control 维度统一反转。
 - `flow`、`valuation`、`risk_control` 不应在数据缺失时静默填 50。必须返回 `coverage` / `missing_factors`，TradingAgents 会把低覆盖率作为降权或降级原因。
 - Top N 需要支持行业分散约束，例如 `max_per_industry` / `max_industry_weight`，避免候选全部挤在单一拥挤赛道。
+- `include_industry_codes` / `exclude_industry_codes` 以及兼容字段 `include_industries` / `exclude_industries` 必须在 universe 构建阶段（`candidate_limit` 截断之前）应用，否则目标行业股票会在截断时被丢弃。行业代码限定非空时，服务端必须按明确的 taxonomy/level 解析，映射不可用就返回 `INDUSTRY_MAP_UNAVAILABLE`，不得放宽到中文近似匹配或全市场。
+- `include_industry_codes` 或 `include_industries` 非空时应跳过单行业集中度帽（行业限定与行业分散语义互斥），并在返回行、`selection_meta`、`method` 和 `warnings` 中回传实际使用的 `industry_taxonomy`、`industry_level`、`industry_code`。服务端须通过 capabilities 的 `rank_factor_candidates.industry_taxonomy_v1` 宣告支持。
+- `include_symbols` 必须先与指数成分股求交集，并在 `candidate_limit` 截断之前应用。该白名单用于概念板块精确选股；非空时应跳过单行业集中度帽，并在 `selection_meta.include_symbols_count`、`method` 和 `warnings` 中声明。服务端须通过 capabilities 的 `rank_factor_candidates.symbol_whitelist_prefilter` 宣告支持，客户端未发现该能力时不得试探性下发。
 
 ### 4.3 推荐预设 factor_profile
+
+#### daily_pipeline_v2（默认每日管线）
+
+同时返回两条策略分数：
+
+```text
+attack = 0.45*rank(momentum_120d)
+       + 0.25*rank(near_high_120d)
+       + 0.30*rank(amount_20d)
+
+defensive = 0.55*rank_low(volatility_120d)
+          + 0.45*rank_low(circ_mv)
+```
+
+`short_term` / `medium_term` 使用 attack 排名，`long_term` 使用 defensive 排名；
+缺失分量按实际权重计算 coverage，并将结果向中性分50收缩。响应必须包含
+`strategy_scores`、`active_sleeve`、`base_factor_score` 和公式版本。
 
 #### short_term_momentum
 

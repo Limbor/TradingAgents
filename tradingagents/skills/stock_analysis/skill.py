@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
 from tradingagents.core.reflection_enroll import enroll_reflection_case
 from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.skills._shared import optional_float, resolve_temporal_context
@@ -93,12 +94,12 @@ class StockAnalysisInput(BaseModel):
 class StockAnalysisOutput(BaseModel):
     """Output from stock analysis."""
 
-    rating: str = Field(description="Portfolio rating: Buy/Overweight/Hold/Underweight/Sell")
-    executive_summary: str = Field(description="Executive summary of the decision")
-    investment_thesis: str = Field(description="Detailed investment thesis")
-    price_target: float | None = Field(default=None, description="Target price if set")
-    time_horizon: str | None = Field(default=None, description="Recommended holding period")
+    ticker: str
     report_path: str | None = Field(default=None, description="Path to saved report")
+    artifact_id: str
+    holding_context: dict[str, Any] | None = None
+    selection_context: dict[str, Any] | None = None
+    structured_conclusion: dict[str, Any]
 
 
 class StockAnalysisSkill(BaseSkill):
@@ -210,6 +211,7 @@ class StockAnalysisSkill(BaseSkill):
 
         report_path = None
         report_sections: dict[str, str] = {}
+        structured_portfolio_decision: dict[str, Any] | None = None
 
         async for event in ta.astream_propagate(
             ticker=input_params.ticker,
@@ -255,6 +257,9 @@ class StockAnalysisSkill(BaseSkill):
             # Save report to disk when complete
             if event_type == "report_complete":
                 report_sections = event_data.get("sections", {})
+                raw_decision = event_data.get("structured_portfolio_decision")
+                if isinstance(raw_decision, dict):
+                    structured_portfolio_decision = raw_decision
                 yield skill_progress(
                     stage_id="report",
                     stage_label="生成完整报告",
@@ -282,7 +287,21 @@ class StockAnalysisSkill(BaseSkill):
             )
 
         # Build structured conclusion for frontend rendering
-        structured_conclusion = self._extract_conclusion(report_sections, input_params.ticker)
+        structured_conclusion = self._extract_conclusion(
+            report_sections,
+            input_params.ticker,
+            structured_decision=structured_portfolio_decision,
+        )
+        structured_conclusion = _apply_holding_execution_constraints(
+            structured_conclusion,
+            holding_context,
+            market=market,
+        )
+        structured_conclusion["selection_alignment"] = reconcile_selection_analysis(
+            input_params.selection_context,
+            structured_conclusion,
+            analysis_date=input_params.analysis_date,
+        )
 
         # Persist structured conclusion + selection handoff as a Library artifact
         # so the plan is visible in Library (and C-2 can later adopt it into a
@@ -486,7 +505,11 @@ class StockAnalysisSkill(BaseSkill):
             logger.warning("Failed to enroll stock_analysis reflection case for %s: %s", ticker, exc)
 
     def _extract_conclusion(
-        self, sections: dict[str, str], ticker: str
+        self,
+        sections: dict[str, str],
+        ticker: str,
+        *,
+        structured_decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Extract structured conclusion JSON from report sections.
 
@@ -497,42 +520,94 @@ class StockAnalysisSkill(BaseSkill):
         from tradingagents.agents.utils.rating import parse_rating
 
         decision_text = sections.get("final_trade_decision", "")
+
+        # Primary path: the Portfolio Manager already returned a validated
+        # PortfolioDecision. Carry it through directly; markdown remains a
+        # human-readable report, not a machine-to-machine transport format.
+        if structured_decision:
+            try:
+                from tradingagents.agents.schemas import PortfolioDecision
+
+                decision = PortfolioDecision.model_validate(structured_decision)
+                plan = (
+                    decision.trade_plan.model_dump(mode="json")
+                    if decision.trade_plan is not None
+                    else None
+                )
+                reasons = [
+                    value.strip()
+                    for value in (decision.executive_summary, decision.investment_thesis)
+                    if value and value.strip()
+                ]
+                base = {
+                    "rating": decision.rating.value,
+                    "target_price": decision.price_target,
+                    "confidence": decision.confidence,
+                    "reasons": reasons,
+                    "executive_summary": decision.executive_summary,
+                    "investment_thesis": decision.investment_thesis,
+                    "time_horizon": decision.time_horizon,
+                    "plan": plan,
+                    "selection_reconciliation": (
+                        decision.selection_reconciliation.model_dump(mode="json")
+                        if decision.selection_reconciliation is not None
+                        else None
+                    ),
+                }
+                return _attach_instrument_identity(base, ticker)
+            except Exception as exc:
+                logger.warning(
+                    "Invalid structured PortfolioDecision for %s; using markdown fallback: %s",
+                    ticker,
+                    exc,
+                )
+
         rating = parse_rating(decision_text) if decision_text else "Hold"
 
         # Try extracting target price
         target_match = re.search(
-            r"(?:target|目标价)[：:\s]*([¥$]?[\d,.]+)", decision_text, re.IGNORECASE
+            r"(?:\*\*)?(?:price\s+target|target|目标价)(?:\*\*)?[：:\s]*([¥$]?[\d,.]+)",
+            decision_text,
+            re.IGNORECASE,
         )
-        target_price = target_match.group(1) if target_match else None
+        target_price = _parse_float(target_match.group(1)) if target_match else None
 
         # Try extracting confidence
         conf_match = re.search(
-            r"(?:confidence|信心|把握)[：:\s]*(\d+)", decision_text, re.IGNORECASE
+            r"(?:\*\*)?(?:confidence|信心|把握)(?:\*\*)?[：:\s]*(\d+)",
+            decision_text,
+            re.IGNORECASE,
         )
         confidence = int(conf_match.group(1)) if conf_match else None
 
         # Extract numbered reason lines
         reason_matches = re.findall(r"^\d+[.、]\s*(.+)$", decision_text, re.MULTILINE)
         reasons = reason_matches[:5] if reason_matches else []
+        if not reasons:
+            reasons = [
+                value
+                for value in (
+                    _extract_markdown_field(decision_text, "Executive Summary"),
+                    _extract_markdown_field(decision_text, "Investment Thesis"),
+                )
+                if value
+            ]
 
         # Structured trade plan (entry/stop/targets/position/conditions) — clean
         # round-trip when the PM used structured output; None on free-text fallback.
         plan = _extract_trade_plan(decision_text)
 
-        try:
-            from tradingagents.core.portfolio_prices import resolve_portfolio_name
-            name = resolve_portfolio_name(ticker)
-        except Exception:
-            name = ticker
-        return {
+        return _attach_instrument_identity({
             "rating": rating,
             "target_price": target_price,
             "confidence": confidence,
             "reasons": reasons,
             "plan": plan,
-            "symbol": ticker,
-            "name": name,
-        }
+            "executive_summary": _extract_markdown_field(decision_text, "Executive Summary"),
+            "investment_thesis": _extract_markdown_field(decision_text, "Investment Thesis"),
+            "time_horizon": _extract_markdown_field(decision_text, "Time Horizon"),
+            "selection_reconciliation": _extract_selection_reconciliation(decision_text),
+        }, ticker)
 
 
 def _agent_step_label(agent: str, status: str) -> str:
@@ -734,7 +809,189 @@ def _format_holding_context(context: dict[str, Any] | None) -> str:
             "- If the standalone rating conflicts with portfolio risk management, surface that conflict clearly.",
         ]
     )
+    quantity = optional_float(context.get("quantity")) or 0.0
+    symbol = str(context.get("symbol") or "")
+    if detect_market(symbol) == "cn_a" and quantity > 0:
+        if quantity <= 100:
+            lines.append(
+                f"- HARD EXECUTION RULE: the current holding is {quantity:g} shares. "
+                "A partial REDUCE is not executable; choose HOLD or EXIT the entire holding. "
+                f"Never recommend selling or retaining a fraction of these {quantity:g} shares."
+            )
+        else:
+            remainder = int(round(quantity)) % 100
+            odd_lot_rule = (
+                f" The {remainder}-share odd-lot remainder must be sold all at once."
+                if remainder
+                else ""
+            )
+            lines.append(
+                "- HARD EXECUTION RULE: any partial A-share sell order must use 100-share lots;"
+                f"{odd_lot_rule} Put exact executable order quantities in structured fields, "
+                "not only in prose."
+            )
     return "\n".join(lines)
+
+
+def _apply_holding_execution_constraints(
+    conclusion: dict[str, Any],
+    holding_context: dict[str, Any] | None,
+    *,
+    market: str,
+) -> dict[str, Any]:
+    """Block LLM-generated holding adjustments that cannot be placed.
+
+    Research ratings remain untouched, but a prose-only or invalid A-share
+    REDUCE is converted to HOLD/review.  EXIT is unambiguous and normalized to
+    the full current holding.  The original action/conditions remain in hidden
+    audit metadata instead of being exposed as executable instructions.
+    """
+
+    if market != "cn_a" or not holding_context:
+        return conclusion
+    quantity_value = optional_float(holding_context.get("quantity"))
+    if quantity_value is None or quantity_value <= 0:
+        return conclusion
+    quantity = int(round(quantity_value))
+    if abs(quantity_value - quantity) > 1e-9:
+        validation = {
+            "status": "blocked",
+            "market": "cn_a",
+            "current_quantity": quantity_value,
+            "lot_size": 100,
+            "warnings": ["当前持仓不是整数股，无法生成可执行 A 股订单"],
+        }
+        conclusion["execution_validation"] = validation
+        return conclusion
+
+    plan = conclusion.get("plan")
+    if not isinstance(plan, dict):
+        return conclusion
+
+    from tradingagents.core.order_constraints import (
+        cn_a_partial_sell_available,
+        validate_cn_a_sell_quantity,
+    )
+
+    original_plan_action = str(plan.get("plan_action") or "HOLD").upper()
+    original_order_quantity = optional_float(plan.get("order_quantity"))
+    original_conditions: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    adjusted = False
+
+    def block_condition(condition: dict[str, Any], reason: str) -> None:
+        nonlocal adjusted
+        original_conditions.append(dict(condition))
+        condition["trigger_action"] = "HOLD"
+        condition["order_quantity"] = None
+        condition["target_quantity"] = quantity
+        condition["description"] = (
+            f"{reason}；该条件仅触发重新评估，不生成卖单。"
+            f"如决定退出，必须一次性卖出全部 {quantity} 股。"
+        )
+        condition["source"] = "A股整手/零股确定性校验"
+        adjusted = True
+
+    conditions = plan.get("conditions")
+    if not isinstance(conditions, list):
+        conditions = []
+        plan["conditions"] = conditions
+    for raw_condition in conditions:
+        if not isinstance(raw_condition, dict):
+            continue
+        action = str(raw_condition.get("trigger_action") or "").upper()
+        order_quantity = optional_float(raw_condition.get("order_quantity"))
+        if action == "REDUCE":
+            if order_quantity is None:
+                block_condition(raw_condition, "原减仓条件缺少结构化的精确卖出数量")
+                continue
+            valid, reason = validate_cn_a_sell_quantity(quantity, order_quantity)
+            if not valid or order_quantity >= quantity:
+                block_condition(raw_condition, reason or "REDUCE 不能等同于清仓")
+                continue
+            raw_condition["order_quantity"] = int(round(order_quantity))
+            raw_condition["target_quantity"] = quantity - int(round(order_quantity))
+        elif action == "EXIT":
+            if order_quantity is not None:
+                valid, _ = validate_cn_a_sell_quantity(quantity, order_quantity)
+                if not valid or int(round(order_quantity)) != quantity:
+                    original_conditions.append(dict(raw_condition))
+                    adjusted = True
+            raw_condition["order_quantity"] = quantity
+            raw_condition["target_quantity"] = 0
+            if adjusted and original_conditions and original_conditions[-1].get("description") == raw_condition.get("description"):
+                raw_condition["description"] = (
+                    f"满足该清仓条件时，一次性卖出当前全部 {quantity} 股；"
+                    "不得拆分为零股卖单。"
+                )
+                raw_condition["source"] = "A股整手/零股确定性校验"
+        elif action == "HOLD" and quantity <= 100:
+            description = str(raw_condition.get("description") or "")
+            share_values = [
+                int(float(value))
+                for value in re.findall(r"(\d+(?:\.\d+)?)\s*股", description)
+            ]
+            implies_fractional_remainder = bool(
+                re.search(r"(?:保留|剩余|持仓).{0,16}(?:\d+(?:\.\d+)?\s*%|[一二三四五六七八九十]+分之)", description)
+            )
+            if any(value != quantity for value in share_values) or implies_fractional_remainder:
+                block_condition(raw_condition, "原观察条件隐含了不可执行的零股剩余仓位")
+
+    if original_plan_action == "REDUCE":
+        if original_order_quantity is None:
+            reason = "主计划缺少结构化的精确卖出数量"
+            valid_primary = False
+        else:
+            valid_primary, reason = validate_cn_a_sell_quantity(
+                quantity, original_order_quantity
+            )
+            valid_primary = valid_primary and original_order_quantity < quantity
+            if not valid_primary and not reason:
+                reason = "REDUCE 不能卖出全部持仓；清仓必须使用 EXIT"
+        if not valid_primary:
+            plan["plan_action"] = "HOLD"
+            plan["order_quantity"] = None
+            plan["target_quantity"] = quantity
+            if holding_context.get("position_weight") is not None:
+                plan["position_pct"] = round(
+                    float(holding_context["position_weight"]) * 100, 2
+                )
+            warnings.append(
+                f"{reason}；已将不可执行的 REDUCE 主计划降级为 HOLD/人工复核"
+            )
+            adjusted = True
+        else:
+            order_quantity = int(round(original_order_quantity))
+            plan["order_quantity"] = order_quantity
+            plan["target_quantity"] = quantity - order_quantity
+    elif original_plan_action == "EXIT":
+        plan["order_quantity"] = quantity
+        plan["target_quantity"] = 0
+    elif original_plan_action == "HOLD":
+        plan["order_quantity"] = None
+        plan["target_quantity"] = quantity
+
+    if quantity <= 100 and original_plan_action == "REDUCE":
+        warnings.append(
+            f"当前仅持有 {quantity} 股，A 股不允许部分减仓；只能继续持有或一次性清仓"
+        )
+
+    validation = {
+        "status": "adjusted" if adjusted else "valid",
+        "market": "cn_a",
+        "current_quantity": quantity,
+        "lot_size": 100,
+        "partial_sell_available": cn_a_partial_sell_available(quantity),
+        "original_plan_action": original_plan_action,
+        "executable_plan_action": str(plan.get("plan_action") or "HOLD").upper(),
+        "order_quantity": plan.get("order_quantity"),
+        "target_quantity": plan.get("target_quantity"),
+        "warnings": warnings,
+        "blocked_conditions": original_conditions,
+    }
+    plan["execution_validation"] = validation
+    conclusion["execution_validation"] = validation
+    return conclusion
 
 
 def _format_selection_context(context: dict[str, Any] | None) -> str:
@@ -747,6 +1004,30 @@ def _format_selection_context(context: dict[str, Any] | None) -> str:
     score = context.get("display_score") or context.get("final_score") or context.get("quant_score")
     if score is not None:
         lines.append(f"- selection score: {score}")
+    for key in (
+        "quant_decision",
+        "quant_score",
+        "llm_view",
+        "llm_score",
+        "catalyst_strength",
+        "risk_assessment",
+        "score_confidence",
+    ):
+        value = context.get(key)
+        if value is not None:
+            lines.append(f"- selection {key}: {value}")
+    for key in (
+        "factor_scores",
+        "data_coverage",
+        "quant_gate_reasons",
+        "gate_reasons",
+        "risk_flags",
+        "key_catalysts",
+        "key_risks",
+    ):
+        value = context.get(key)
+        if value:
+            lines.append(f"- selection {key}: {value}")
     entry = context.get("entry_zone")
     if entry:
         lines.append(f"- selection entry_zone: {entry}")
@@ -800,6 +1081,48 @@ def _join_context_blocks(*blocks: str) -> str:
     return "\n\n".join(block.strip() for block in blocks if block and block.strip())
 
 
+def _attach_instrument_identity(payload: dict[str, Any], ticker: str) -> dict[str, Any]:
+    try:
+        from tradingagents.core.portfolio_prices import resolve_portfolio_name
+
+        name = resolve_portfolio_name(ticker)
+    except Exception:
+        name = ticker
+    return {**payload, "symbol": ticker, "name": name}
+
+
+def _extract_markdown_field(text: str, label: str) -> str | None:
+    """Read a deterministic bold markdown field, including multiline prose."""
+    match = re.search(
+        rf"\*\*{re.escape(label)}\*\*\s*:\s*(.*?)(?=\n\s*\n\*\*|\Z)",
+        text or "",
+        re.IGNORECASE | re.DOTALL,
+    )
+    value = match.group(1).strip() if match else ""
+    return value or None
+
+
+def _extract_selection_reconciliation(text: str) -> dict[str, Any] | None:
+    if "**Selection Reconciliation**" not in (text or ""):
+        return None
+    section = text.split("**Selection Reconciliation**", 1)[1]
+
+    def line_value(label: str) -> str | None:
+        match = re.search(rf"^- {re.escape(label)}:\s*(.+)$", section, re.MULTILINE)
+        return match.group(1).strip() if match else None
+
+    evidence = re.findall(r"^- New Evidence:\s*(.+)$", section, re.MULTILINE)
+    changed = line_value("Decision Changed")
+    result = {
+        "prior_decision": line_value("Prior Decision"),
+        "alignment": line_value("Alignment"),
+        "decision_changed": str(changed or "").lower() in {"true", "yes", "1"},
+        "explanation": line_value("Explanation"),
+        "new_evidence": [item.strip() for item in evidence if item.strip()],
+    }
+    return result if any(value for value in result.values()) else None
+
+
 def _format_number(value: Any) -> str:
     numeric = optional_float(value)
     if numeric is None:
@@ -825,20 +1148,40 @@ def _extract_trade_plan(decision_text: str) -> dict[str, Any] | None:
         return None
     plan: dict[str, Any] = {}
 
-    entry_match = re.search(r"- Entry Zone:\s*\[([^\]]+)\]", decision_text)
+    action_match = re.search(r"- Action:\s*(ENTER|ADD|HOLD|REDUCE|EXIT)", decision_text, re.IGNORECASE)
+    if action_match:
+        plan["plan_action"] = action_match.group(1).upper()
+
+    entry_match = re.search(
+        r"- (?:Action|Entry) Zone:\s*\[([^\]]+)\]",
+        decision_text,
+        re.IGNORECASE,
+    )
     if entry_match:
         vals = _parse_float_list(entry_match.group(1))
         if vals:
+            plan["action_zone"] = vals
             plan["entry_zone"] = vals
 
-    stop_match = re.search(r"- Stop Loss:\s*([¥$]?[\d,.]+)", decision_text)
+    stop_match = re.search(
+        r"- (?:Invalidation Level|Stop Loss):\s*([¥$]?[\d,.]+)",
+        decision_text,
+        re.IGNORECASE,
+    )
     if stop_match:
-        plan["stop_loss"] = _parse_float(stop_match.group(1))
+        value = _parse_float(stop_match.group(1))
+        plan["invalidation_level"] = value
+        plan["stop_loss"] = value
 
-    targets_match = re.search(r"- Targets:\s*\[([^\]]+)\]", decision_text)
+    targets_match = re.search(
+        r"- (?:Objective Levels|Targets):\s*\[([^\]]+)\]",
+        decision_text,
+        re.IGNORECASE,
+    )
     if targets_match:
         vals = _parse_float_list(targets_match.group(1))
         if vals:
+            plan["objective_levels"] = vals
             plan["targets"] = vals
 
     pos_match = re.search(r"- Position Sizing:\s*([¥$]?[\d,.]+)\s*%", decision_text)
@@ -850,8 +1193,20 @@ def _extract_trade_plan(decision_text: str) -> dict[str, Any] | None:
         decision_text,
     )
     conditions: list[dict[str, Any]] = []
+    trigger_matches = re.findall(
+        r"- Trigger Action \[(ENTER|ADD|HOLD|REDUCE|EXIT)\]:\s*(.+)",
+        decision_text,
+        re.IGNORECASE,
+    )
+    trigger_by_description = {
+        desc.strip(): action.upper() for action, desc in trigger_matches
+    }
     for kind, source, desc in cond_matches:
-        cond: dict[str, Any] = {"kind": kind, "description": desc.strip()}
+        description = desc.strip()
+        cond: dict[str, Any] = {"kind": kind, "description": description}
+        trigger_action = trigger_by_description.get(description)
+        if trigger_action:
+            cond["trigger_action"] = trigger_action
         if source and source.strip():
             cond["source"] = source.strip()
         conditions.append(cond)

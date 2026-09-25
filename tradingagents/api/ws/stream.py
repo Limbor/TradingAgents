@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -11,12 +12,36 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from tradingagents.api.middleware.auth import verify_ws_origin, verify_ws_token
+from tradingagents.core.orchestrator import merge_context_params
 from tradingagents.skills.base import BaseSkill, SkillEvent
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 TERMINAL_EVENT_TYPES = {"run_complete", "run_cancelled", "error"}
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+# Size guards for client-supplied chat payloads: context / intent_hint params
+# are echoed into skill params and LLM prompts, so cap them before any work.
+_MAX_MESSAGE_CHARS = 64_000
+_MAX_CONTEXT_CHARS = 16_000
+
+
+def _payload_oversized(message: dict) -> str | None:
+    """Return a rejection reason when a chat message payload is too large."""
+    try:
+        if len(json.dumps(message, ensure_ascii=False)) > _MAX_MESSAGE_CHARS:
+            return "message payload exceeds 64KB"
+        context = message.get("context")
+        if context is not None and len(json.dumps(context, ensure_ascii=False)) > _MAX_CONTEXT_CHARS:
+            return "context exceeds 16KB"
+        hint = message.get("intent_hint")
+        if isinstance(hint, dict):
+            params = hint.get("params")
+            if params is not None and len(json.dumps(params, ensure_ascii=False)) > _MAX_CONTEXT_CHARS:
+                return "intent_hint.params exceeds 16KB"
+    except (TypeError, ValueError):
+        return "payload is not JSON-serializable"
+    return None
 
 
 @dataclass
@@ -46,12 +71,12 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
     new events as they occur.
     """
     config = getattr(websocket.app.state, "config", {}) or {}
-    if not verify_ws_token(websocket.query_params, config) or not verify_ws_origin(
+    if not verify_ws_token(websocket.query_params, config, websocket.headers) or not verify_ws_origin(
         websocket.headers, config
     ):
         await _reject_ws(websocket)
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=_accepted_subprotocol(websocket.headers))
 
     run_manager = websocket.app.state.run_manager
     db = getattr(websocket.app.state, "db", None)
@@ -133,12 +158,12 @@ async def ws_chat(websocket: WebSocket):
     consumer and the main loop never interleave partial frames.
     """
     config = getattr(websocket.app.state, "config", {}) or {}
-    if not verify_ws_token(websocket.query_params, config) or not verify_ws_origin(
+    if not verify_ws_token(websocket.query_params, config, websocket.headers) or not verify_ws_origin(
         websocket.headers, config
     ):
         await _reject_ws(websocket)
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=_accepted_subprotocol(websocket.headers))
     orchestrator = websocket.app.state.orchestrator
     run_manager = websocket.app.state.run_manager
     config = websocket.app.state.config
@@ -193,6 +218,133 @@ async def ws_chat(websocket: WebSocket):
         finally:
             run_manager.unsubscribe(run.id, queue)
 
+    async def _resolve_route(user_text: str, msg_ctx: dict | None, hint: Any):
+        """Resolve one chat message to a skill route.
+
+        Order: intent_hint fast path (deterministic, 0 LLM calls) → ChatAgent
+        (LLM tool-use) → orchestrator regex fallback. Direct replies
+        (chat_answer / tool_answer / clarify / …) are sent from here and
+        ``None`` is returned; a non-None return always carries a skill.
+        """
+        # Intent hint fast path: page jump buttons name the target skill
+        # directly, so a click never depends on probabilistic LLM routing.
+        if isinstance(hint, dict):
+            hint_route = orchestrator.route_hint(hint, context=msg_ctx)
+            if hint_route.skill is not None:
+                return hint_route
+            # Degrade to normal text routing so the button always gets a reply.
+            logger.warning(
+                "intent_hint rejected, degrading to text routing: %s",
+                hint_route.reason,
+            )
+
+        # ChatAgent (LLM tool-use) is the primary router: it both answers
+        # free-form questions and extracts skill params (limit, industries,
+        # ticker, ...) that the regex router would silently drop. The
+        # deterministic orchestrator regex only kicks in when the LLM path
+        # is unavailable or degraded (init failure / timeout / call error).
+        chat_response = None
+        degraded_content = ""
+        chat_agent = getattr(websocket.app.state, "chat_agent", None)
+        if chat_agent is not None:
+            try:
+                chat_response = await chat_agent.handle(
+                    user_text,
+                    session_id=session_id,
+                    context=msg_ctx,
+                )
+            except Exception:
+                logger.exception("ChatAgent.handle failed")
+                chat_response = None
+        if chat_response is not None and getattr(chat_response, "degraded", False):
+            degraded_content = chat_response.content or ""
+            chat_response = None
+
+        if chat_response is not None:
+            if chat_response.intent == "chat_answer":
+                await _send({
+                    "type": "chat_answer",
+                    "run_id": "",
+                    "timestamp": _now(),
+                    "payload": {
+                        "content": chat_response.content,
+                        "citations": chat_response.citations,
+                    },
+                })
+                return None
+            elif chat_response.intent == "tool_answer":
+                await _send({
+                    "type": "tool_answer",
+                    "run_id": "",
+                    "timestamp": _now(),
+                    "payload": {
+                        "content": chat_response.content,
+                        "tool": chat_response.tool_name,
+                        "args": chat_response.tool_args,
+                        "result": chat_response.tool_result,
+                        "display": chat_response.tool_display,
+                        "citations": chat_response.citations,
+                    },
+                })
+                return None
+            elif chat_response.intent == "clarify":
+                await _send({
+                    "type": "clarify",
+                    "run_id": "",
+                    "timestamp": _now(),
+                    "payload": {
+                        "question": chat_response.clarify_question or chat_response.content or "请问您需要什么帮助？",
+                        "options": chat_response.clarify_options,
+                    },
+                })
+                return None
+            elif chat_response.intent == "skill_run":
+                # ChatAgent decided to run a skill — create a run. Schema-driven
+                # context merge so a selection/holding context carried by the
+                # message (e.g. user clicked "分析" on a candidate) is not lost
+                # when the request goes through ChatAgent instead of regex.
+                skill = websocket.app.state.registry.get(chat_response.skill_id)
+                if skill is None:
+                    await _send({
+                        "type": "chat_answer",
+                        "run_id": "",
+                        "timestamp": _now(),
+                        "payload": {"content": f"抱歉，找不到 '{chat_response.skill_id}' 这个功能。"},
+                    })
+                    return None
+                skill_params = merge_context_params(
+                    skill, dict(chat_response.skill_params or {}), msg_ctx
+                )
+                return _RouteResultStub(skill, skill_params, 0.85, "ChatAgent skill_run")
+            else:
+                await _send({
+                    "type": "chat_answer",
+                    "run_id": "",
+                    "timestamp": _now(),
+                    "payload": {"content": chat_response.content or "抱歉，我不太理解您的意思。"},
+                })
+                return None
+
+        # ChatAgent unavailable or degraded — deterministic regex fallback.
+        route = await orchestrator.route(
+            user_text,
+            session_id=session_id,
+            context=msg_ctx,
+        )
+        if route.skill is None:
+            await _send({
+                "type": "chat_reply",
+                "run_id": "",
+                "timestamp": _now(),
+                "payload": {
+                    "content": degraded_content
+                    or "AI 路由暂时不可用，无法理解该请求，请稍后重试或换一种说法。",
+                    "reason": route.reason,
+                },
+            })
+            return None
+        return route
+
     try:
         while True:
             message = await websocket.receive_json()
@@ -223,111 +375,26 @@ async def ws_chat(websocket: WebSocket):
                 })
                 continue
 
-            route = await orchestrator.route(
-                user_text,
-                session_id=session_id,
-                context=message.get("context") if isinstance(message.get("context"), dict) else None,
-            )
-            if route.skill is None:
-                # No skill matched — hand off to ChatAgent for free-form conversation.
-                chat_agent = getattr(websocket.app.state, "chat_agent", None)
-                if chat_agent is not None:
-                    try:
-                        chat_response = await chat_agent.handle(
-                            user_text,
-                            session_id=session_id,
-                            context=message.get("context") if isinstance(message.get("context"), dict) else None,
-                        )
-                    except Exception as exc:
-                        logger.exception("ChatAgent.handle failed")
-                        await _send({
-                            "type": "chat_answer",
-                            "run_id": "",
-                            "timestamp": _now(),
-                            "payload": {"content": f"抱歉，处理请求时出错：{exc}"},
-                        })
-                        continue
+            msg_ctx = message.get("context") if isinstance(message.get("context"), dict) else None
 
-                    if chat_response.intent == "chat_answer":
-                        await _send({
-                            "type": "chat_answer",
-                            "run_id": "",
-                            "timestamp": _now(),
-                            "payload": {
-                                "content": chat_response.content,
-                                "citations": chat_response.citations,
-                            },
-                        })
-                    elif chat_response.intent == "tool_answer":
-                        await _send({
-                            "type": "tool_answer",
-                            "run_id": "",
-                            "timestamp": _now(),
-                            "payload": {
-                                "content": chat_response.content,
-                                "tool": chat_response.tool_name,
-                                "args": chat_response.tool_args,
-                                "result": chat_response.tool_result,
-                                "display": chat_response.tool_display,
-                                "citations": chat_response.citations,
-                            },
-                        })
-                    elif chat_response.intent == "clarify":
-                        await _send({
-                            "type": "clarify",
-                            "run_id": "",
-                            "timestamp": _now(),
-                            "payload": {
-                                "question": chat_response.clarify_question or chat_response.content or "请问您需要什么帮助？",
-                                "options": chat_response.clarify_options,
-                            },
-                        })
-                    elif chat_response.intent == "skill_run":
-                        # ChatAgent decided to run a skill — create a run.
-                        # Mirror orchestrator._with_selection_context so a
-                        # selection_context carried by the message (e.g. user
-                        # clicked "分析" on a candidate) is not lost when the
-                        # request goes through ChatAgent instead of regex.
-                        skill = websocket.app.state.registry.get(chat_response.skill_id)
-                        if skill is None:
-                            await _send({
-                                "type": "chat_answer",
-                                "run_id": "",
-                                "timestamp": _now(),
-                                "payload": {"content": f"抱歉，找不到 '{chat_response.skill_id}' 这个功能。"},
-                            })
-                            continue
-                        skill_params = dict(chat_response.skill_params or {})
-                        msg_ctx = message.get("context") if isinstance(message.get("context"), dict) else None
-                        if msg_ctx and msg_ctx.get("selection_context"):
-                            skill_params.setdefault("selection_context", msg_ctx["selection_context"])
-                        if msg_ctx and msg_ctx.get("holding_context"):
-                            skill_params.setdefault("holding_context", msg_ctx["holding_context"])
-                        route = _RouteResultStub(skill, skill_params, 0.85, "ChatAgent skill_run")
-                    else:
-                        await _send({
-                            "type": "chat_answer",
-                            "run_id": "",
-                            "timestamp": _now(),
-                            "payload": {"content": chat_response.content or "抱歉，我不太理解您的意思。"},
-                        })
-                        continue
-                else:
-                    # ChatAgent not available — fall back to the original message
-                    await _send({
-                        "type": "chat_reply",
-                        "run_id": "",
-                        "timestamp": _now(),
-                        "payload": {
-                            "content": "I could not map that request to a registered skill.",
-                            "reason": route.reason,
-                        },
-                    })
-                    continue
+            # Reject oversized payloads before any routing / LLM work: context
+            # and intent_hint params flow into skill params and LLM prompts.
+            oversize_reason = _payload_oversized(message)
+            if oversize_reason:
+                await _send({
+                    "type": "chat_reply",
+                    "run_id": "",
+                    "timestamp": _now(),
+                    "payload": {
+                        "content": "请求携带的上下文过大，已拒绝处理，请减少携带的数据后重试。",
+                        "reason": oversize_reason,
+                    },
+                })
+                continue
 
-            # If the route was set via ChatAgent skill_run, process it
-            if route.skill is None:
-                # This happens when ChatAgent returned skill_run but skill not found
+            route = await _resolve_route(user_text, msg_ctx, message.get("intent_hint"))
+            if route is None or route.skill is None:
+                # A direct reply (chat/tool/clarify/rejection) was already sent.
                 continue
 
             run = await run_manager.create_run(route.skill, route.params, config)
@@ -371,6 +438,12 @@ def _serialize_event(run_id: str, event: SkillEvent) -> dict:
         "timestamp": _now(),
         "payload": event.data,
     }
+
+
+def _accepted_subprotocol(headers) -> str | None:
+    """Echo the non-secret application protocol requested by browser clients."""
+    offered = ((headers.get("sec-websocket-protocol") if headers else "") or "").split(",")
+    return "tradingagents" if "tradingagents" in {item.strip() for item in offered} else None
 
 
 def _terminal_event(run_id: str, run) -> dict:

@@ -26,6 +26,10 @@ MODERATE_FLAGS = {"大股东减持", "质押比例高", "商誉减值", "业绩�
 class LLMAssessment:
     """Structured LLM assessment used by the fusion layer."""
 
+    # Directional score used by the numeric fusion leg: 0=strongly bearish,
+    # 50=neutral, 100=strongly bullish.  Keep this separate from
+    # ``llm_confidence`` (epistemic confidence in the assessment).
+    llm_score: float | None = None
     llm_confidence: float | None = None
     risk_override: bool = False
     invalidates_quant: bool = False
@@ -55,10 +59,9 @@ def fuse_candidate_signal(
     The legacy score fields are kept for display/backwards compatibility, but
     the canonical action is ``final_decision``.
 
-    ``alpha_override`` is dormant plumbing for the adaptive-alpha work: when
-    provided (not None), it replaces the static ``STYLE_ALPHA`` quant weight
-    (clamped to [0, 1]). No production caller passes it yet, so default
-    behavior is unchanged.
+    When provided, ``alpha_override`` replaces the static ``STYLE_ALPHA`` quant
+    weight (clamped to [0, 1]). Production obtains it only from the explicitly
+    enabled, isolated evaluation scorecard; otherwise behavior stays static.
     """
     assessment = _coerce_assessment(llm_assessment)
     quant_score = _clamp(_float_or(candidate.get("quant_score") or candidate.get("score"), 0.0))
@@ -67,7 +70,8 @@ def fuse_candidate_signal(
     risk_flags = _merge_flags(candidate.get("risk_flags"), assessment.risk_flags)
     risk_severity = _classify_risk_severity(risk_flags)
 
-    if assessment.llm_confidence is None:
+    llm_score, llm_score_source = _resolve_llm_score(assessment)
+    if llm_score is None:
         quant_weight = 1.0
         llm_weight = 0.0
         llm_confidence = None
@@ -86,10 +90,14 @@ def fuse_candidate_signal(
         if score_confidence is not None and score_confidence < 1.0:
             quant_weight *= max(0.0, min(1.0, score_confidence))
         llm_weight = 1.0 - quant_weight
-        llm_confidence = _clamp(assessment.llm_confidence)
+        llm_confidence = (
+            _clamp(assessment.llm_confidence)
+            if assessment.llm_confidence is not None
+            else None
+        )
         # catalyst bonus: high catalyst boosts score, low catalyst penalizes
         catalyst_bonus = _catalyst_bonus(assessment.catalyst_score)
-        raw_score = quant_weight * quant_score + llm_weight * llm_confidence + catalyst_bonus
+        raw_score = quant_weight * quant_score + llm_weight * llm_score + catalyst_bonus
         final_score = raw_score
         fusion_mode = "quant_llm_fused"
 
@@ -115,6 +123,8 @@ def fuse_candidate_signal(
         "final_score": round(final_score, 1),
         "quant_score": round(quant_score, 1),
         "quant_decision": quant_decision,
+        "llm_score": round(llm_score, 1) if llm_score is not None else None,
+        "llm_score_source": llm_score_source,
         "llm_confidence": round(llm_confidence, 1) if llm_confidence is not None else None,
         "llm_view": assessment.llm_view,
         "catalyst_strength": assessment.catalyst_strength,
@@ -278,6 +288,7 @@ def _coerce_assessment(value: LLMAssessment | dict[str, Any] | None) -> LLMAsses
     llm_confidence = _float_or(value.get("llm_confidence"), None)
     catalyst_score = _float_or(value.get("catalyst_score"), None)
     return LLMAssessment(
+        llm_score=_float_or(value.get("llm_score"), None),
         llm_confidence=llm_confidence,
         risk_override=bool(value.get("risk_override", False)),
         invalidates_quant=bool(value.get("invalidates_quant", False)),
@@ -288,6 +299,22 @@ def _coerce_assessment(value: LLMAssessment | dict[str, Any] | None) -> LLMAsses
         catalyst_strength=_normalize_catalyst_strength(value.get("catalyst_strength"), catalyst_score),
         risk_assessment=_normalize_risk_assessment(value.get("risk_assessment")),
     )
+
+
+def _resolve_llm_score(
+    assessment: LLMAssessment,
+) -> tuple[float | None, str | None]:
+    """Return the directional LLM score and its provenance.
+
+    New reviews provide ``llm_score`` explicitly.  Historical callers only
+    supplied ``llm_confidence`` and used it as the directional leg, so retain a
+    visible compatibility fallback instead of silently changing old results.
+    """
+    if assessment.llm_score is not None:
+        return _clamp(assessment.llm_score), "explicit"
+    if assessment.llm_confidence is not None:
+        return _clamp(assessment.llm_confidence), "legacy_confidence"
+    return None, None
 
 
 def _normalize_decision(value: Any) -> str:

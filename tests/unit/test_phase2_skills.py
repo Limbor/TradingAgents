@@ -3,6 +3,8 @@
 import asyncio
 import importlib
 
+import pytest
+
 from tradingagents.core.persistence import Database
 from tradingagents.core.signal_fusion import fuse_candidate_signal
 from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate, payload_rows
@@ -212,6 +214,615 @@ def test_daily_pipeline_uses_mcp_quant_rank(monkeypatch, tmp_path):
     asyncio.run(run())
 
 
+def test_daily_pipeline_uses_exact_concept_whitelist_before_industry_proxy(monkeypatch):
+    calls = []
+
+    class FakeMCPClient:
+        def supports_tool_feature(self, tool, feature):
+            return tool == "rank_factor_candidates" and feature == "symbol_whitelist_prefilter"
+
+        async def rank_factor_candidates(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "status": "success",
+                "method": "cross_sectional_factor_rank_v1+symbol_restricted",
+                "as_of_date": kwargs["trade_date"],
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "603259.SH",
+                        "name": "药明康德",
+                        "industry": "医药生物",
+                        "quant_score": 82,
+                        "decision": "BUY",
+                        "factor_scores": {"momentum": 80},
+                        "factor_snapshot": {"latest_price": 52.0},
+                        "tradability": {"is_tradable": True},
+                    },
+                    {
+                        "rank": 2,
+                        "ts_code": "300347.SZ",
+                        "name": "泰格医药",
+                        # An exact symbol whitelist is authoritative; local SW-L1
+                        # proxy filtering must not discard a cross-industry member.
+                        "industry": "社会服务",
+                        "quant_score": 75,
+                        "decision": "WATCHLIST",
+                        "factor_scores": {"momentum": 70},
+                        "factor_snapshot": {"latest_price": 61.0},
+                        "tradability": {"is_tradable": True},
+                    },
+                ],
+                "warnings": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+    monkeypatch.setattr(
+        daily_pipeline_module,
+        "_resolve_concept_symbol_filter",
+        lambda params: (["603259.SH", "300347.SZ"], ["concept members resolved"]),
+    )
+
+    async def run():
+        candidates, mcp_used, warnings, _ = await daily_pipeline_module._rank_candidates(
+            DailyPipelineInput(
+                trade_date="2026-08-20",
+                limit=2,
+                candidate_limit=80,
+                industries=["医药生物"],
+                concepts=["CXO概念"],
+            ),
+            {},
+            {"investment_style": "medium_term", "sector_prefs": []},
+        )
+        assert mcp_used is True
+        assert [item["symbol"] for item in candidates] == ["603259.SH", "300347.SZ"]
+        assert calls[0]["filters"]["include_symbols"] == ["603259.SH", "300347.SZ"]
+        assert "include_industries" not in calls[0]["filters"]
+        assert any("Exact concept constituent restriction applied" in warning for warning in warnings)
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_keeps_expanded_universe_as_shadow(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeMCPClient:
+        def supports_tool_feature(self, tool, feature):
+            return tool == "rank_factor_candidates" and feature == "multi_index_universe_v1"
+
+        async def rank_factor_candidates(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "status": "success",
+                "method": "cross_sectional_factor_rank_v1+dual_sleeve_v2",
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "600519.SH",
+                        "name": "贵州茅台",
+                        "industry": "食品饮料",
+                        "quant_score": 82,
+                        "is_core_universe": True,
+                        "universe_memberships": ["000906.SH"],
+                        "factor_scores": {"momentum": 80},
+                        "tradability": {"is_tradable": True},
+                    },
+                    {
+                        "rank": 2,
+                        "ts_code": "000001.SZ",
+                        "name": "扩展样本",
+                        "industry": "银行",
+                        "quant_score": 80,
+                        "is_core_universe": False,
+                        "universe_memberships": ["000852.SH"],
+                        "factor_scores": {"momentum": 78},
+                        "tradability": {"is_tradable": True},
+                    },
+                ],
+                "warnings": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        events = [
+            event
+            async for event in DailyPipelineSkill().execute(
+                DailyPipelineInput(trade_date="2026-08-20", limit=1, candidate_limit=5),
+                {
+                    "db": Database(tmp_path / "shadow.db"),
+                    "daily_pipeline_llm_review_enabled": False,
+                    "daily_pipeline_shadow_universe_indices": ["000852.SH"],
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        assert [row["symbol"] for row in complete.data["candidates"]] == ["600519.SH"]
+        assert [row["symbol"] for row in complete.data["shadow_candidates"]] == ["000001.SZ"]
+        assert complete.data["shadow_candidates"][0]["shadow_only"] is True
+        assert calls[0]["universe_indices"] == ["000852.SH"]
+        assert calls[0]["factor_profile"] == "daily_pipeline_v2"
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_mcp_error_is_not_reported_as_empty_success(monkeypatch, tmp_path):
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            return {
+                "status": "error",
+                "error": {"code": "mcp_transport_failure", "message": "connection closed"},
+                "rows": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        skill = DailyPipelineSkill()
+        with pytest.raises(RuntimeError, match="StockManager 量化排名失败.*connection closed"):
+            async for _event in skill.execute(
+                DailyPipelineInput(trade_date="2026-06-30"),
+                {"db": Database(tmp_path / "rank-error.db")},
+            ):
+                pass
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_explicit_industry_retries_without_market_cap_ceiling(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs["filters"].get("max_market_cap"):
+                return {
+                    "status": "error",
+                    "error_code": "UNIVERSE_EMPTY",
+                    "message": "批量预筛（上市天数/市值/估值/换手率）后无候选股票",
+                    "rows": [],
+                    "warnings": [],
+                }
+            return {
+                "status": "success",
+                "method": "cross_sectional_factor_rank_v1+industry_restricted",
+                "as_of_date": kwargs["trade_date"],
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "601899.SH",
+                        "name": "紫金矿业",
+                        "industry": "有色金属",
+                        "quant_score": 86,
+                        "decision": "BUY",
+                        "factor_scores": {"momentum": 82},
+                        "factor_snapshot": {"latest_price": 28.5},
+                        "tradability": {"is_tradable": True},
+                    }
+                ],
+                "warnings": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        events = [
+            event
+            async for event in DailyPipelineSkill().execute(
+                DailyPipelineInput(
+                    trade_date="2026-08-07",
+                    limit=5,
+                    candidate_limit=80,
+                    industries=["有色金属"],
+                ),
+                {
+                    "db": Database(tmp_path / "industry-relax.db"),
+                    "daily_pipeline_llm_review_enabled": False,
+                    "daily_pipeline_filters": {
+                        "board_filter": "main_board",
+                        "max_market_cap": 200,
+                        "min_market_cap": 15,
+                        "exclude_st": True,
+                        "exclude_suspended": True,
+                        "min_amount_20d": 3000,
+                    },
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidates_event = [
+            event for event in events if event.event_type == "daily_pipeline_candidates"
+        ][-1]
+        assert [item["symbol"] for item in complete.data["candidates"]] == ["601899.SH"]
+        assert len(calls) == 2
+        assert calls[0]["filters"]["max_market_cap"] == 200
+        assert calls[1]["filters"]["max_market_cap"] == 0
+        for key in ("min_market_cap", "exclude_st", "exclude_suspended", "min_amount_20d"):
+            assert calls[1]["filters"][key] == calls[0]["filters"][key]
+        assert calls[1]["filters"]["include_industries"] == ["有色金属"]
+        assert complete.data["quant_meta"]["filter_relaxation"] == {
+            "reason": "explicit_scope_empty_after_filter",
+            "field": "max_market_cap",
+            "from": 200.0,
+            "to": None,
+            "trigger": "批量预筛（上市天数/市值/估值/换手率）后无候选股票",
+        }
+        assert complete.data["quant_meta"]["filter_relaxations"] == [
+            complete.data["quant_meta"]["filter_relaxation"]
+        ]
+        assert any(
+            "max_market_cap 从 200 放宽为不限" in warning
+            for warning in candidates_event.data["warnings"]
+        )
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_explicit_scope_relaxes_price_after_market_cap(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    class FakeMCPClient:
+        def supports_tool_feature(self, _tool, _feature):
+            return True
+
+        async def rank_factor_candidates(self, **kwargs):
+            calls.append(kwargs)
+            filters = kwargs["filters"]
+            if filters.get("max_market_cap"):
+                return {
+                    "status": "error",
+                    "error_code": "UNIVERSE_EMPTY",
+                    "message": "批量预筛（上市天数/市值/估值/换手率）后无候选股票",
+                    "rows": [],
+                }
+            if filters.get("max_price"):
+                return {
+                    "status": "error",
+                    "error_code": "UNIVERSE_EMPTY",
+                    "message": "过滤后无可交易标的",
+                    "rows": [],
+                }
+            return {
+                "status": "success",
+                "method": "cross_sectional_factor_rank_v1+symbol_restricted",
+                "as_of_date": kwargs["trade_date"],
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "603259.SH",
+                        "name": "药明康德",
+                        "industry": "医药生物",
+                        "quant_score": 80,
+                        "decision": "MONITOR",
+                        "factor_scores": {"momentum": 75},
+                        "tradability": {"is_tradable": True},
+                    }
+                ],
+                "warnings": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+    monkeypatch.setattr(
+        daily_pipeline_module,
+        "_resolve_concept_symbol_filter",
+        lambda _params: (["603259.SH", "300347.SZ"], []),
+    )
+
+    async def run():
+        events = [
+            event
+            async for event in DailyPipelineSkill().execute(
+                DailyPipelineInput(
+                    trade_date="2026-08-25",
+                    limit=5,
+                    concepts=["CXO概念"],
+                    industries=["医药生物"],
+                ),
+                {
+                    "db": Database(tmp_path / "concept-multistage-relax.db"),
+                    "daily_pipeline_llm_review_enabled": False,
+                    "daily_pipeline_filters": {
+                        "board_filter": "main_board",
+                        "max_market_cap": 200,
+                        "max_price": 50,
+                        "max_pe": 100,
+                        "max_turnover_rate": 20,
+                        "exclude_st": True,
+                        "exclude_suspended": True,
+                        "exclude_one_price_limit": True,
+                        "min_market_cap": 15,
+                        "min_listing_days": 250,
+                        "min_amount_20d": 3000,
+                    },
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        assert [item["symbol"] for item in complete.data["candidates"]] == ["603259.SH"]
+        assert len(calls) == 3
+        assert calls[0]["filters"]["max_market_cap"] == 200
+        assert calls[1]["filters"]["max_market_cap"] == 0
+        assert calls[1]["filters"]["max_price"] == 50
+        assert calls[2]["filters"]["max_market_cap"] == 0
+        assert calls[2]["filters"]["max_price"] == 0
+        for key in (
+            "exclude_st",
+            "exclude_suspended",
+            "exclude_one_price_limit",
+            "min_market_cap",
+            "min_listing_days",
+            "min_amount_20d",
+        ):
+            assert calls[2]["filters"][key] == calls[0]["filters"][key]
+        assert [
+            item["field"] for item in complete.data["quant_meta"]["filter_relaxations"]
+        ] == ["max_market_cap", "max_price"]
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_hard_filter_relaxes_price_then_market_cap(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    class FakeMCPClient:
+        def supports_tool_feature(self, _tool, feature):
+            return feature == "industry_taxonomy_v1"
+
+        async def rank_factor_candidates(self, **kwargs):
+            calls.append(kwargs)
+            filters = kwargs["filters"]
+            if filters.get("max_price") or filters.get("max_market_cap"):
+                return {
+                    "status": "error",
+                    "error_code": "FILTER_EMPTY",
+                    "message": "过滤后无可交易标的",
+                    "rows": [],
+                }
+            return {
+                "status": "success",
+                "method": "cross_sectional_factor_rank_v1+industry_restricted",
+                "as_of_date": kwargs["trade_date"],
+                "rows": [
+                    {
+                        "rank": 1,
+                        "ts_code": "600010.SH",
+                        "name": "包钢股份",
+                        "industry": "钢铁",
+                        "industry_code": "801040.SI",
+                        "industry_taxonomy": "SW2021",
+                        "industry_level": "L1",
+                        "quant_score": 80,
+                        "decision": "MONITOR",
+                        "factor_scores": {"momentum": 75},
+                        "tradability": {"is_tradable": True},
+                    }
+                ],
+                "warnings": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        events = [
+            event
+            async for event in DailyPipelineSkill().execute(
+                DailyPipelineInput(
+                    trade_date="2026-09-01",
+                    limit=5,
+                    industries=["钢铁"],
+                    industry_taxonomy="SW2021",
+                    industry_level="L1",
+                    industry_codes=["801040.SI"],
+                ),
+                {
+                    "db": Database(tmp_path / "industry-hard-filter-relax.db"),
+                    "daily_pipeline_llm_review_enabled": False,
+                    "daily_pipeline_filters": {
+                        "board_filter": "main_board",
+                        "max_market_cap": 200,
+                        "max_price": 50,
+                        "min_market_cap": 15,
+                        "exclude_st": True,
+                        "exclude_suspended": True,
+                        "min_amount_20d": 3000,
+                    },
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidates_event = [
+            event for event in events if event.event_type == "daily_pipeline_candidates"
+        ][-1]
+        assert [item["symbol"] for item in complete.data["candidates"]] == ["600010.SH"]
+        assert len(calls) == 3
+        assert calls[0]["filters"]["include_industry_codes"] == ["801040.SI"]
+        assert calls[1]["filters"]["max_price"] == 0
+        assert calls[1]["filters"]["max_market_cap"] == 200
+        assert calls[2]["filters"]["max_price"] == 0
+        assert calls[2]["filters"]["max_market_cap"] == 0
+        assert [
+            item["field"] for item in complete.data["quant_meta"]["filter_relaxations"]
+        ] == ["max_price", "max_market_cap"]
+        assert any(
+            "分级放宽风格上限后恢复 1 个候选" in warning
+            for warning in candidates_event.data["warnings"]
+        )
+        assert "过滤后无可交易标的" not in candidates_event.data["warnings"]
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_explicit_scope_exhaustion_completes_without_candidates(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "status": "error",
+                "error_code": "FILTER_EMPTY",
+                "message": "批量预筛（上市天数/市值/估值/换手率）后无候选股票",
+                "rows": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        events = [
+            event
+            async for event in DailyPipelineSkill().execute(
+                DailyPipelineInput(
+                    trade_date="2026-08-25",
+                    limit=5,
+                    industries=["医药生物"],
+                ),
+                {
+                    "db": Database(tmp_path / "explicit-empty-success.db"),
+                    "daily_pipeline_llm_review_enabled": False,
+                    "daily_pipeline_filters": {
+                        "board_filter": "main_board",
+                        "max_market_cap": 200,
+                        "max_pe": 100,
+                        "max_turnover_rate": 20,
+                        "exclude_st": True,
+                        "min_market_cap": 15,
+                        "min_listing_days": 250,
+                        "min_amount_20d": 3000,
+                    },
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidates_event = [
+            event for event in events if event.event_type == "daily_pipeline_candidates"
+        ][-1]
+        assert complete.data["candidates"] == []
+        assert complete.data["quant_meta"]["status"] == "success"
+        assert complete.data["quant_meta"]["empty_scope"]["reason"] == (
+            "explicit_scope_no_eligible_candidates"
+        )
+        assert [
+            item["field"] for item in complete.data["quant_meta"]["filter_relaxations"]
+        ] == ["max_market_cap", "max_pe", "max_turnover_rate"]
+        assert len(calls) == 4
+        assert any(
+            "完成但无候选" in warning
+            for warning in candidates_event.data["warnings"]
+        )
+        assert not any(
+            "Board filter left only 0" in warning
+            or "kept 0 of 0 candidates" in warning
+            for warning in candidates_event.data["warnings"]
+        )
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_does_not_relax_market_cap_without_explicit_industry(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "status": "error",
+                "error_code": "FILTER_EMPTY",
+                "message": "批量预筛（上市天数/市值/估值/换手率）后无候选股票",
+                "rows": [],
+            }
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+
+    async def run():
+        with pytest.raises(RuntimeError, match="批量预筛"):
+            async for _event in DailyPipelineSkill().execute(
+                DailyPipelineInput(trade_date="2026-08-07"),
+                {
+                    "db": Database(tmp_path / "no-industry-relax.db"),
+                    "daily_pipeline_filters": {"max_market_cap": 200},
+                },
+            ):
+                pass
+        assert len(calls) == 1
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_empty_success_does_not_claim_alpha_applied(monkeypatch, tmp_path):
+    class FakeMCPClient:
+        async def rank_factor_candidates(self, **kwargs):
+            return {"status": "success", "rows": [], "warnings": []}
+
+    async def fake_get_mcp_client(config):
+        return FakeMCPClient()
+
+    monkeypatch.setattr(daily_pipeline_module, "get_mcp_client", fake_get_mcp_client)
+    monkeypatch.setattr(
+        daily_pipeline_module,
+        "resolve_alpha_override",
+        lambda scorecard, style: (
+            0.8,
+            {"applied": True, "static_alpha": 0.7, "suggested_alpha": 0.8, "n": 23},
+        ),
+    )
+
+    async def run():
+        events = [
+            event
+            async for event in DailyPipelineSkill().execute(
+                DailyPipelineInput(trade_date="2026-06-30"),
+                {
+                    "db": Database(tmp_path / "empty-alpha.db"),
+                    "adaptive_alpha_enabled": True,
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidates_event = [
+            event for event in events if event.event_type == "daily_pipeline_candidates"
+        ][-1]
+        assert complete.data["adaptive_alpha"]["applied"] is False
+        assert complete.data["adaptive_alpha"]["reason"] == "no_candidates"
+        assert not any("自适应α已生效" in warning for warning in candidates_event.data["warnings"])
+
+    asyncio.run(run())
+
+
 def test_daily_pipeline_adaptive_alpha_override_end_to_end(monkeypatch, tmp_path):
     """End-to-end: with adaptive_alpha_enabled and an applicable, style-matched
     scorecard suggestion, the pipeline re-fuses reviewed candidates using the
@@ -300,19 +911,20 @@ def test_daily_pipeline_adaptive_alpha_override_end_to_end(monkeypatch, tmp_path
         # ON: scorecard yields an applicable, style-matched suggestion.
         db_on = Database(tmp_path / "alpha-on.db")
         style = db_on.get_user_profile()["investment_style"]
-        monkeypatch.setattr(db_on, "get_prediction_scorecard", lambda **k: _scorecard(style))
+        monkeypatch.setattr(db_on, "get_evaluation_scorecard", lambda **k: _scorecard(style))
         complete_on, candidates_on = await _run(db_on, enabled=True)
         cand_on = complete_on.data["candidates"][0]
         assert cand_on["fusion_mode"] == "quant_llm_fused"
         assert cand_on["alpha_weight"] == {"quant": 0.8, "llm": 0.2}
         assert complete_on.data["adaptive_alpha"]["applied"] is True
+        assert complete_on.data["adaptive_alpha"]["source"] == "evaluation"
         assert any("自适应α已生效" in w for w in candidates_on.data["warnings"])
         sig_on = db_on.list_signals(trade_date="2026-06-30")[0]["payload"]
         assert sig_on["alpha_weight"] == {"quant": 0.8, "llm": 0.2}
 
         # OFF: even with a live scorecard, the disabled flag keeps static weight.
         db_off = Database(tmp_path / "alpha-off.db")
-        monkeypatch.setattr(db_off, "get_prediction_scorecard", lambda **k: _scorecard(style))
+        monkeypatch.setattr(db_off, "get_evaluation_scorecard", lambda **k: _scorecard(style))
         complete_off, candidates_off = await _run(db_off, enabled=False)
         cand_off = complete_off.data["candidates"][0]
         static_q = round(STYLE_ALPHA[style], 2)
@@ -416,6 +1028,44 @@ def test_daily_pipeline_deep_analysis_disabled_by_default(tmp_path):
         assert all("deep_analysis" not in c for c in complete.data["candidates"])
         assert complete.data["deep_meta"]["enabled"] is False
         assert "deep_analysis" not in _progress_stage_ids(events)
+
+    asyncio.run(run())
+
+
+def test_daily_pipeline_deep_analysis_timeout_is_best_effort(tmp_path):
+    """An optional deep pass cannot hold the screening pipeline indefinitely."""
+
+    class SlowDeepSkill:
+        async def execute(self, params, config):
+            await asyncio.sleep(60)
+            if False:  # pragma: no cover - keeps this an async generator
+                yield None
+
+    async def run():
+        db = Database(tmp_path / "daily-deep-timeout.db")
+        skill = DailyPipelineSkill()
+        events = [
+            event
+            async for event in skill.execute(
+                DailyPipelineInput(limit=1, candidate_limit=5),
+                {
+                    "db": db,
+                    "stockmanager_mcp_enabled": False,
+                    "daily_pipeline_demo_fallback": True,
+                    "daily_pipeline_deep_analysis_enabled": True,
+                    "daily_pipeline_deep_analysis_limit": 1,
+                    "daily_pipeline_deep_analysis_timeout_seconds": 0.01,
+                    "daily_pipeline_deep_analysis_skill": SlowDeepSkill(),
+                },
+            )
+        ]
+        complete = [event for event in events if event.event_type == "skill_complete"][-1]
+        candidate_event = [
+            event for event in events if event.event_type == "daily_pipeline_candidates"
+        ][-1]
+        assert complete.data["deep_meta"]["analyzed"] == 0
+        assert complete.data["deep_meta"]["failed"] == 1
+        assert any("timed out" in warning for warning in candidate_event.data["warnings"])
 
     asyncio.run(run())
 

@@ -22,6 +22,28 @@ class RunResponse(BaseModel):
     completed_at: str | None = None
     error: str | None = None
     params: dict | None = None
+    result: dict | None = None
+    duration_ms: int | None = None
+    event_count: int = 0
+
+
+def _run_response(run) -> RunResponse:
+    duration_ms = None
+    if run.started_at and run.completed_at:
+        duration_ms = max(0, int((run.completed_at - run.started_at).total_seconds() * 1000))
+    return RunResponse(
+        id=run.id,
+        skill_id=run.skill_id,
+        status=run.status.value,
+        created_at=run.created_at.isoformat(),
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        completed_at=run.completed_at.isoformat() if run.completed_at else None,
+        error=run.error,
+        params=run.params,
+        result=run.result,
+        duration_ms=duration_ms,
+        event_count=len(run.events),
+    )
 
 
 @router.post("/runs", response_model=RunResponse)
@@ -36,13 +58,7 @@ async def create_run(request: Request, body: CreateRunRequest):
         raise HTTPException(status_code=404, detail=f"Skill '{body.skill_id}' not found")
 
     run = await run_manager.create_run(skill, body.params, config)
-    return RunResponse(
-        id=run.id,
-        skill_id=run.skill_id,
-        status=run.status.value,
-        created_at=run.created_at.isoformat(),
-        params=run.params,
-    )
+    return _run_response(run)
 
 
 @router.get("/runs", response_model=list[RunResponse])
@@ -51,16 +67,7 @@ async def list_runs(request: Request, limit: int = 50, offset: int = 0):
     run_manager = request.app.state.run_manager
     runs = run_manager.list_runs(limit=limit, offset=offset)
     return [
-        RunResponse(
-            id=r.id,
-            skill_id=r.skill_id,
-            status=r.status.value,
-            created_at=r.created_at.isoformat(),
-            started_at=r.started_at.isoformat() if r.started_at else None,
-            completed_at=r.completed_at.isoformat() if r.completed_at else None,
-            error=r.error,
-            params=r.params,
-        )
+        _run_response(r)
         for r in runs
     ]
 
@@ -72,16 +79,7 @@ async def get_run(request: Request, run_id: str):
     run = run_manager.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return RunResponse(
-        id=run.id,
-        skill_id=run.skill_id,
-        status=run.status.value,
-        created_at=run.created_at.isoformat(),
-        started_at=run.started_at.isoformat() if run.started_at else None,
-        completed_at=run.completed_at.isoformat() if run.completed_at else None,
-        error=run.error,
-        params=run.params,
-    )
+    return _run_response(run)
 
 
 @router.delete("/runs/{run_id}")
@@ -112,6 +110,7 @@ SKILL_LABELS = {
     "risk_monitor": "风险监控",
     "portfolio_management": "持仓管理",
     "daily_review": "收盘复盘",
+    "market_overview": "市场全景",
 }
 
 

@@ -36,8 +36,9 @@ def _save_backtest_artifact(db: Any, item: dict[str, Any]) -> None:
 
 class AuditRunRequest(BaseModel):
     as_of_date: str | None = None
-    horizons: list[int] = Field(default_factory=lambda: [1, 5, 10, 20])
+    horizons: list[int] = Field(default_factory=list)
     limit: int = Field(default=20, ge=1, le=100)
+    include_standard_horizons: bool = False
 
 
 class ExecutionRequest(BaseModel):
@@ -121,7 +122,10 @@ async def list_outcomes(request: Request, decision_id: str | None = None, limit:
 async def evaluate_decisions(request: Request, body: AuditRunRequest):
     horizons = tuple(sorted({max(1, min(int(value), 120)) for value in body.horizons}))
     return await DecisionAuditEngine(request.app.state.db, request.app.state.config).evaluate_due(
-        as_of_date=body.as_of_date, horizons=horizons, limit=body.limit
+        as_of_date=body.as_of_date,
+        horizons=horizons,
+        limit=body.limit,
+        include_standard_horizons=body.include_standard_horizons,
     )
 
 

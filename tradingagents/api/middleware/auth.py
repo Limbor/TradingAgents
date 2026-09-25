@@ -2,8 +2,9 @@
 
 When ``api_auth_token`` is set in config (env ``TRADINGAGENTS_API_AUTH_TOKEN``),
 REST requests must carry ``Authorization: Bearer <token>`` (or ``?token=``).
-WebSocket endpoints read the token from the ``?token=`` query parameter since
-browsers cannot set headers on the WS handshake.
+Browser WebSockets carry the token in a negotiated subprotocol entry so it is
+not exposed in request URLs or access logs. ``?token=`` remains a compatibility
+fallback for non-browser clients.
 
 When the token is empty (the default), auth is disabled — preserving the
 local-desktop single-user experience. Set the env var when exposing the API
@@ -66,14 +67,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def verify_ws_token(query_params, config: dict) -> bool:
-    """Verify the ``?token=`` query param for WebSocket handshakes.
+def verify_ws_token(query_params, config: dict, headers=None) -> bool:
+    """Verify a WS subprotocol token, with a query-param compatibility fallback.
 
     Returns True when auth is disabled (no token configured) or the token matches.
     """
     expected = auth_token_configured(config)
     if not expected:
         return True
+    offered = ((headers.get("sec-websocket-protocol") if headers else "") or "").split(",")
+    for protocol in (item.strip() for item in offered):
+        if protocol.startswith("auth.") and hmac.compare_digest(protocol[5:], expected):
+            return True
     supplied = (query_params.get("token") if query_params else "") or ""
     return bool(supplied) and hmac.compare_digest(supplied, expected)
 

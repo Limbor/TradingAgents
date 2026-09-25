@@ -38,7 +38,12 @@ def get_social_sentiment(
                         title=f"Eastmoney hot rank snapshot for {display}",
                     ))
                 else:
-                    sections.append(f"# {display} not in current eastmoney hot ranking top list.")
+                    # Not in the top-100 list; fetch the exact rank per-stock.
+                    _append_hot_rank_fallback(
+                        sections, code, display,
+                        f"{display} not in current eastmoney hot ranking top list.",
+                        try_list=False,
+                    )
     except Exception as exc:
         _append_hot_rank_fallback(sections, code, display, f"AKShare wrapper unavailable: {exc}")
 

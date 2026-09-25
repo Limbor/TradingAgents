@@ -30,9 +30,9 @@ class RunTestSkill(BaseSkill):
         return RunInput
 
     async def execute(self, params, config) -> AsyncIterator[SkillEvent]:
-        yield SkillEvent(event_type="step1", data={"msg": "starting"})
+        yield SkillEvent(event_type="agent_status", data={"msg": "starting"})
         await asyncio.sleep(0.01)
-        yield SkillEvent(event_type="step2", data={"msg": "done"})
+        yield SkillEvent(event_type="skill_complete", data={"status": "success", "value": params.value})
 
     async def cancel(self):
         pass
@@ -48,8 +48,43 @@ def test_create_and_complete_run():
         completed = manager.get_run(r.id)
         assert completed.status == RunStatus.COMPLETED
         assert [e.event_type for e in completed.events] == [
-            "step1",
-            "step2",
+            "agent_status",
+            "skill_complete",
+            "run_complete",
+        ]
+
+    asyncio.run(run())
+
+
+def test_run_manager_accepts_stock_analysis_graph_events():
+    """Raw graph events consumed by the Analysis page remain valid Skill events."""
+
+    class GraphEventSkill(RunTestSkill):
+        async def execute(self, params, config) -> AsyncIterator[SkillEvent]:
+            yield SkillEvent(
+                event_type="tool_call",
+                data={"tool": "get_verified_market_snapshot", "args": {"symbol": "603341.SH"}},
+            )
+            yield SkillEvent(
+                event_type="report_complete",
+                data={"sections": {"final_trade_decision": "HOLD"}},
+            )
+            yield SkillEvent(
+                event_type="skill_complete",
+                data={"status": "success", "value": params.value},
+            )
+
+    async def run():
+        manager = RunManager()
+        result = await manager.create_run(GraphEventSkill(), {"value": "test"}, {})
+        await asyncio.wait_for(result._task, timeout=1.0)
+
+        completed = manager.get_run(result.id)
+        assert completed.status == RunStatus.COMPLETED
+        assert [event.event_type for event in completed.events] == [
+            "tool_call",
+            "report_complete",
+            "skill_complete",
             "run_complete",
         ]
 
@@ -60,8 +95,8 @@ def test_list_runs():
     async def run():
         manager = RunManager()
         skill = RunTestSkill()
-        await manager.create_run(skill, {}, {})
-        await manager.create_run(skill, {}, {})
+        await manager.create_run(skill, {"value": "one"}, {})
+        await manager.create_run(skill, {"value": "two"}, {})
         await asyncio.sleep(0.2)
         runs = manager.list_runs()
         assert len(runs) == 2
@@ -76,7 +111,7 @@ def test_subscribe_and_receive():
         r = await manager.create_run(skill, {}, {})
         queue = manager.subscribe(r.id)
         event = await asyncio.wait_for(queue.get(), timeout=1.0)
-        assert event.event_type == "step1"
+        assert event.event_type == "agent_status"
         manager.unsubscribe(r.id, queue)
 
     asyncio.run(run())

@@ -34,3 +34,39 @@ def test_history_validation_groups_decisions_and_gates_small_samples():
     assert result["effectiveness_claim_allowed"] is False
     assert result["pending_ratio"] == 0.5
     assert result["warnings"]
+
+
+def test_history_validation_breaks_out_sources_and_duplicate_signals():
+    cases = [
+        {
+            **_case("BUY", -0.03),
+            "source_type": "daily_pipeline",
+            "symbol": "600001.SH",
+            "signal_date": "2026-07-01",
+            "horizon_days": 5,
+        },
+        {
+            **_case("SELL", -0.08),
+            "source_type": "stock_analysis",
+            "symbol": "600002.SH",
+            "signal_date": "2026-07-02",
+            "horizon_days": 5,
+        },
+        {
+            **_case("SELL", -0.08),
+            "source_type": "stock_analysis",
+            "symbol": "600002.SH",
+            "signal_date": "2026-07-02",
+            "horizon_days": 5,
+        },
+    ]
+
+    result = validate_decision_history(cases, min_samples=5)
+
+    assert result["by_source"]["daily_pipeline"]["win_rate"] == 0.0
+    assert result["by_source"]["stock_analysis"]["win_rate"] == 1.0
+    assert result["unique_signal_count"] == 2
+    assert result["unique_symbol_count"] == 2
+    assert result["unique_signal_date_count"] == 2
+    assert result["duplicate_signal_count"] == 1
+    assert any("duplicated" in warning for warning in result["warnings"])

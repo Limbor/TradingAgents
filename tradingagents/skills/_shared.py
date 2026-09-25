@@ -6,6 +6,9 @@ These functions are pure helpers — they do not interact with external services
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import date
 from typing import Any
 
@@ -17,6 +20,69 @@ from tradingagents.dataflows.mcp_adapter import normalize_quant_candidate
 
 # Common constant shared by daily_pipeline and market_scanner
 FACTOR_DATA_SOURCE = "stockmanager_mcp"
+
+# ---------------------------------------------------------------------------
+# MCP async-rank progress streaming (requirements doc R1)
+# ---------------------------------------------------------------------------
+
+# Chinese labels for the MCP ranking job stages (get_job_status.progress.stage).
+MCP_RANK_STAGE_LABELS: dict[str, str] = {
+    "universe_resolve": "解析候选池",
+    "prefilter": "预筛过滤",
+    "factor_compute": "因子计算",
+    "scoring": "打分排序",
+    "decision_gate": "决策门控",
+    "done": "完成",
+}
+
+
+def rank_progress_detail(progress: dict[str, Any]) -> str:
+    """Format an MCP job progress dict into a human-readable step detail."""
+    stage = str(progress.get("stage") or "")
+    label = MCP_RANK_STAGE_LABELS.get(
+        stage, str(progress.get("stage_label") or stage or "量化计算")
+    )
+    parts = [label]
+    pct = progress.get("progress_pct")
+    if isinstance(pct, (int, float)):
+        parts.append(f"{pct:.0f}%")
+    extra = progress.get("detail")
+    if extra:
+        parts.append(str(extra))
+    return " · ".join(parts)
+
+
+async def drive_with_progress(
+    factory: Callable[[Callable[[dict[str, Any]], Awaitable[None]]], Awaitable[Any]],
+) -> AsyncIterator[tuple[str, Any]]:
+    """Run ``factory(progress_cb)`` while streaming its progress updates.
+
+    Skills are async generators, but the ranking call is a plain awaitable
+    that reports progress through a callback. This helper bridges the two:
+    it yields ``("progress", update_dict)`` items as they arrive and finally
+    ``("result", value)`` when the awaitable completes.
+    """
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def _on_progress(update: dict[str, Any]) -> None:
+        await queue.put(update)
+
+    task = asyncio.ensure_future(factory(_on_progress))
+    try:
+        while True:
+            if task.done() and queue.empty():
+                break
+            try:
+                update = await asyncio.wait_for(queue.get(), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
+            yield ("progress", update)
+        yield ("result", await task)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 # ---------------------------------------------------------------------------
 # Demo / sample data
@@ -136,7 +202,7 @@ def default_filters(
         "exclude_st": True,
         "exclude_suspended": True,
         "exclude_one_price_limit": True,
-        "min_amount_20d": 0,
+        "min_amount_20d": 20_000_000,
     }
     bf = (board_filter or "").strip() or "all"
     if bf != "all":
@@ -150,6 +216,12 @@ def default_filters(
             extra_bf = (str(extra.get("board_filter") or "").strip()) or "all"
             extra = {**extra, "board_filter": extra_bf}
         filters.update(extra)
+    # FilterPanel labels this field in 万元, while the MCP contract uses 元.
+    # Preserve compatibility with programmatic configs that already pass raw
+    # yuan by only converting small UI-shaped values.
+    amount = optional_float(filters.get("min_amount_20d"))
+    if amount is not None and 0 < amount < 1_000_000:
+        filters["min_amount_20d"] = amount * 10_000
     return filters
 
 

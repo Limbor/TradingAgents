@@ -114,7 +114,10 @@ def get_market_risk_instruction(market: str | None = None) -> str:
         "limit-down exit failure, ST/退市 warning risk, theme退潮 risk, and "
         "liquidity/crowding from turnover and成交额. Provide position sizing, "
         "stop/invalidating conditions, and next-session auction/opening checks "
-        "instead of a bare BUY/HOLD/SELL."
+        "instead of a bare BUY/HOLD/SELL. Treat order quantities as hard exchange "
+        "constraints: partial sells from whole-lot holdings use 100-share lots; an "
+        "odd-lot remainder is sold only once in full. A 100-share holding cannot be "
+        "reduced partially—use HOLD or EXIT all 100 shares."
     )
 
 

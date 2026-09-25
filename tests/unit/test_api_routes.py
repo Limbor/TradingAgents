@@ -98,6 +98,23 @@ def test_update_config_toggles_adaptive_alpha(client):
     assert client.get("/api/v1/config").json()["adaptive_alpha_enabled"] is True
 
 
+def test_update_config_enables_safe_top1_deep_analysis(client):
+    res = client.put(
+        "/api/v1/config",
+        json={
+            "daily_pipeline_deep_analysis_enabled": True,
+            "daily_pipeline_deep_analysis_limit": 1,
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["daily_pipeline_deep_analysis_enabled"] is True
+    assert res.json()["daily_pipeline_deep_analysis_limit"] == 1
+    assert client.put(
+        "/api/v1/config",
+        json={"daily_pipeline_deep_analysis_limit": -1},
+    ).status_code == 422
+
+
 def test_update_config_allows_backend_url_reset(client):
     res = client.put(
         "/api/v1/config",
@@ -232,20 +249,51 @@ def test_holdings_adjust_add_recomputes_avg_cost(client):
     assert body["closed"] is False
 
 
+def test_holdings_adjust_is_idempotent(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 200, "avg_cost": 1500, "current_price": 1600,
+    })
+    request = {
+        "action": "reduce", "quantity": 100, "price": 1700,
+        "idempotency_key": "test-reduce-600519-001",
+    }
+    first = client.post("/api/v1/holdings/600519.SH/adjust", json=request)
+    replay = client.post("/api/v1/holdings/600519.SH/adjust", json=request)
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["holding"]["quantity"] == 100
+    assert replay.json()["holding"]["quantity"] == 100
+    assert replay.json()["idempotent_replay"] is True
+    assert len(client.app.state.db.list_trade_executions(symbol="600519.SH")) == 1
+
+
 def test_holdings_adjust_reduce_realizes_pnl(client):
     client.put("/api/v1/holdings/600519.SH", json={
-        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+        "symbol": "600519.SH", "quantity": 300, "avg_cost": 1500, "current_price": 1600,
     })
-    # 减仓 4 @ 1800 -> qty 6, avg unchanged 1500, realized = 4*(1800-1500)=1200
+    # 减仓 100 @ 1800 -> qty 200, avg unchanged 1500, realized = 100*(1800-1500)=30000
     res = client.post("/api/v1/holdings/600519.SH/adjust", json={
-        "action": "reduce", "quantity": 4, "price": 1800,
+        "action": "reduce", "quantity": 100, "price": 1800,
     })
     assert res.status_code == 200
     body = res.json()
-    assert body["holding"]["quantity"] == 6
+    assert body["holding"]["quantity"] == 200
     assert body["holding"]["avg_cost"] == 1500
-    assert body["realized_pnl"] == 1200
+    assert body["realized_pnl"] == 30000
     assert body["closed"] is False
+
+
+def test_holdings_adjust_rejects_50_share_partial_sell_from_100(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 100, "avg_cost": 1500, "current_price": 1600,
+    })
+
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 50, "price": 1600,
+    })
+
+    assert res.status_code == 400
+    assert "不支持部分减仓" in res.json()["detail"]
+    assert client.get("/api/v1/holdings").json()[0]["quantity"] == 100
 
 
 def test_holdings_adjust_reduce_full_close_and_oversell(client):

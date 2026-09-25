@@ -80,6 +80,7 @@ def test_extract_features_prefers_top_level_then_candidate():
     assert feats is not None
     assert feats["decision"] == "BUY"
     assert feats["quant_score"] == 72.0  # top-level wins
+    assert feats["llm_score"] == 65.0  # legacy confidence compatibility fallback
     assert feats["llm_confidence"] == 65.0  # from candidate
     assert feats["fusion_mode"] == "quant_llm_fused"
     assert feats["actual_return"] == 0.08
@@ -198,6 +199,7 @@ def test_build_scorecard_aggregates_and_splits_fusion_modes():
     # RankIC present with sample counts
     assert result["rank_ic"]["quant_score"]["n"] == 5
     assert result["rank_ic"]["llm_confidence"]["n"] == 3  # only fused rows have conf
+    assert result["rank_ic"]["llm_score"]["n"] == 3
 
 
 def test_build_scorecard_buckets_and_horizon_distribution():
@@ -260,9 +262,9 @@ def _styled_case(symbol, style, quant, conf, ret):
 
 
 def test_build_scorecard_buckets_alpha_by_style():
-    # 8 short_term fused rows -> effective_n >= min_n (8) -> applicable;
+    # 40 short_term fused rows -> effective_n >= production min_n -> applicable;
     # 3 long_term rows -> below min_n -> present but not applicable.
-    cases = [_styled_case(f"S{i}", "short_term", 80 - i, 70 - i, 0.05 - i * 0.01) for i in range(8)]
+    cases = [_styled_case(f"S{i}", "short_term", 100 - i, 90 - i, 0.20 - i * 0.01) for i in range(40)]
     cases += [_styled_case(f"L{i}", "long_term", 60 - i, 50 - i, 0.02 - i * 0.01) for i in range(3)]
     result = build_scorecard(
         cases,
@@ -277,7 +279,7 @@ def test_build_scorecard_buckets_alpha_by_style():
 
     st = by_style["short_term"]
     assert st["style"] == "short_term"
-    assert st["n_style"] == 8
+    assert st["n_style"] == 40
     assert st["static_alpha"] == 0.7
     assert st["applicable"] is True
 
@@ -302,7 +304,18 @@ def test_build_scorecard_includes_alpha_suggestion_with_prior():
     suggestion = result["alpha_suggestion"]
     assert suggestion["static_alpha"] == 0.55
     assert suggestion["style"] == "medium_term"
-    # only 5 fused rows -> effective_n below default min_n (8) -> not applicable
+    # only 5 fused rows -> effective_n below default min_n (40) -> not applicable
     assert suggestion["applicable"] is False
     assert suggestion["suggested_alpha"] == 0.55
     assert suggestion["n"] == 5
+
+
+def test_rank_ic_prefers_excess_return_over_market_beta():
+    cases = [
+        _case("A", "BUY", 10, 10, "quant_llm_fused", 0.01, 0.03),
+        _case("B", "BUY", 20, 20, "quant_llm_fused", 0.02, 0.02),
+        _case("C", "BUY", 30, 30, "quant_llm_fused", 0.03, 0.01),
+    ]
+    result = build_scorecard(cases, lookback_days=90, min_samples=3)
+    assert result["rank_ic"]["quant_score"]["value"] == -1.0
+    assert result["target_return_basis"] == {"excess": 3, "absolute_fallback": 0}

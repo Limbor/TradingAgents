@@ -7,7 +7,10 @@ endpoints) via per-run asyncio Queues.
 
 import asyncio
 import contextlib
+import copy
+import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,6 +19,8 @@ from typing import Any
 
 from tradingagents.core.persistence import Database
 from tradingagents.skills.base import BaseSkill, SkillEvent
+
+logger = logging.getLogger(__name__)
 
 
 class RunStatus(str, Enum):
@@ -53,9 +58,20 @@ class RunManager:
     per-run asyncio.Queue instances.
     """
 
-    def __init__(self, db: Database | None = None) -> None:
+    def __init__(
+        self,
+        db: Database | None = None,
+        max_concurrent_runs: int = 3,
+        max_retained_runs: int = 200,
+        max_events_per_run: int = 500,
+    ) -> None:
         self._runs: dict[str, Run] = {}
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._active_fingerprints: dict[str, str] = {}
+        self._run_fingerprints: dict[str, str] = {}
+        self._run_slots = asyncio.Semaphore(max(1, int(max_concurrent_runs)))
+        self._max_retained_runs = max(10, int(max_retained_runs))
+        self._max_events_per_run = max(50, int(max_events_per_run))
         self._db = db
         if self._db is not None:
             self._db.reconcile_interrupted_runs()
@@ -67,6 +83,19 @@ class RunManager:
         config: dict[str, Any],
     ) -> Run:
         """Create and start a new run."""
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"skill_id": skill.metadata.id, "params": params},
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            ).encode()
+        ).hexdigest()
+        existing_id = self._active_fingerprints.get(fingerprint)
+        if existing_id:
+            existing = self._runs.get(existing_id)
+            if existing and existing.status in {RunStatus.PENDING, RunStatus.RUNNING}:
+                return existing
         run = Run(
             id=str(uuid.uuid4()),
             skill_id=skill.metadata.id,
@@ -74,10 +103,15 @@ class RunManager:
             _skill=skill,
         )
         self._runs[run.id] = run
+        self._prune_memory()
+        self._active_fingerprints[fingerprint] = run.id
+        self._run_fingerprints[run.id] = fingerprint
         self._subscribers[run.id] = []
-        self._save_run(run)
+        await self._save_run(run)
 
-        run._task = asyncio.create_task(self._execute(run, skill, params, config))
+        run._task = asyncio.create_task(
+            self._execute(run, skill, params, copy.deepcopy(config))
+        )
         return run
 
     async def _execute(
@@ -88,9 +122,35 @@ class RunManager:
         config: dict[str, Any],
     ) -> None:
         """Execute the skill and broadcast events to subscribers."""
+        try:
+            async with self._run_slots:
+                await self._execute_in_slot(run, skill, params, config)
+        finally:
+            # Admission deduplication must never remain stuck after an
+            # unexpected infrastructure error or cancellation.
+            fingerprint = self._run_fingerprints.pop(run.id, None)
+            if fingerprint and self._active_fingerprints.get(fingerprint) == run.id:
+                self._active_fingerprints.pop(fingerprint, None)
+            duration_ms = (
+                int((run.completed_at - run.started_at).total_seconds() * 1000)
+                if run.started_at and run.completed_at else None
+            )
+            logger.info(
+                "run_finished skill=%s run_id=%s status=%s duration_ms=%s events=%d",
+                run.skill_id, run.id, run.status.value, duration_ms, len(run.events),
+            )
+
+    async def _execute_in_slot(
+        self,
+        run: Run,
+        skill: BaseSkill,
+        params: dict[str, Any],
+        config: dict[str, Any],
+    ) -> None:
+        """Execute after admission control grants a global run slot."""
         run.status = RunStatus.RUNNING
         run.started_at = datetime.now(timezone.utc)
-        self._update_run(run)
+        await self._update_run(run)
 
         try:
             validated_params = skill.validate_params(params)
@@ -98,7 +158,7 @@ class RunManager:
             run.status = RunStatus.FAILED
             run.error = f"Validation error: {e}"
             run.completed_at = datetime.now(timezone.utc)
-            self._update_run(run)
+            await self._update_run(run)
             await self._record_event(
                 run,
                 run.id,
@@ -107,18 +167,32 @@ class RunManager:
             return
 
         try:
+            saw_skill_complete = False
             run_config = {**config, "run_id": run.id}
             if self._db is not None:
                 run_config["db"] = self._db
 
             async for event in skill.execute(validated_params, run_config):
-                if event.event_type in {"skill_complete", "run_complete"}:
+                if event.event_type == "skill_complete":
+                    saw_skill_complete = True
+                    await self._record_event(run, run.id, event)
+                    if str(event.data.get("status") or "").lower() != "success":
+                        raise RuntimeError(
+                            str(event.data.get("error") or "Skill reported a non-success result")
+                        )
+                    skill.validate_output(event.data)
                     run.result = event.data
+                    continue
+                if event.event_type == "run_complete":
+                    raise ValueError("Skills must emit skill_complete, not run_complete")
                 await self._record_event(run, run.id, event)
+
+            if not saw_skill_complete:
+                raise RuntimeError("Skill ended without a skill_complete event")
 
             run.status = RunStatus.COMPLETED
             run.completed_at = datetime.now(timezone.utc)
-            self._update_run(run)
+            await self._update_run(run)
             await self._record_event(
                 run,
                 run.id,
@@ -133,7 +207,7 @@ class RunManager:
         except asyncio.CancelledError:
             run.status = RunStatus.CANCELLED
             run.completed_at = datetime.now(timezone.utc)
-            self._update_run(run)
+            await self._update_run(run)
             await self._record_event(
                 run,
                 run.id,
@@ -141,24 +215,29 @@ class RunManager:
             )
         except Exception as e:
             run.status = RunStatus.FAILED
-            run.error = str(e)
+            run.error = f"{type(e).__name__}: {e}"
             run.completed_at = datetime.now(timezone.utc)
-            self._update_run(run)
+            await self._update_run(run)
             await self._record_event(
                 run,
                 run.id,
-                SkillEvent(event_type="error", data={"message": str(e)}),
+                SkillEvent(event_type="error", data={"message": run.error}),
             )
 
     async def _record_event(self, run: Run, run_id: str, event: SkillEvent) -> None:
         """Persist an event in memory, to subscribers, and (best-effort) to the
         DB so a reconnecting client can replay progress after a server restart."""
         run.events.append(event)
+        if len(run.events) > self._max_events_per_run:
+            del run.events[: len(run.events) - self._max_events_per_run]
         # Persist for replay-on-reconnect. Best-effort; never block the pipeline.
         if self._db is not None and hasattr(self._db, "save_run_event"):
             run._event_seq += 1
             with contextlib.suppress(Exception):
-                self._db.save_run_event(run_id, run._event_seq, event.event_type, event.data)
+                await asyncio.to_thread(
+                    self._db.save_run_event,
+                    run_id, run._event_seq, event.event_type, event.data,
+                )
         await self._broadcast(run_id, event)
 
     async def _broadcast(self, run_id: str, event: SkillEvent) -> None:
@@ -180,17 +259,20 @@ class RunManager:
                 with contextlib.suppress(asyncio.QueueFull):
                     queue.put_nowait(event)
 
-    def _save_run(self, run: Run) -> None:
+    async def _save_run(self, run: Run) -> None:
         """Save a run record if persistence is configured."""
         if self._db is None:
             return
-        self._db.save_run(run.id, run.skill_id, run.params, run.status.value)
+        await asyncio.to_thread(
+            self._db.save_run, run.id, run.skill_id, run.params, run.status.value
+        )
 
-    def _update_run(self, run: Run) -> None:
+    async def _update_run(self, run: Run) -> None:
         """Update a run record if persistence is configured."""
         if self._db is None:
             return
-        self._db.update_run_status(
+        await asyncio.to_thread(
+            self._db.update_run_status,
             run.id,
             run.status.value,
             result=run.result,
@@ -215,6 +297,24 @@ class RunManager:
             self._subscribers[run_id] = [
                 q for q in self._subscribers[run_id] if q is not queue
             ]
+            if not self._subscribers[run_id]:
+                self._subscribers.pop(run_id, None)
+
+    def _prune_memory(self) -> None:
+        """Evict oldest terminal runs; persisted history remains queryable."""
+        overflow = len(self._runs) - self._max_retained_runs
+        if overflow <= 0:
+            return
+        terminal = sorted(
+            (
+                run for run in self._runs.values()
+                if run.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+            ),
+            key=lambda run: run.completed_at or run.created_at,
+        )
+        for run in terminal[:overflow]:
+            self._runs.pop(run.id, None)
+            self._subscribers.pop(run.id, None)
 
     def get_run(self, run_id: str) -> Run | None:
         """Get a run by ID."""
@@ -227,6 +327,19 @@ class RunManager:
         run = self._run_from_record(record)
         self._runs[run.id] = run
         return run
+
+    async def wait_for_run(self, run_id: str, timeout: float | None = None) -> Run:
+        """Wait for an in-process run to reach a terminal state."""
+        run = self.get_run(run_id)
+        if run is None:
+            raise KeyError(f"Run not found: {run_id}")
+        if run._task is not None and not run._task.done():
+            waiter = asyncio.shield(run._task)
+            if timeout is None:
+                await waiter
+            else:
+                await asyncio.wait_for(waiter, timeout=timeout)
+        return self.get_run(run_id) or run
 
     def list_runs(self, limit: int = 50, offset: int = 0) -> list[Run]:
         """List recent runs with pagination."""

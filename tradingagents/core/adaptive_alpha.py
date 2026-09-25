@@ -25,7 +25,7 @@ def suggest_alpha(
     k: int = 20,
     max_data_weight: float = 0.5,
     band: tuple[float, float] = (0.2, 0.8),
-    min_n: int = 8,
+    min_n: int = 40,
 ) -> dict:
     """Suggest a quant weight (alpha) from relative RankIC, shrunk to a prior.
 

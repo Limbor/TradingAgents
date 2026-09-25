@@ -32,6 +32,29 @@ class SkillEvent:
 
     event_type: str
     data: dict[str, Any]
+    schema_version: str = "1.0"
+
+    def __post_init__(self) -> None:
+        allowed = {
+            "skill_start", "skill_progress", "agent_status", "report_chunk",
+            "tool_call", "report_complete",
+            "portfolio_update", "position_advice", "risk_monitor_results",
+            "scanner_candidates", "daily_pipeline_candidates", "skill_complete",
+            "run_complete", "run_cancelled", "error",
+        }
+        if self.event_type not in allowed:
+            raise ValueError(f"Unknown skill event type: {self.event_type}")
+        if not isinstance(self.data, dict):
+            raise TypeError("SkillEvent.data must be a dict")
+        if self.event_type == "skill_progress":
+            required = {"stage_id", "stage_label", "status"}
+            missing = required.difference(self.data)
+            if missing:
+                raise ValueError(f"skill_progress missing fields: {sorted(missing)}")
+        elif self.event_type == "report_chunk" and not isinstance(self.data.get("content"), str):
+            raise ValueError("report_chunk.content must be a string")
+        elif self.event_type == "skill_complete" and "status" not in self.data:
+            raise ValueError("skill_complete.status is required")
 
 
 SkillProgressStatus = Literal["queued", "running", "completed", "failed"]
@@ -122,3 +145,7 @@ class BaseSkill(ABC):
     def validate_params(self, raw: dict) -> BaseModel:
         """Validate raw input against the skill's input schema."""
         return self.input_schema.model_validate(raw)
+
+    def validate_output(self, raw: dict[str, Any]) -> BaseModel:
+        """Validate a successful terminal payload against the declared schema."""
+        return self.output_schema.model_validate(raw)

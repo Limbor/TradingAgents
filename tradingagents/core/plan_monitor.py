@@ -57,14 +57,27 @@ async def evaluate_active_plans(
         trade_date = result.get("trade_date")
         if trade_date is not None:
             update_fields["last_checked_trade_date"] = trade_date
-        if result.get("triggered"):
+        expired = bool(
+            trade_date
+            and plan.get("expires_at")
+            and str(trade_date) > str(plan.get("expires_at"))
+        )
+        if expired:
+            update_fields.update(
+                status="closed",
+                lifecycle_state="expired",
+                trigger_reason=f"recommendation expired after {plan.get('expires_at')}",
+            )
+        elif result.get("triggered"):
             update_fields.update(
                 status="triggered",
                 triggered_at=now,
                 trigger_reason=str(result.get("reason", "")),
             )
+            if result.get("next_lifecycle_state"):
+                update_fields["lifecycle_state"] = result["next_lifecycle_state"]
         db.update_plan(plan["id"], **update_fields)
-        if not result.get("triggered"):
+        if expired or not result.get("triggered"):
             continue
         alert = {
             "plan_id": plan["id"],

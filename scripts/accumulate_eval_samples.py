@@ -27,8 +27,10 @@ reads ``decision_records`` only, so it stays clean; the live scorecard and
 reflection UI filter eval samples out via ``exclude_source_types``. Eval cases
 are enrolled as non-eligible + written directly at ``status="reflected"`` (with
 outcome backfilled), so the reflection batch never picks them up for lesson
-mining either. With no eval rows present, all existing behavior is byte-for-byte
-unchanged.
+mining either. When adaptive alpha is explicitly enabled, production may read
+only the aggregate evaluation scorecard; it still never consumes individual
+eval cases as lessons or decisions. With no eval rows present, the override
+fails closed and static weights remain unchanged.
 
 LESSON MATERIAL (``--extract-lessons``, on by default): for the real-LLM subset
 only, each reflected case is additionally run through
@@ -149,6 +151,7 @@ def build_eval_snapshot(
         "final_decision": fusion.get("final_decision"),
         "signal": fusion.get("signal"),
         "fusion_mode": fusion.get("fusion_mode"),
+        "llm_score": fusion.get("llm_score"),
         "llm_confidence": fusion.get("llm_confidence"),
         "investment_style": style,
         "factor_profile": factor_profile,
@@ -292,13 +295,9 @@ async def extract_case_lesson(
     return lesson or None
 
 
-# Ordinal LLM-conviction proxy used only when the analysis text carries no
-# machine-readable numeric confidence. ``_extract_conclusion`` parses confidence
-# via regex from free text, so models that never emit "confidence: NN" (e.g.
-# deepseek-chat) would otherwise yield zero LLM RankIC samples. The rating IS the
-# model's directional conviction, so mapping it to a monotone score preserves the
-# ordering RankIC needs. A model-emitted numeric confidence always wins.
-RATING_CONFIDENCE_PROXY = {
+# Rating is converted only into a directional score.  It must never be used as
+# epistemic confidence: a confident Sell is still a low directional score.
+RATING_DIRECTION_SCORE = {
     "buy": 80.0,
     "overweight": 65.0,
     "hold": 50.0,
@@ -306,14 +305,9 @@ RATING_CONFIDENCE_PROXY = {
     "sell": 20.0,
 }
 
-
 def _confidence_from_conclusion(conclusion: dict[str, Any]) -> float | None:
-    """Numeric LLM confidence, falling back to a rating-derived ordinal proxy."""
-    numeric = _as_float(conclusion.get("confidence"))
-    if numeric is not None:
-        return numeric
-    rating = str(conclusion.get("rating") or "").strip().lower()
-    return RATING_CONFIDENCE_PROXY.get(rating)
+    """Return only model-emitted epistemic confidence, never a direction proxy."""
+    return _as_float(conclusion.get("confidence"))
 
 
 async def analyze_with_llm(
@@ -371,6 +365,9 @@ async def analyze_with_llm(
     return {
         "rating": conclusion.get("rating"),
         "confidence": _confidence_from_conclusion(conclusion),
+        "llm_score": RATING_DIRECTION_SCORE.get(
+            str(conclusion.get("rating") or "").strip().lower()
+        ),
     }
 
 
@@ -524,8 +521,23 @@ async def run_single_track(
             llm_assessment = None
             if symbol in llm_targets:
                 verdict = await analyze_with_llm(base_config, symbol, trade_date)
-                if verdict and verdict.get("confidence") is not None:
-                    llm_assessment = LLMAssessment(llm_confidence=verdict["confidence"])
+                rating = str((verdict or {}).get("rating") or "").strip().lower()
+                direction_score = (verdict or {}).get("llm_score")
+                if direction_score is None:
+                    direction_score = RATING_DIRECTION_SCORE.get(rating)
+                if verdict and direction_score is not None:
+                    view = {
+                        "buy": "strong_positive",
+                        "overweight": "positive",
+                        "hold": "neutral",
+                        "underweight": "negative",
+                        "sell": "strong_negative",
+                    }.get(rating, "neutral")
+                    llm_assessment = LLMAssessment(
+                        llm_score=direction_score,
+                        llm_confidence=verdict.get("confidence"),
+                        llm_view=view,
+                    )
             fuse_mode = args.mode == "fused" and llm_assessment is not None
             fusion = fuse_candidate_signal(
                 candidate, args.style, llm_assessment if fuse_mode else None
@@ -535,6 +547,7 @@ async def run_single_track(
             # LLM RankIC (extract_features reads llm_confidence independently).
             if llm_assessment is not None and not fuse_mode:
                 fusion = dict(fusion)
+                fusion["llm_score"] = llm_assessment.llm_score
                 fusion["llm_confidence"] = llm_assessment.llm_confidence
             case_id = enroll_eval_case(
                 db,

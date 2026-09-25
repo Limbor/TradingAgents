@@ -4,9 +4,10 @@ import os
 import time
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tradingagents.core.mcp_client import get_mcp_status, shutdown_mcp_client
+from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV
 
 router = APIRouter()
 
@@ -24,6 +25,9 @@ class ConfigResponse(BaseModel):
     stockmanager_mcp_enabled: bool = True
     stockmanager_mcp_timeout: float = 30.0
     daily_pipeline_filters: dict = {}
+    daily_pipeline_llm_review_enabled: bool = True
+    daily_pipeline_deep_analysis_enabled: bool = False
+    daily_pipeline_deep_analysis_limit: int = 1
     scheduler_enabled: bool = True
     adaptive_alpha_enabled: bool = False
     api_keys: dict[str, bool] = {}
@@ -42,6 +46,9 @@ class ConfigUpdate(BaseModel):
     stockmanager_mcp_enabled: bool | None = None
     stockmanager_mcp_timeout: float | None = None
     daily_pipeline_filters: dict | None = None
+    daily_pipeline_llm_review_enabled: bool | None = None
+    daily_pipeline_deep_analysis_enabled: bool | None = None
+    daily_pipeline_deep_analysis_limit: int | None = Field(default=None, ge=0, le=20)
     scheduler_enabled: bool | None = None
     adaptive_alpha_enabled: bool | None = None
 
@@ -81,31 +88,11 @@ _PROVIDER_DISPLAY_NAMES = {
     "openai_compatible": "OpenAI Compatible",
 }
 
-_API_KEY_ENV_VARS = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "google": "GOOGLE_API_KEY",
-    "xai": "XAI_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
-    "qwen": "DASHSCOPE_API_KEY",
-    "qwen-cn": "DASHSCOPE_API_KEY",
-    "glm": "GLM_API_KEY",
-    "glm-cn": "GLM_API_KEY",
-    "minimax": "MINIMAX_API_KEY",
-    "minimax-cn": "MINIMAX_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
-    "kimi": "MOONSHOT_API_KEY",
-    "groq": "GROQ_API_KEY",
-    "nvidia": "NVIDIA_API_KEY",
-}
-
-
 def _get_api_key_status() -> dict[str, bool]:
     """Check which API keys are configured."""
     result = {}
-    for provider, env_var in _API_KEY_ENV_VARS.items():
-        result[provider] = bool(os.environ.get(env_var))
+    for provider, env_var in PROVIDER_API_KEY_ENV.items():
+        result[provider] = env_var is None or bool(os.environ.get(env_var))
     return result
 
 
@@ -123,6 +110,15 @@ def _build_config_response(config: dict) -> ConfigResponse:
         stockmanager_mcp_enabled=config.get("stockmanager_mcp_enabled", True),
         stockmanager_mcp_timeout=config.get("stockmanager_mcp_timeout", 30.0),
         daily_pipeline_filters=config.get("daily_pipeline_filters") or {},
+        daily_pipeline_llm_review_enabled=config.get(
+            "daily_pipeline_llm_review_enabled", True
+        ),
+        daily_pipeline_deep_analysis_enabled=config.get(
+            "daily_pipeline_deep_analysis_enabled", False
+        ),
+        daily_pipeline_deep_analysis_limit=config.get(
+            "daily_pipeline_deep_analysis_limit", 1
+        ),
         scheduler_enabled=config.get("scheduler_enabled", True),
         adaptive_alpha_enabled=config.get("adaptive_alpha_enabled", False),
         api_keys=_get_api_key_status(),
@@ -153,6 +149,16 @@ async def update_config(request: Request, body: ConfigUpdate):
         request.app.state.mcp_client = None
         request.app.state.mcp_status = await get_mcp_status(config)
         request.app.state.mcp_status_checked_at = time.monotonic()
+
+    llm_fields = {"llm_provider", "quick_think_llm", "deep_think_llm", "backend_url"}
+    if llm_fields.intersection(body.model_fields_set):
+        chat_agent = getattr(request.app.state, "chat_agent", None)
+        if chat_agent is not None:
+            chat_agent.reconfigure(config)
+        orchestrator = getattr(request.app.state, "orchestrator", None)
+        llm_router = getattr(orchestrator, "llm_router", None)
+        if llm_router is not None:
+            llm_router.reconfigure(config)
 
     # Runtime scheduler toggle: start/stop the background scheduler when the
     # flag is flipped, so users can enable/disable daily jobs without an env

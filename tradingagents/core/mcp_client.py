@@ -12,7 +12,8 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -31,6 +32,9 @@ class MCPConfig:
     tool_timeout: float = 120.0
     sse_read_timeout: float = 300.0
     health_timeout: float = 2.0
+    # Total budget for waiting on an async MCP job (rank_factor_candidates
+    # with async_mode); individual status polls still use tool_timeout.
+    job_poll_timeout: float = 600.0
 
 
 @dataclass
@@ -78,6 +82,7 @@ def config_from_app_config(config: dict[str, Any] | None) -> MCPConfig:
         tool_timeout=float(config.get("stockmanager_mcp_timeout", 30.0)),
         sse_read_timeout=float(config.get("stockmanager_mcp_sse_read_timeout", 300.0)),
         health_timeout=float(config.get("stockmanager_mcp_health_timeout", 2.0)),
+        job_poll_timeout=float(config.get("stockmanager_mcp_job_poll_timeout", 600.0)),
     )
 
 
@@ -93,10 +98,15 @@ class StockManagerMCPClient:
         self._write: Any = None
         self._get_session_id: Callable[[], str | None] | None = None
         self._connected = False
+        self._session_owner_task: asyncio.Task[Any] | None = None
         # A semaphore (not a lock) so multiple MCP tool calls can run concurrently
         # — RiskMonitor scanning N holdings would otherwise serialize and a
         # single 120s timeout would block every subsequent call.
         self._call_semaphore = asyncio.Semaphore(8)
+        self._connection_lock = asyncio.Lock()
+        self._active_calls = 0
+        self._idle_calls = asyncio.Event()
+        self._idle_calls.set()
         self._status = MCPStatus(enabled=self._config.enabled, url=self._config.url)
 
     async def __aenter__(self) -> StockManagerMCPClient:
@@ -113,6 +123,17 @@ class StockManagerMCPClient:
     @property
     def status(self) -> MCPStatus:
         return self._status
+
+    def supports_tool_feature(self, tool: str, feature: str) -> bool:
+        """Check the server's capabilities.tool_features declaration.
+
+        Requirements doc R4: consumers must feature-detect optional behaviors
+        (async_mode, batch_ts_codes, ...) instead of hardcoding versions.
+        """
+        caps = self._status.capabilities or {}
+        features = caps.get("tool_features") or {}
+        tool_features = features.get(tool)
+        return isinstance(tool_features, list) and feature in tool_features
 
     async def refresh_status(self) -> MCPStatus:
         """Refresh REST health and capability status without opening MCP tools."""
@@ -146,14 +167,27 @@ class StockManagerMCPClient:
 
     async def connect(self) -> bool:
         """Establish the MCP Streamable HTTP session. Returns True on success."""
-        if self._connected:
-            return True
+        if (
+            not self._connected
+            and (self._session is not None or self._transport_context is not None)
+        ):
+            await self.disconnect()
+        async with self._connection_lock:
+            if self._connected:
+                return True
+            # A failed generation is not torn down while another tool call is
+            # still leasing it. This prevents reconnect from invalidating the
+            # shared session underneath concurrent callers.
+            await self._idle_calls.wait()
+            return await self._connect_unlocked()
+
+    async def _connect_unlocked(self) -> bool:
         # Clean up any leftover session/transport from a prior failed call so the
         # next connection attempt starts from a clean slate. We only mark
         # ``_connected = False`` on failure (never disconnect while holding the
         # call lock), so dangling resources may exist here.
         if self._session is not None or self._transport_context is not None:
-            await self.disconnect()
+            await self._disconnect_unlocked()
         status = await self.refresh_status()
         if not self._config.enabled:
             return False
@@ -185,16 +219,34 @@ class StockManagerMCPClient:
             self._status.connected = True
             self._status.error = None
             self._connected = True
+            self._session_owner_task = asyncio.current_task()
             logger.info("Connected to StockManager MCP Server at %s", self._config.url)
             return True
         except Exception as exc:
             self._status.error = f"{type(exc).__name__}: {exc}"
             logger.warning("Failed to connect to StockManager MCP: %s", exc)
-            await self.disconnect()
+            await self._disconnect_unlocked()
             return False
 
     async def disconnect(self) -> None:
         """Close the MCP session."""
+        async with self._connection_lock:
+            await self._idle_calls.wait()
+            await self._disconnect_unlocked()
+
+    async def _acquire_session_lease(self) -> bool:
+        """Connect and increment the active generation lease atomically."""
+        async with self._connection_lock:
+            if not self._connected:
+                await self._idle_calls.wait()
+                if not await self._connect_unlocked():
+                    return False
+            self._active_calls += 1
+            self._idle_calls.clear()
+            return True
+
+    async def _disconnect_unlocked(self) -> None:
+        """Close resources while the connection lock is held."""
         if self._session_context is not None:
             with contextlib.suppress(Exception):
                 await self._session_context.__aexit__(None, None, None)
@@ -208,6 +260,7 @@ class StockManagerMCPClient:
         self._write = None
         self._get_session_id = None
         self._connected = False
+        self._session_owner_task = None
         self._status.connected = False
 
     async def list_tools(self) -> list[str]:
@@ -226,48 +279,25 @@ class StockManagerMCPClient:
 
     async def _call_tool(self, name: str, arguments: dict) -> Any:
         """Call an MCP tool and return parsed JSON, or None on failure."""
-        if not await self.connect():
-            logger.warning("MCP not connected; skipping %s", name)
-            return None
         async with self._call_semaphore:
+            # AnyIO's Streamable HTTP transport owns a cancel scope tied to the
+            # task that entered it. FastAPI startup and run tasks are different
+            # tasks, so reusing the startup session here eventually raises
+            # "Attempted to exit cancel scope in a different task". Use a
+            # one-shot session when crossing that task boundary; entry, call
+            # and exit then happen in the same task.
+            owner = self._session_owner_task
+            if self._connected and owner is not None and owner is not asyncio.current_task():
+                return await self._call_tool_isolated(name, arguments)
+            if not await self._acquire_session_lease():
+                logger.warning("MCP not connected; skipping %s", name)
+                return None
             try:
                 result = await asyncio.wait_for(
                     self._session.call_tool(name, arguments),
                     timeout=self._config.tool_timeout,
                 )
-                if result.content:
-                    text = getattr(result.content[0], "text", str(result.content[0]))
-                    if bool(getattr(result, "isError", False)):
-                        return {
-                            "status": "error",
-                            "error": {"code": "mcp_tool_error", "message": str(text)},
-                            "rows": [],
-                            "warnings": [f"StockManager tool {name} returned an error"],
-                        }
-                    try:
-                        payload = json.loads(text)
-                    except (json.JSONDecodeError, TypeError):
-                        return {
-                            "status": "error",
-                            "error": {
-                                "code": "invalid_json",
-                                "message": f"Tool {name} returned non-JSON content",
-                            },
-                            "rows": [],
-                            "warnings": [str(text)[:500]],
-                        }
-                    if not isinstance(payload, (dict, list)):
-                        return {
-                            "status": "error",
-                            "error": {
-                                "code": "invalid_payload_type",
-                                "message": f"Tool {name} returned {type(payload).__name__}",
-                            },
-                            "rows": [],
-                            "warnings": [],
-                        }
-                    return payload
-                return None
+                return self._decode_tool_result(name, result)
             except asyncio.TimeoutError:
                 logger.warning(
                     "MCP tool %s timed out after %.0fs (increase stockmanager_mcp_timeout if needed)",
@@ -285,6 +315,80 @@ class StockManagerMCPClient:
                 # will clean up dangling resources before rebuilding.
                 self._connected = False
                 return None
+            finally:
+                self._active_calls -= 1
+                if self._active_calls == 0:
+                    self._idle_calls.set()
+
+    async def _call_tool_isolated(self, name: str, arguments: dict) -> Any:
+        """Call through a task-local transport to respect AnyIO ownership."""
+
+        async def invoke() -> Any:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamablehttp_client
+
+            async with (
+                streamablehttp_client(
+                    self._config.url,
+                    timeout=self._config.tool_timeout,
+                    sse_read_timeout=self._config.sse_read_timeout,
+                ) as (read, write, _get_session_id),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                result = await session.call_tool(name, arguments)
+                return self._decode_tool_result(name, result)
+
+        try:
+            return await asyncio.wait_for(invoke(), timeout=self._config.tool_timeout)
+        except asyncio.TimeoutError:
+            message = (
+                f"MCP tool {name} timed out after {self._config.tool_timeout:.0f}s"
+            )
+            self._status.error = message
+            logger.warning(message)
+            return None
+        except Exception as exc:
+            self._status.error = f"{type(exc).__name__}: {exc}"
+            logger.warning("MCP isolated tool %s failed: %s", name, exc)
+            return None
+
+    @staticmethod
+    def _decode_tool_result(name: str, result: Any) -> Any:
+        """Decode the common MCP content envelope into JSON-compatible data."""
+        if not result.content:
+            return None
+        raw_text = getattr(result.content[0], "text", str(result.content[0]))
+        if bool(getattr(result, "isError", False)):
+            return {
+                "status": "error",
+                "error": {"code": "mcp_tool_error", "message": str(raw_text)},
+                "rows": [],
+                "warnings": [f"StockManager tool {name} returned an error"],
+            }
+        try:
+            payload = json.loads(raw_text)
+        except (json.JSONDecodeError, TypeError):
+            return {
+                "status": "error",
+                "error": {
+                    "code": "invalid_json",
+                    "message": f"Tool {name} returned non-JSON content",
+                },
+                "rows": [],
+                "warnings": [str(raw_text)[:500]],
+            }
+        if not isinstance(payload, (dict, list)):
+            return {
+                "status": "error",
+                "error": {
+                    "code": "invalid_payload_type",
+                    "message": f"Tool {name} returned {type(payload).__name__}",
+                },
+                "rows": [],
+                "warnings": [],
+            }
+        return payload
 
     # Data Query Tools
 
@@ -340,6 +444,34 @@ class StockManagerMCPClient:
             args["keywords"] = keywords
         return await self._call_tool("get_risk_announcements", args)
 
+    async def get_risk_announcements_batch(
+        self,
+        ts_codes: list[str],
+        start_date: str,
+        end_date: str,
+        keywords: list[str] | None = None,
+    ) -> dict | None:
+        """Batch risk-announcement scan (requirements doc R3).
+
+        Returns None when the server does not declare ``batch_ts_codes`` so
+        callers can fall back to the per-symbol loop. Rows come back flat with
+        a ``ts_code`` field on each row (``flat_rows`` feature).
+        """
+        if not ts_codes:
+            return {"status": "success", "rows": [], "warnings": []}
+        if not await self.connect():
+            return None
+        if not self.supports_tool_feature("get_risk_announcements", "batch_ts_codes"):
+            return None
+        args: dict[str, Any] = {
+            "ts_codes": ts_codes,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+        if keywords:
+            args["keywords"] = keywords
+        return await self._call_tool("get_risk_announcements", args)
+
     async def get_factor_snapshot(
         self,
         ts_codes: list[str],
@@ -362,10 +494,48 @@ class StockManagerMCPClient:
             args["factors"] = factors
         return await self._call_tool("get_factor_snapshot", args)
 
+    async def get_trade_review_snapshot(
+        self,
+        ts_code: str,
+        trade_date: str,
+        lookback_days: int = 120,
+        adj_type: str = "qfq",
+        plan: dict[str, Any] | None = None,
+    ) -> dict | None:
+        """Fetch the MCP-owned point-in-time chart and deterministic execution gate."""
+        args: dict[str, Any] = {
+            "ts_code": ts_code,
+            "trade_date": trade_date,
+            "lookback_days": lookback_days,
+            "adj_type": adj_type,
+        }
+        if plan:
+            args["plan"] = plan
+        return await self._call_tool("get_trade_review_snapshot", args)
+
+    async def get_chip_distribution_snapshot(
+        self,
+        ts_code: str,
+        trade_date: str,
+        lookback_days: int = 120,
+        adj_type: str = "qfq",
+    ) -> dict | None:
+        """Fetch MCP-owned point-in-time chip-cost distribution evidence."""
+        return await self._call_tool(
+            "get_chip_distribution_snapshot",
+            {
+                "ts_code": ts_code,
+                "trade_date": trade_date,
+                "lookback_days": lookback_days,
+                "adj_type": adj_type,
+            },
+        )
+
     async def rank_factor_candidates(
         self,
         universe_index: str,
         trade_date: str,
+        universe_indices: list[str] | None = None,
         style: str = "medium_term",
         limit: int = 20,
         candidate_limit: int = 200,
@@ -377,6 +547,7 @@ class StockManagerMCPClient:
         enable_decision: bool = True,
         max_per_industry: int | None = 3,
         decision_config: dict[str, Any] | None = None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict | None:
         args: dict[str, Any] = {
             "universe_index": universe_index,
@@ -387,6 +558,8 @@ class StockManagerMCPClient:
             "return_factor_snapshot": return_factor_snapshot,
             "enable_decision": enable_decision,
         }
+        if universe_indices:
+            args["universe_indices"] = list(dict.fromkeys(universe_indices))
         if max_per_industry is not None:
             args["max_per_industry"] = max_per_industry
         if decision_config:
@@ -399,7 +572,91 @@ class StockManagerMCPClient:
             args["filters"] = filters
         if sector_prefs:
             args["sector_prefs"] = sector_prefs
-        return await self._call_tool("rank_factor_candidates", args)
+        # Requirements doc R1: prefer the async job path when the server
+        # declares it — submit returns immediately, then status polls surface
+        # progress (stage/pct) so skills can stream it to the UI timeline.
+        if not await self.connect():
+            logger.warning("MCP not connected; skipping rank_factor_candidates")
+            return _rank_transport_error(
+                "mcp_unavailable",
+                self._status.error or "StockManager MCP connection unavailable",
+            )
+        if not self.supports_tool_feature("rank_factor_candidates", "async_mode"):
+            payload = await self._call_tool("rank_factor_candidates", args)
+            return payload if payload is not None else _rank_transport_error(
+                "mcp_transport_failure",
+                self._status.error or "StockManager ranking call returned no response",
+            )
+        submit = await self._call_tool(
+            "rank_factor_candidates", {**args, "async_mode": True}
+        )
+        if submit is None:
+            return _rank_transport_error(
+                "mcp_transport_failure",
+                self._status.error or "StockManager ranking submission returned no response",
+            )
+        job_id = submit.get("job_id") if isinstance(submit, dict) else None
+        if not job_id:
+            # Server ignored async_mode (or errored): treat as a sync payload.
+            return submit
+        return await self._wait_rank_job(str(job_id), progress_callback)
+
+    async def _wait_rank_job(
+        self,
+        job_id: str,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> dict | None:
+        """Poll an async ranking job to completion, forwarding progress updates."""
+        started = time.monotonic()
+        last_progress: dict[str, Any] | None = None
+        while True:
+            status_payload = await self._call_tool("get_job_status", {"job_id": job_id})
+            if not isinstance(status_payload, dict):
+                return _rank_transport_error(
+                    "mcp_job_status_unavailable",
+                    self._status.error or f"StockManager ranking job {job_id} status unavailable",
+                )
+            job_status = str(status_payload.get("status") or "").lower()
+            progress = status_payload.get("progress")
+            if progress_callback and isinstance(progress, dict) and progress != last_progress:
+                last_progress = progress
+                try:
+                    await progress_callback(progress)
+                except Exception as exc:
+                    logger.debug("rank job progress callback failed: %s", exc)
+            if job_status in {"succeeded", "success", "done", "completed"}:
+                result_payload = await self._call_tool("get_job_result", {"job_id": job_id})
+                unwrapped = _unwrap_job_result(result_payload)
+                return unwrapped if unwrapped is not None else _rank_transport_error(
+                    "mcp_job_result_unavailable",
+                    self._status.error or f"StockManager ranking job {job_id} result unavailable",
+                )
+            if job_status in {"failed", "error", "cancelled"}:
+                return {
+                    "status": "error",
+                    "error": {
+                        "code": "mcp_job_failed",
+                        "message": str(status_payload.get("error") or f"job {job_id} {job_status}"),
+                    },
+                    "rows": [],
+                    "warnings": [f"StockManager ranking job {job_id} ended as {job_status}"],
+                }
+            if time.monotonic() - started > self._config.job_poll_timeout:
+                logger.warning(
+                    "MCP ranking job %s exceeded job_poll_timeout=%.0fs",
+                    job_id,
+                    self._config.job_poll_timeout,
+                )
+                return {
+                    "status": "error",
+                    "error": {"code": "mcp_job_timeout", "message": f"job {job_id} timed out"},
+                    "rows": [],
+                    "warnings": [
+                        f"StockManager ranking job {job_id} did not finish within "
+                        f"{self._config.job_poll_timeout:.0f}s"
+                    ],
+                }
+            await asyncio.sleep(1.0)
 
     # Experiment Tools
 
@@ -550,3 +807,32 @@ async def shutdown_mcp_client() -> None:
 def _sibling_url(url: str, path: str) -> str:
     parsed = urlsplit(url)
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _unwrap_job_result(payload: Any) -> dict | None:
+    """Unwrap the get_job_result envelope {job_id, status, result, warnings}.
+
+    The inner ``result`` is the same shape as the synchronous tool payload;
+    envelope-level warnings are merged so callers see them alongside the
+    tool's own warnings.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    inner = payload.get("result")
+    if not isinstance(inner, dict):
+        return payload
+    envelope_warnings = [str(item) for item in payload.get("warnings") or []]
+    if envelope_warnings:
+        inner = {**inner}
+        inner["warnings"] = [*(inner.get("warnings") or []), *envelope_warnings]
+    return inner
+
+
+def _rank_transport_error(code: str, message: str) -> dict[str, Any]:
+    """Typed failure envelope so selection skills never confuse outages with zero rows."""
+    return {
+        "status": "error",
+        "error": {"code": code, "message": message},
+        "rows": [],
+        "warnings": [message],
+    }

@@ -199,13 +199,11 @@ def test_constituent_symbols_parses_flat_list_and_dict_rows():
     assert acc._constituent_symbols({"constituents": []}) == []
 
 
-def test_confidence_from_conclusion_prefers_numeric_then_rating_proxy():
-    # A model-emitted numeric confidence always wins.
+def test_confidence_and_direction_are_separate():
     assert acc._confidence_from_conclusion({"rating": "Buy", "confidence": 66}) == 66.0
-    # No numeric confidence -> monotone rating proxy (Buy > Hold > Sell).
-    assert acc._confidence_from_conclusion({"rating": "Buy"}) == 80.0
-    assert acc._confidence_from_conclusion({"rating": "hold"}) == 50.0
-    assert acc._confidence_from_conclusion({"rating": "Sell"}) == 20.0
-    # Unknown / missing rating and no confidence -> None (sample simply skipped).
+    assert acc._confidence_from_conclusion({"rating": "Buy"}) is None
+    assert acc.RATING_DIRECTION_SCORE["buy"] == 80.0
+    assert acc.RATING_DIRECTION_SCORE["hold"] == 50.0
+    assert acc.RATING_DIRECTION_SCORE["sell"] == 20.0
     assert acc._confidence_from_conclusion({"rating": "???"}) is None
     assert acc._confidence_from_conclusion({}) is None

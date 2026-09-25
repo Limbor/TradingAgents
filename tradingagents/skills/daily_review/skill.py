@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class DailyReviewInput(BaseModel):
     trade_date: str = Field(default_factory=lambda: date.today().isoformat())
     daily_limit: int = Field(default=5, ge=1, le=20)
-    candidate_limit: int = Field(default=80, ge=5, le=800)
+    candidate_limit: int = Field(default=120, ge=5, le=800)
     board_filter: str = Field(default="all")
     risk_lookback_days: int = Field(default=30, ge=1, le=365)
     reflection_lookback_days: int = Field(default=30, ge=1, le=365)

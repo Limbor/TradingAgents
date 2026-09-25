@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from tradingagents.core.chat_agent import ChatAgent
+from tradingagents.core.chat_agent import ChatAgent, _compact_context
 from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
 from tradingagents.skills.base import BaseSkill, SkillMetadata
 from tradingagents.skills.registry import SkillRegistry
@@ -414,3 +414,237 @@ class TestChatAgentSessionEviction:
         chat_agent._evict_stale_sessions()
         assert "a" not in chat_agent._buffers
         assert set(chat_agent._buffers) == {"b", "c"}
+
+
+class TestSanitizeSkillParams:
+    """LLM-hallucinated date params must be stripped when the user gave no date."""
+
+    def test_drops_hallucinated_trade_date(self):
+        from tradingagents.core.chat_agent import ChatAgent
+
+        params = {"trade_date": "2025-07-08", "industry_top_n": 30}
+        cleaned = ChatAgent._sanitize_skill_params("分析半导体板块", params)
+        assert "trade_date" not in cleaned
+        assert cleaned["industry_top_n"] == 30
+
+    def test_keeps_date_when_user_mentioned_one(self):
+        from tradingagents.core.chat_agent import ChatAgent
+
+        for text in ("看下2026-07-24的市场", "复盘7月24日行情", "20260724选股"):
+            params = {"trade_date": "2026-07-24"}
+            assert ChatAgent._sanitize_skill_params(text, params) == params
+
+    def test_no_date_params_passthrough(self):
+        from tradingagents.core.chat_agent import ChatAgent
+
+        params = {"limit": 5, "industries": ["半导体"]}
+        assert ChatAgent._sanitize_skill_params("选5只半导体股", params) == params
+
+
+class TestChatAgentPageContext:
+    """Page context is compacted, injected for the current turn only, and
+    never written raw into the session buffer."""
+
+    @pytest.mark.asyncio
+    async def test_context_injected_into_llm_and_not_into_buffer(self, chat_agent):
+        mock_llm = AsyncMock()
+        resp = MagicMock()
+        resp.content = "好的。"
+        resp.tool_calls = []
+        mock_llm.ainvoke = AsyncMock(return_value=resp)
+
+        context = {
+            "holding_context": {"symbol": "600519.SH", "quantity": 100, "avg_cost": 1500.0},
+            "ignored_key": {"foo": "bar"},
+        }
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            await chat_agent.handle("这只持仓怎么样", session_id="ctx1", context=context)
+
+        messages = mock_llm.ainvoke.await_args.args[0]
+        last_human = [m for m in messages if isinstance(m, HumanMessage)][-1]
+        # Injected outside <user_input> as a <page_context> block…
+        assert "<page_context>" in last_human.content
+        assert "600519.SH" in last_human.content
+        assert last_human.content.index("</user_input>") < last_human.content.index("<page_context>")
+        # …with non-whitelisted keys dropped.
+        assert "ignored_key" not in last_human.content
+
+        # The buffer keeps a one-line summary marker, never the raw JSON.
+        buf = chat_agent._buffers["ctx1"]
+        assert "avg_cost" not in buf[0]["content"]
+        assert "携带页面上下文" in buf[0]["content"]
+        assert "holding_context(600519.SH)" in buf[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_no_context_messages_unchanged(self, chat_agent):
+        mock_llm = AsyncMock()
+        resp = MagicMock()
+        resp.content = "回答。"
+        resp.tool_calls = []
+        mock_llm.ainvoke = AsyncMock(return_value=resp)
+
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
+            await chat_agent.handle("你好", session_id="ctx2")
+
+        messages = mock_llm.ainvoke.await_args.args[0]
+        last_human = [m for m in messages if isinstance(m, HumanMessage)][-1]
+        assert last_human.content == "<user_input>你好</user_input>"
+        assert chat_agent._buffers["ctx2"][0]["content"] == "你好"
+
+    def test_compact_context_budgets(self):
+        # Long strings truncated to 300 chars, lists to 5 items, total to 4KB.
+        context = {
+            "news_context": {
+                "title": "T" * 1000,
+                "symbols": [f"SYM{i}" for i in range(20)],
+            },
+            "unrelated": {"x": 1},
+        }
+        text = _compact_context(context)
+        assert len(text) <= 4096
+        assert "T" * 301 not in text
+        assert "T" * 300 in text
+        assert text.count("SYM") == 5
+        assert "unrelated" not in text
+
+    def test_compact_context_empty_cases(self):
+        assert _compact_context(None) == ""
+        assert _compact_context({}) == ""
+        assert _compact_context({"other": {"a": 1}}) == ""
+
+
+class TestNewsContextMisrouteGuard:
+    """A news-interpretation turn must never launch the market_overview
+    snapshot pipeline: on misroute the agent retries without tools."""
+
+    @pytest.fixture
+    def agent_with_market_overview(self, mock_tool_registry):
+        reg = SkillRegistry()
+        for skill_id in ("stock_analysis", "market_overview", "daily_pipeline"):
+            skill = MagicMock(spec=BaseSkill)
+            skill.metadata = SkillMetadata(
+                id=skill_id, name=skill_id, description="d", version="1.0", triggers=[],
+            )
+            reg.register(skill)
+        config = {"llm_provider": "openai", "quick_think_llm": "gpt-5.4-mini"}
+        return ChatAgent(config, reg, mock_tool_registry)
+
+    @staticmethod
+    def _tool_call_response(tool_name: str):
+        resp = MagicMock()
+        resp.content = ""
+        resp.tool_calls = [{"name": tool_name, "args": {}}]
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_misroute_with_news_context_forces_text_answer(
+        self, agent_with_market_overview
+    ):
+        agent = agent_with_market_overview
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._tool_call_response("market_overview")
+        )
+        plain = AsyncMock()
+        plain_resp = MagicMock()
+        plain_resp.content = "这条新闻利好AI算力产业链。"
+        plain_resp.tool_calls = []
+        plain.ainvoke = AsyncMock(return_value=plain_resp)
+
+        context = {"news_context": {"title": "微软股价大涨", "polarity": "bullish"}}
+        with (
+            patch.object(agent, "_get_llm_with_tools", return_value=mock_llm),
+            patch.object(agent, "_get_plain_llm", return_value=plain),
+        ):
+            result = await agent.handle(
+                "这条新闻对市场有什么影响：微软股价大涨", context=context
+            )
+
+        assert result.intent == "chat_answer"
+        assert "利好" in result.content
+        plain.ainvoke.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_market_overview_still_runs_without_news_context(
+        self, agent_with_market_overview
+    ):
+        agent = agent_with_market_overview
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._tool_call_response("market_overview")
+        )
+        with patch.object(agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await agent.handle("重新生成市场全景")
+
+        assert result.intent == "skill_run"
+        assert result.skill_id == "market_overview"
+
+    @pytest.mark.asyncio
+    async def test_qualitative_sector_misroute_is_overridden(
+        self, agent_with_market_overview
+    ):
+        agent = agent_with_market_overview
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._tool_call_response("daily_pipeline")
+        )
+        with patch.object(agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await agent.handle("分析今天钨板块的驱动逻辑和持续性")
+
+        assert result.intent == "skill_run"
+        assert result.skill_id == "market_overview"
+        assert result.skill_params == {"focus_industries": ["钨"]}
+
+    @pytest.mark.asyncio
+    async def test_sector_stock_selection_is_not_overridden(
+        self, agent_with_market_overview
+    ):
+        agent = agent_with_market_overview
+        mock_llm = AsyncMock()
+        response = self._tool_call_response("daily_pipeline")
+        response.tool_calls[0]["args"] = {"industries": ["煤炭"]}
+        mock_llm.ainvoke = AsyncMock(return_value=response)
+        with patch.object(agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await agent.handle("筛选煤炭板块的股票")
+
+        assert result.intent == "skill_run"
+        assert result.skill_id == "daily_pipeline"
+
+    @pytest.mark.asyncio
+    async def test_other_skill_with_news_context_not_blocked(
+        self, agent_with_market_overview
+    ):
+        """Guard is narrow: only the snapshot pipeline is overridden."""
+        agent = agent_with_market_overview
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._tool_call_response("stock_analysis")
+        )
+        context = {"news_context": {"title": "茅台提价"}}
+        with patch.object(agent, "_get_llm_with_tools", return_value=mock_llm):
+            result = await agent.handle("深度分析下贵州茅台", context=context)
+
+        assert result.intent == "skill_run"
+        assert result.skill_id == "stock_analysis"
+
+    @pytest.mark.asyncio
+    async def test_plain_fallback_failure_returns_apology(
+        self, agent_with_market_overview
+    ):
+        agent = agent_with_market_overview
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=self._tool_call_response("market_overview")
+        )
+        plain = AsyncMock()
+        plain.ainvoke = AsyncMock(side_effect=RuntimeError("provider down"))
+
+        context = {"news_context": {"title": "微软股价大涨"}}
+        with (
+            patch.object(agent, "_get_llm_with_tools", return_value=mock_llm),
+            patch.object(agent, "_get_plain_llm", return_value=plain),
+        ):
+            result = await agent.handle("这条新闻对市场有什么影响", context=context)
+
+        assert result.intent == "chat_answer"
+        assert "无法生成" in result.content

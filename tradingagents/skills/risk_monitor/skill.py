@@ -234,8 +234,29 @@ async def _scan_risks(
             )
         return risks, False
 
-    for item in holdings:
-        symbol = str(item.get("symbol") or "").upper()
+    symbols = [str(item.get("symbol") or "").upper() for item in holdings if item.get("symbol")]
+    # Requirements doc R3: one batched MCP round-trip instead of a per-holding
+    # loop. Falls back to the per-symbol path when the server lacks the
+    # batch_ts_codes feature or the batch call fails.
+    rows_by_symbol = await _batch_scan(client, symbols, start.isoformat(), end.isoformat(), params)
+    if rows_by_symbol is not None:
+        grouped, batch_warnings = rows_by_symbol
+        for symbol in symbols:
+            rows = grouped.get(symbol, [])
+            level, message = _classify_risk_rows(rows, params.keywords)
+            risks.append(
+                {
+                    "symbol": symbol,
+                    "name": resolve_portfolio_name(symbol),
+                    "level": level,
+                    "message": message,
+                    "announcements": rows,
+                    "warnings": batch_warnings,
+                }
+            )
+        return risks, True
+
+    for symbol in symbols:
         try:
             payload = await client.get_risk_announcements(
                 symbol,
@@ -272,6 +293,51 @@ async def _scan_risks(
             }
         )
     return risks, True
+
+
+# Requirements doc R3 caps a single batch call at 50 symbols.
+_RISK_BATCH_CHUNK = 50
+
+
+async def _batch_scan(
+    client: Any,
+    symbols: list[str],
+    start: str,
+    end: str,
+    params: RiskMonitorInput,
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]] | None:
+    """Batched announcement scan.
+
+    Returns ``(rows_by_symbol, warnings)`` on success or None to signal the
+    caller to fall back to the per-symbol loop.
+    """
+    if not symbols or not hasattr(client, "get_risk_announcements_batch"):
+        return None
+    grouped: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+    warnings: list[str] = []
+    try:
+        for offset in range(0, len(symbols), _RISK_BATCH_CHUNK):
+            chunk = symbols[offset : offset + _RISK_BATCH_CHUNK]
+            payload = await client.get_risk_announcements_batch(
+                chunk, start, end, keywords=params.keywords
+            )
+            if payload is None:
+                # Feature not declared by the server — use the per-symbol loop.
+                return None
+            if not isinstance(payload, dict) or payload.get("status") == "error":
+                logger.warning("Batch risk scan failed; falling back to per-symbol loop")
+                return None
+            for row in payload.get("rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("ts_code") or row.get("symbol") or "").upper()
+                if symbol in grouped:
+                    grouped[symbol].append(row)
+            warnings.extend(str(item) for item in payload.get("warnings") or [])
+    except Exception as exc:
+        logger.warning("Batch risk scan error (%s); falling back to per-symbol loop", exc)
+        return None
+    return grouped, warnings
 
 
 def _render_report(holdings: list[dict[str, Any]], risks: list[dict[str, Any]], mcp_used: bool) -> str:
