@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import {
   BookOpen, Brain, BriefcaseBusiness, ClipboardCheck, FlaskConical,
   Globe, LayoutDashboard, MessageSquareText, Settings, TrendingUp, Wallet,
@@ -28,9 +28,10 @@ function NavItem({ item }: { item: typeof primary[number] }) {
 }
 
 export function Sidebar() {
+  const agentPage = useLocation().pathname === "/chat";
   return <>
-    <aside className="hidden w-56 shrink-0 flex-col border-r border-stone-800/80 bg-[#171d1b] md:flex">
-      <div className="flex h-[72px] items-center gap-3 border-b border-stone-800 px-5">
+    <aside className={`hidden shrink-0 flex-col border-r border-stone-800/80 bg-[#171d1b] md:flex ${agentPage ? "w-[176px]" : "w-56"}`}>
+      <div className={`flex items-center gap-3 border-b border-stone-800 px-4 ${agentPage ? "h-[52px]" : "h-[72px]"}`}>
         <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-500/15 text-teal-300"><TrendingUp className="h-5 w-5" /></span>
         <div><strong className="block text-sm text-stone-50">TradingAgents</strong><span className="text-xs text-stone-500">× StockManager</span></div>
       </div>

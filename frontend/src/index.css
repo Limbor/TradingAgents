@@ -72,3 +72,34 @@ select {
 .prose strong {
   color: #fff9ed;
 }
+
+.agent-workspace .agent-card {
+  border: 1px solid #dfe6df;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.agent-workspace .agent-section-title {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2922;
+}
+
+.agent-workspace .agent-prose {
+  color: #33443a;
+}
+
+.agent-workspace .agent-prose :is(h1, h2, h3, h4, strong) {
+  color: #1f2922;
+}
+
+.agent-workspace .agent-prose a {
+  color: #087d68;
+}
+
+.agent-workspace .agent-prose :is(code, pre, th) {
+  color: #1f2922;
+  background: #edf2ed;
+}

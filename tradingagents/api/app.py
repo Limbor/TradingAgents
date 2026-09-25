@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from tradingagents.api.middleware.auth import AuthMiddleware, allowed_origins
+from tradingagents.core.agent_harness import AgentStore, TradingAgentHarness
 from tradingagents.core.chat_agent import ChatAgent
 from tradingagents.core.lightweight_tools import build_all_tools
 from tradingagents.core.mcp_client import get_mcp_client, get_mcp_status, shutdown_mcp_client
@@ -26,6 +27,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.skills.registry import SkillRegistry
 
 from .routes import (
+    agent,
     artifacts,
     config,
     decision_audit,
@@ -263,11 +265,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tool_registry=tool_registry,
         db=db,
     )
+    app.state.agent_store = AgentStore(db)
+    app.state.agent_harness = TradingAgentHarness(
+        app.state.agent_store, tool_registry, app.state.chat_agent,
+        app.state.run_manager, registry, config,
+    )
     if config.get("scheduler_enabled", True):
         app.state.scheduler.start()
 
     yield
 
+    await app.state.agent_harness.close()
     await app.state.run_manager.cancel_all()
     backfill_task = getattr(app.state, "ticker_backfill_task", None)
     if backfill_task and not backfill_task.done():
@@ -312,6 +320,7 @@ def create_app() -> FastAPI:
     app.include_router(trading_time.router, prefix="/api/v1", tags=["trading-time"])
     app.include_router(market.router, prefix="/api/v1", tags=["market"])
     app.include_router(paper.router, prefix="/api/v1", tags=["paper"])
+    app.include_router(agent.router, prefix="/api/v1", tags=["agent"])
 
     # Register WebSocket routes
     app.include_router(stream.router)

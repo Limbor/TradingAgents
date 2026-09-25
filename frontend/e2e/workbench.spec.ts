@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { mockAgentTasks } from "./agentMock";
 
 const holding = {
   symbol: "600519.SH",
@@ -103,44 +104,17 @@ test("decision desk opens strategy research and submits the selected backtest", 
   expect(submitted).toMatchObject({ strategy_name: "ff_residual_csi800_main", config_name: "prod_ff_residual_csi800_tv15" });
 });
 
-test("position advice reaches a prefilled confirmation dialog", async ({ page }) => {
-  page.on("pageerror", (error) => console.error("pageerror", error.message));
+test("agent presents a read-only task and evidence without changing holdings", async ({ page }) => {
   await mockApi(page);
-  await page.routeWebSocket(/\/ws\/chat/, (ws) => {
-    ws.onMessage(() => {
-      const send = (type: string, payload: Record<string, unknown>) => ws.send(JSON.stringify({
-        type,
-        run_id: "run-advisor",
-        timestamp: "2026-07-11T00:00:00Z",
-        payload,
-      }));
-      send("chat_reply", { content: "开始持仓建议", skill_triggered: "position_advisor", run_id: "run-advisor" });
-      send("position_advice", {
-        symbol: holding.symbol,
-        action: "REDUCE",
-        confidence: 0.8,
-        metrics: { current_price: 110, pnl_pct: 10, position_pct: 52.38 },
-        risk: { level: "orange" },
-        execution: { quantity_change: -700, target_quantity: 300, target_position_pct: 24.79, requires_user_confirmation: true },
-        reasons: ["仓位超过集中度阈值"],
-        warnings: [],
-      });
-      send("skill_complete", { status: "success" });
-      send("run_complete", { status: "completed" });
-    });
-  });
+  const submissions = await mockAgentTasks(page, "仓位需要复核；这只是分析建议。");
 
   await page.goto("/chat");
-  await expect(page.getByText("已连接")).toBeVisible();
-  await page.getByPlaceholder(/例如/).fill("600519.SH 要不要卖");
-  await page.locator("form button").click();
-  await expect(page.getByText("REDUCE", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /前往 Portfolio 确认减仓/ }).click();
-
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await expect(page.getByLabel("卖出数量")).toHaveValue("700");
-  await expect(page.getByLabel("卖出价")).toHaveValue("110");
-  await expect(page.getByRole("button", { name: "确认减仓" })).toBeEnabled();
+  await page.getByRole("textbox", { name: "交易问题" }).fill("600519.SH 要不要卖");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect.poll(() => submissions[0]?.message).toBe("600519.SH 要不要卖");
+  await expect(page.getByText("仓位需要复核；这只是分析建议。")).toBeVisible();
+  await expect(page.getByText("读取账户数据")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
 test("library renders a persisted decision artifact", async ({ page }) => {
@@ -187,28 +161,27 @@ test("analysis renders replayed WebSocket report content", async ({ page }) => {
 
 test("chat renders a lightweight tool answer with provenance", async ({ page }) => {
   await mockApi(page);
-  await page.routeWebSocket(/\/ws\/chat/, (ws) => {
-    ws.onMessage(() => ws.send(JSON.stringify({
-      type: "tool_answer",
-      run_id: "",
-      timestamp: "2026-07-11T00:00:00Z",
-      payload: {
-        content: "持仓查询完成",
-        tool: "get_portfolio_summary",
-        args: {},
-        result: { holdings: [holding], warnings: ["价格截至上一交易日"] },
-        display: "table",
-        citations: [{ tool: "get_portfolio_summary", args: {}, summary: "SQLite holdings", as_of_date: "2026-07-10", source: "local_db" }],
-      },
-    })));
-  });
+  await mockAgentTasks(page, "持仓查询完成：600519.SH。");
   await page.goto("/chat");
-  await page.getByPlaceholder(/例如/).fill("我的持仓怎么样");
-  await page.locator("form button").click();
-  await expect(page.getByText("持仓概览", { exact: true })).toBeVisible();
-  await expect(page.getByText("600519.SH")).toBeVisible();
-  await page.getByText("调用详情", { exact: true }).click();
-  await expect(page.getByRole("complementary", { name: "任务证据与方案" }).getByText(/2026-07-10/)).toBeVisible();
+  await page.getByRole("textbox", { name: "交易问题" }).fill("我的持仓怎么样");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText("持仓查询完成：600519.SH。")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" }).getByText(/2026-09-25/)).toBeVisible();
+});
+
+test("agent mobile workspace keeps the composer usable and opens evidence on demand", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 780 });
+  await mockApi(page);
+  await mockAgentTasks(page, "已核对账户。");
+  await page.goto("/chat");
+  await expect(page.getByRole("textbox", { name: "交易问题" })).toBeVisible();
+  await page.getByRole("textbox", { name: "交易问题" }).fill("查看持仓");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText("已核对账户。")).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toBeVisible();
+  await page.getByRole("button", { name: "收起任务档案" }).click();
+  await expect(page.getByRole("textbox", { name: "交易问题" })).toBeVisible();
 });
 
 test("audit separates decisions, executions, outcomes, and sample gate", async ({ page }) => {

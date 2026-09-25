@@ -13,11 +13,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8422",
+        target: process.env.VITE_BACKEND_PROXY_TARGET || "http://127.0.0.1:8422",
         changeOrigin: true,
       },
       "/ws": {
-        target: "ws://127.0.0.1:8422",
+        target: (process.env.VITE_BACKEND_PROXY_TARGET || "http://127.0.0.1:8422").replace(/^http/, "ws"),
         changeOrigin: true,
         ws: true,
       },

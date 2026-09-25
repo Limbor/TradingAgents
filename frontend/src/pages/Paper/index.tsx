@@ -11,7 +11,7 @@ import {
 import { queryKeys } from "@/api/queryKeys";
 import { ApiHttpError } from "@/api/client";
 import { CompositeDecision } from "./CompositeDecision";
-import Chat from "../Chat";
+import Chat from "../AgentWorkspace";
 
 const money = (value: number | null | undefined) =>
   value == null ? "—" : `¥${Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;

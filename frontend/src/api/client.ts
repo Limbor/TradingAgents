@@ -396,6 +396,7 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
 }
 
 export const paperApiBase = `${API_BASE}/paper`;
+export const agentApiBase = `${API_BASE}/agent`;
 
 export async function listSkills(): Promise<SkillInfo[]> {
   return fetchJson(`${API_BASE}/skills`);

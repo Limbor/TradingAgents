@@ -16,21 +16,22 @@ const realBackend = process.env.E2E_REAL_BACKEND === "1";
 const frontendServer = {
   command: "npm run dev -- --host 127.0.0.1",
   url: "http://127.0.0.1:5173",
-  reuseExistingServer: !process.env.CI,
+  reuseExistingServer: !process.env.CI && !realBackend,
   timeout: 60_000,
+  env: realBackend ? { VITE_BACKEND_PROXY_TARGET: "http://127.0.0.1:8423" } : {},
 };
 
 const backendServer = {
-  // Runs from the repo root; the vite dev proxy forwards /api and /ws to :8422.
+  // Runs from the repo root; the smoke Vite proxy forwards /api and /ws to :8423.
   command: `${backendPython} -m tradingagents.api.server`,
   cwd: "..",
-  url: "http://127.0.0.1:8422/api/v1/health",
-  reuseExistingServer: !process.env.CI,
+  url: "http://127.0.0.1:8423/api/v1/health",
+  reuseExistingServer: false,
   // MCP init waits up to 10s before degrading, plus import/startup overhead.
   timeout: 120_000,
   env: {
     TRADINGAGENTS_API_HOST: "127.0.0.1",
-    TRADINGAGENTS_API_PORT: "8422",
+    TRADINGAGENTS_API_PORT: "8423",
     // A throwaway DB file (the connect-per-call layer can't use :memory:) keeps
     // the smoke off the developer's real ~/.tradingagents/app.db. Assertions are
     // data-independent (shell + health + static header), so stale rows are fine.

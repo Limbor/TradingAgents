@@ -264,6 +264,76 @@ CREATE TABLE IF NOT EXISTS run_events (
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
 
+CREATE TABLE IF NOT EXISTS agent_conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    paper_session_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_updated ON agent_conversations(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES agent_conversations(id),
+    task_id TEXT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_conversation ON agent_messages(conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_tasks (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES agent_conversations(id),
+    goal TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_conversation ON agent_tasks(conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES agent_tasks(id),
+    seq INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, seq);
+
+CREATE TABLE IF NOT EXISTS agent_evidence (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES agent_tasks(id),
+    tool_name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    as_of_date TEXT,
+    retrieved_at TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    result_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_evidence_task ON agent_evidence(task_id, retrieved_at);
+
+CREATE TABLE IF NOT EXISTS agent_proposals (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES agent_tasks(id),
+    action_type TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    baseline_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_proposals_task ON agent_proposals(task_id);
+
 CREATE TABLE IF NOT EXISTS risk_events (
     id TEXT PRIMARY KEY,
     symbol TEXT NOT NULL,

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockAgentTasks } from "./agentMock";
 
 test("strategy paper workbench creates, reads, and advances a StockManager session", async ({ page }) => {
   let created = false;
@@ -36,6 +37,7 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
+  await mockAgentTasks(page);
 
   await page.goto("/paper");
   await expect(page.getByText("还没有策略模拟会话")).toBeVisible();
@@ -55,16 +57,6 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
 test("composite decision is readable and Agent chat stays bound to its account", async ({ page }) => {
   const sessionId = "paper:allocator:demo:follow";
   const otherSessionId = "paper:other";
-  let sentContext: Record<string, unknown> | undefined;
-  let replies = 0;
-  await page.routeWebSocket(/\/ws\/chat/, (ws) => {
-    ws.onMessage((message) => {
-      const data = JSON.parse(message) as { context?: Record<string, unknown> };
-      sentContext = data.context;
-      replies += 1;
-      ws.send(JSON.stringify({ type: "chat_answer", run_id: "", timestamp: "2026-09-24T00:00:00Z", payload: { content: replies === 1 ? "当前由 wfo 子策略运行。" : "第二个会话已单独核对。" } }));
-    });
-  });
   await page.route("**/api/v1/**", async (route) => {
     const { pathname } = new URL(route.request().url());
     let body: unknown = {};
@@ -88,6 +80,7 @@ test("composite decision is readable and Agent chat stays bound to its account",
     else if (pathname.endsWith("/next-plan")) body = { signal_date: "2026-09-24", equity: 108000, items: [] };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
+  const submissions = await mockAgentTasks(page, (paperId) => paperId === sessionId ? "当前由 wfo 子策略运行。" : "第二个会话已单独核对。");
 
   await page.goto("/paper");
   await expect(page.getByText("账户权益以组合可执行账本为准")).toBeVisible();
@@ -99,17 +92,19 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await expect(page.getByText(/测试组合配置/)).toBeVisible();
   await page.getByRole("button", { name: "问 Agent 原因" }).click();
   await expect(page).toHaveURL(/\/paper$/);
-  await expect.poll(() => (sentContext?.paper_session_context as { session_id?: string } | undefined)?.session_id).toBe(sessionId);
-  await expect(page.getByText("已绑定策略模拟盘")).toBeVisible();
+  await expect.poll(() => submissions[0]?.paperSessionId).toBe(sessionId);
+  await expect(page.getByText("已绑定 StockManager 模拟盘")).toBeVisible();
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
   await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption(otherSessionId);
   await expect(page.getByText("当前由 wfo 子策略运行。")).toHaveCount(0);
   await page.getByRole("button", { name: "总结当前权益、持仓和近期成交" }).click();
-  await expect.poll(() => (sentContext?.paper_session_context as { session_id?: string } | undefined)?.session_id).toBe(otherSessionId);
+  await expect.poll(() => submissions[1]?.paperSessionId).toBe(otherSessionId);
   await expect(page.getByText("第二个会话已单独核对。")).toBeVisible();
   await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption(sessionId);
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
-  expect(replies).toBe(2);
+  await page.reload();
+  await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
+  expect(submissions).toHaveLength(2);
 });
 
 test("an advancing paper job can be observed again after page reload", async ({ page }) => {
@@ -134,6 +129,7 @@ test("an advancing paper job can be observed again after page reload", async ({ 
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
+  await mockAgentTasks(page);
   page.on("dialog", (dialog) => void dialog.accept());
   await page.goto("/paper");
   await page.getByLabel("推进至交易日").fill("2026-01-05");

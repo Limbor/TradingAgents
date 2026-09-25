@@ -1,0 +1,243 @@
+"""Durable Agent task lifecycle and account evidence boundaries."""
+
+import asyncio
+
+import pytest
+
+from tradingagents.core.agent_harness import AgentStore, TradingAgentHarness
+from tradingagents.core.chat_agent import ChatResponse
+from tradingagents.core.persistence import Database
+from tradingagents.core.stockmanager_paper import PaperServiceError
+from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
+
+
+class _Chat:
+    def __init__(self, response=None):
+        self.response = response or ChatResponse(intent="chat_answer", content="普通回答")
+
+    async def handle(self, *_args, **_kwargs):
+        return self.response
+
+
+class _Skills:
+    def get(self, _name):
+        raise AssertionError("写入型 Skill 不得启动")
+
+
+def _harness(tmp_path, *, paper_handler, chat=None):
+    db = Database(tmp_path / "agent.db")
+    store = AgentStore(db)
+    tools = ToolRegistry()
+    tools.register(LightweightTool(
+        name="get_paper_session", description="paper", parameters={},
+        handler=paper_handler,
+    ))
+    return TradingAgentHarness(store, tools, chat or _Chat(), None, _Skills(), {}), store
+
+
+@pytest.mark.asyncio
+async def test_paper_task_persists_events_and_evidence_across_store_reopen(tmp_path):
+    calls = []
+
+    async def paper(session_id):
+        calls.append(session_id)
+        return {"session_id": session_id, "source": "StockManager ledger",
+                "as_of_date": "2026-09-25", "snapshot": {
+                    "equity": 1000000, "cash": 500000, "positions": {"600519.SH": {}}},
+                "recent_trades": []}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+
+    async def synthesize(*_args):
+        return "截至 2026-09-25，权益 100 万元。"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("模拟盘复核", "paper-1")
+    task = harness.submit(conversation["id"], "看看当前持仓风险")
+    await harness._active[task["id"]]
+
+    reopened = AgentStore(Database(tmp_path / "agent.db"))
+    detail = reopened.conversation_detail(conversation["id"])
+    assert calls == ["paper-1"]
+    assert detail["tasks"][0]["status"] == "completed"
+    assert [item["event_type"] for item in detail["tasks"][0]["events"]] == [
+        "task_created", "plan_created", "step_started", "evidence_added",
+        "step_completed", "review_started", "task_completed",
+    ]
+    assert detail["tasks"][0]["evidence"][0]["as_of_date"] == "2026-09-25"
+    assert detail["messages"][-1]["content"].startswith("截至")
+    assert reopened.list_events(task["id"], after_seq=4)[0]["seq"] == 5
+
+
+@pytest.mark.asyncio
+async def test_unavailable_paper_source_does_not_generate_trade_advice(tmp_path):
+    async def unavailable(session_id):
+        return {"error": "StockManager 未连接", "warnings": ["账本不可用"]}
+
+    harness, store = _harness(tmp_path, paper_handler=unavailable)
+    conversation = store.create_conversation("测试", "paper-2")
+    task = harness.submit(conversation["id"], "要不要加仓？")
+    await harness._active[task["id"]]
+    result = store.get_task(task["id"])["result"]
+    assert "无法核对" in result["content"]
+    assert "没有生成交易判断" in result["content"]
+    assert result["read_only"] is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_stops_task_and_rejects_concurrent_submission(tmp_path):
+    started = asyncio.Event()
+
+    async def slow_paper(session_id):
+        started.set()
+        await asyncio.sleep(60)
+        return {"session_id": session_id}
+
+    harness, store = _harness(tmp_path, paper_handler=slow_paper)
+    conversation = store.create_conversation("测试", "paper-3")
+    task = harness.submit(conversation["id"], "解释策略")
+    await asyncio.wait_for(started.wait(), timeout=2)
+    with pytest.raises(ValueError, match="运行中"):
+        harness.submit(conversation["id"], "第二个问题")
+    assert await harness.cancel(task["id"])
+    await harness._active[task["id"]]
+    assert store.get_task(task["id"])["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_write_skill_is_not_dispatched(tmp_path):
+    async def unused_paper(session_id):
+        raise AssertionError("不应调用模拟盘")
+
+    chat = _Chat(ChatResponse(intent="skill_run", skill_id="portfolio_management", skill_params={}))
+    harness, store = _harness(tmp_path, paper_handler=unused_paper, chat=chat)
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "请执行 portfolio_management")
+    await harness._active[task["id"]]
+    assert "不会直接执行" in store.get_task(task["id"])["result"]["content"]
+
+
+def test_reopen_marks_incomplete_task_interrupted(tmp_path):
+    db = Database(tmp_path / "agent.db")
+    store = AgentStore(db)
+    conversation = store.create_conversation("测试", None)
+    task = store.create_task(conversation["id"], "分析")
+    reopened = AgentStore(Database(tmp_path / "agent.db"))
+    assert reopened.get_task(task["id"])["status"] == "interrupted"
+
+
+def test_intent_hint_only_selects_allowlisted_analysis_skill(tmp_path):
+    async def unused_paper(session_id):
+        return {"session_id": session_id}
+
+    harness, _ = _harness(tmp_path, paper_handler=unused_paper)
+
+    class SafeSkills:
+        def get(self, name):
+            return object() if name == "stock_analysis" else None
+
+    harness.skills = SafeSkills()
+    safe = harness._plan("分析茅台", None, {
+        "skill_id": "stock_analysis", "params": {"ticker": "600519.SH"}})
+    assert safe[0]["tool"] == "skill"
+    assert safe[0]["args"] == {"ticker": "600519.SH"}
+    blocked = harness._plan("清空账户", None, {
+        "skill_id": "portfolio_management", "params": {"action": "clear"}})
+    assert all(step["tool"] != "skill" for step in blocked)
+
+
+async def _proposed_advance(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "source": "StockManager ledger",
+                "as_of_date": "2026-09-25", "snapshot": {"equity": 100000, "positions": {}}}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    conversation = store.create_conversation("推进测试", "paper:advance")
+    task = harness.submit(conversation["id"], "推进模拟盘到 2026-09-28")
+    await harness._active[task["id"]]
+    proposal = store.proposal_for_task(task["id"])
+    assert store.get_task(task["id"])["status"] == "awaiting_approval"
+    assert proposal["args"] == {"target_date": "2026-09-28"}
+    return harness, store, task, proposal
+
+
+@pytest.mark.asyncio
+async def test_advance_requires_one_time_approval_and_reconciles_ledger(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "POST":
+            return {"job_id": "job:one"}
+        if path.endswith("/status"):
+            date_value = "2026-09-28" if any(call[0] == "POST" for call in calls) else "2026-09-25"
+            return {"data": {"snapshot": {"as_of_date": date_value, "equity": 101000}}}
+        return {"state": "success"}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    assert harness.approve(proposal["id"])["status"] == "executing"
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert sum(method == "POST" for method, _, _ in calls) == 1
+    assert store.get_proposal(proposal["id"])["status"] == "completed"
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert store.get_task(task["id"])["result"]["action"]["as_of_date"] == "2026-09-28"
+
+
+@pytest.mark.asyncio
+async def test_advance_refuses_stale_account_before_write(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    calls = []
+
+    async def changed(config, method, path, payload=None):
+        calls.append(method)
+        return {"data": {"snapshot": {"as_of_date": "2026-09-26"}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", changed)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert calls == ["GET"]
+    assert store.get_proposal(proposal["id"])["status"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_uncertain_post_never_retries(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    posts = 0
+
+    async def uncertain(config, method, path, payload=None):
+        nonlocal posts
+        if method == "POST":
+            posts += 1
+            raise PaperServiceError("连接中断")
+        return {"data": {"snapshot": {"as_of_date": "2026-09-25"}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", uncertain)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    harness.approve(proposal["id"])
+    assert posts == 1
+    assert store.get_proposal(proposal["id"])["status"] == "unknown"
+    assert store.get_task(task["id"])["status"] == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_reject_does_not_write_paper_account(tmp_path):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    result = harness.reject(proposal["id"])
+    assert result["status"] == "rejected"
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert "账本未发生变更" in store.get_task(task["id"])["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_restart_never_replays_submitted_paper_action(tmp_path):
+    _, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "submitted", {"job_id": "job:pending"})
+    store.set_status(task["id"], "executing_action")
+    reopened = AgentStore(Database(tmp_path / "agent.db"))
+    assert reopened.get_task(task["id"])["status"] == "needs_review"
+    assert reopened.get_proposal(proposal["id"])["status"] == "unknown"
+    assert reopened.get_proposal(proposal["id"])["result"]["job_id"] == "job:pending"
