@@ -76,6 +76,18 @@ function now() {
   return new Date().toISOString();
 }
 
+const MAX_PERSISTED_MESSAGES = 100;
+const MAX_PERSISTED_RESULT_CHARS = 20_000;
+
+function persistedMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.slice(-MAX_PERSISTED_MESSAGES).map((message) => ({
+    ...message,
+    result: message.result && message.result.length > MAX_PERSISTED_RESULT_CHARS
+      ? `${message.result.slice(0, MAX_PERSISTED_RESULT_CHARS)}\n\n[完整内容请在产物库查看]`
+      : message.result,
+  }));
+}
+
 function newStep(
   label: string,
   detail?: string,
@@ -292,21 +304,17 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: "tradingagents-chat",
-      // Only persist messages — connected/running/currentRunId are transient
-      // runtime state that must not survive a reload (a run cannot resume on
-      // the frontend after a page refresh).
-      partialize: (state) => ({ messages: state.messages }),
-      // On rehydrate, mark any task that was still "running" when the page was
-      // closed as interrupted, so it doesn't hang forever in the UI.
+      // Persist a bounded chat snapshot plus the active run id. The backend is
+      // authoritative and /runs/{id} returns the terminal result after reload.
+      partialize: (state) => ({
+        messages: persistedMessages(state.messages),
+        currentRunId: state.currentRunId,
+        running: state.running,
+      }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        state.messages = state.messages.map((m) =>
-          m.kind === "task" && m.taskStatus === "running"
-            ? { ...m, taskStatus: "failed", steps: [...(m.steps ?? []), newStep("已中断（页面重载）", undefined, "failed")] }
-            : m
-        );
-        state.running = false;
-        state.currentRunId = null;
+        state.messages = persistedMessages(state.messages);
+        state.running = Boolean(state.currentRunId);
       },
     }
   )

@@ -6,6 +6,7 @@ import { AppShell } from "./components/Layout/AppShell";
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Analysis = lazy(() => import("./pages/Analysis"));
 const Chat = lazy(() => import("./pages/Chat"));
+const Market = lazy(() => import("./pages/Market"));
 const Portfolio = lazy(() => import("./pages/Portfolio"));
 const Library = lazy(() => import("./pages/Library"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -31,6 +32,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/chat" element={<Chat />} />
+              <Route path="/market" element={<Market />} />
               <Route path="/analysis/:runId" element={<Analysis />} />
               <Route path="/analysis" element={<Analysis />} />
               <Route path="/portfolio" element={<Portfolio />} />

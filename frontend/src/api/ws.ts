@@ -1,5 +1,6 @@
-import { withTokenQuery } from "./auth";
+import { websocketProtocols } from "./auth";
 import { getBackendRuntime } from "./runtime";
+import type { ChatContext, IntentHint } from "@/lib/chatNav";
 
 export interface WSMessage {
   type: string;
@@ -50,9 +51,9 @@ class WebSocketManager {
   }
 
   private _connect(runId: string): void {
-    const url = withTokenQuery(`${wsBaseUrl()}/ws/run/${runId}`);
+    const url = `${wsBaseUrl()}/ws/run/${runId}`;
 
-    this.ws = new WebSocket(url);
+    this.ws = new WebSocket(url, websocketProtocols());
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
@@ -107,7 +108,15 @@ export const wsManager = new WebSocketManager();
 
 type ChatMessageHandler = (message: WSMessage) => void;
 
+export interface ChatSendOptions {
+  context?: ChatContext;
+  intentHint?: IntentHint;
+}
+
+const SESSION_STORAGE_KEY = "tradingagents-chat-session";
+
 class ChatWebSocketManager {
+  private sessionId: string | null = null;
   private ws: WebSocket | null = null;
   private handlers: Set<ChatMessageHandler> = new Set();
   private openHandlers: Set<() => void> = new Set();
@@ -124,7 +133,7 @@ class ChatWebSocketManager {
       return;
     }
     this.manuallyClosed = false;
-    this.ws = new WebSocket(withTokenQuery(`${wsBaseUrl()}/ws/chat`));
+    this.ws = new WebSocket(`${wsBaseUrl()}/ws/chat`, websocketProtocols());
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
@@ -182,11 +191,40 @@ class ChatWebSocketManager {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  send(message: string, context?: Record<string, unknown>): void {
+  /** Stable per-tab session id (survives refresh via sessionStorage). */
+  getSessionId(): string {
+    if (this.sessionId) return this.sessionId;
+    try {
+      const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
+      if (stored) {
+        this.sessionId = stored;
+        return stored;
+      }
+    } catch {
+      // sessionStorage unavailable; fall through to in-memory id
+    }
+    const fresh = crypto.randomUUID();
+    this.sessionId = fresh;
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, fresh);
+    } catch {
+      // Best effort persistence only
+    }
+    return fresh;
+  }
+
+  send(message: string, opts?: ChatSendOptions): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Chat socket is not connected");
     }
-    this.ws.send(JSON.stringify({ message, context }));
+    this.ws.send(
+      JSON.stringify({
+        message,
+        context: opts?.context,
+        session_id: this.getSessionId(),
+        intent_hint: opts?.intentHint,
+      }),
+    );
   }
 
   disconnect(): void {

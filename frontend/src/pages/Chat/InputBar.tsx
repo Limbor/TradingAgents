@@ -1,11 +1,17 @@
 import { FormEvent } from "react";
 import { Rocket, Send, ShieldAlert, Sparkles, TrendingUp } from "lucide-react";
+import {
+  dailyPipelineHint,
+  marketScannerHint,
+  riskMonitorHint,
+  type IntentHint,
+} from "@/lib/chatNav";
 
-const QUICK_ACTIONS = [
-  { label: "每日选股", prompt: "每日选股 top 5", icon: Sparkles },
-  { label: "风险扫描", prompt: "分析当前持仓风险", icon: ShieldAlert },
+const QUICK_ACTIONS: Array<{ label: string; prompt: string; icon: typeof Sparkles; hint?: IntentHint }> = [
+  { label: "每日选股", prompt: "每日选股 top 5", icon: Sparkles, hint: dailyPipelineHint(5) },
+  { label: "风险扫描", prompt: "分析当前持仓风险", icon: ShieldAlert, hint: riskMonitorHint() },
   { label: "分析个股...", prompt: "", icon: TrendingUp },
-  { label: "扫描A股", prompt: "筛选A股 top 3 score 60", icon: Rocket },
+  { label: "扫描A股", prompt: "筛选A股 top 3 score 60", icon: Rocket, hint: marketScannerHint(3, 60) },
 ];
 
 interface InputBarProps {
@@ -14,7 +20,7 @@ interface InputBarProps {
   canSend: boolean;
   running: boolean;
   onSubmit: (e: FormEvent) => void;
-  onQuickAction: (prompt: string) => void;
+  onQuickAction: (prompt: string, hint?: IntentHint) => void;
 }
 
 export function InputBar({ input, setInput, canSend, running, onSubmit, onQuickAction }: InputBarProps) {
@@ -40,7 +46,7 @@ export function InputBar({ input, setInput, canSend, running, onSubmit, onQuickA
         {QUICK_ACTIONS.map((action) => (
           <button
             key={action.label}
-            onClick={() => onQuickAction(action.prompt)}
+            onClick={() => onQuickAction(action.prompt, action.hint)}
             disabled={running && !!action.prompt}
             className="inline-flex items-center gap-1.5 rounded-full border border-stone-700 bg-stone-900 px-3 py-1.5 text-xs text-stone-300 transition hover:border-teal-500/50 hover:text-stone-100 disabled:opacity-50"
           >

@@ -38,4 +38,12 @@ describe("AdaptiveAlphaBadge", () => {
     expect(screen.getByText("自适应α已开启")).toBeInTheDocument();
     expect(screen.getByText("样本不足，维持静态权重")).toBeInTheDocument();
   });
+
+  it("does not claim the override applied when there were no candidates", () => {
+    const { container } = render(
+      <AdaptiveAlphaBadge meta={{ enabled: true, applied: false, reason: "no_candidates" }} />,
+    );
+    expect(container).not.toHaveTextContent("自适应α已生效");
+    expect(container).toHaveTextContent("本次没有候选，权重未参与实际融合");
+  });
 });

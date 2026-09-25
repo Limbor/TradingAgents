@@ -100,6 +100,60 @@ describe("useChatWebSocket query invalidation", () => {
     unmount();
   });
 
+  it("treats an empty daily screen as a completed result", () => {
+    useChatStore.getState().createTask({
+      runId: "r1",
+      skillId: "daily_pipeline",
+      title: "每日选股管线",
+    });
+    const { unmount } = renderChatHook();
+
+    emit({
+      type: "daily_pipeline_candidates",
+      run_id: "r1",
+      payload: {
+        candidates: [],
+        warnings: ["显式板块范围内仍无符合条件的标的"],
+      },
+    });
+
+    const task = useChatStore.getState().messages.find(
+      (message) => message.kind === "task" && message.runId === "r1",
+    );
+    expect(task?.steps?.[task.steps.length - 1]).toMatchObject({
+      label: "完成每日选股打分",
+      status: "completed",
+      detail: "输出 0 个候选标的（无候选）",
+    });
+    unmount();
+  });
+
+  it("stores expanded-universe candidates as a separate shadow block", () => {
+    useChatStore.getState().createTask({
+      runId: "r-shadow",
+      skillId: "daily_pipeline",
+      title: "每日选股管线",
+    });
+    const { unmount } = renderChatHook();
+
+    emit({
+      type: "daily_pipeline_candidates",
+      run_id: "r-shadow",
+      payload: {
+        reviewed_candidates: [{ symbol: "600519.SH", name: "核心候选" }],
+        shadow_candidates: [{ symbol: "000001.SZ", name: "扩展候选", shadow_only: true }],
+      },
+    });
+
+    const task = useChatStore.getState().messages.find(
+      (message) => message.kind === "task" && message.runId === "r-shadow",
+    );
+    expect(task?.result).toContain('"__type":"candidates"');
+    expect(task?.result).toContain('"__type":"shadow_candidates"');
+    expect(task?.result).toContain("扩展候选");
+    unmount();
+  });
+
   it("recovers a run that finished during a socket drop (reconnect onOpen)", async () => {
     getRunMock.mockResolvedValue({ status: "completed" });
     useChatStore.getState().setCurrentRunId("r1");

@@ -1,9 +1,17 @@
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Wrench } from "lucide-react";
 import type { ChatMessage } from "@/stores/useChatStore";
+import { toolLabel } from "@/utils/eventLabels";
 
 interface ToolCardProps {
   message: ChatMessage;
+  /** Rendered inside a grouped container: drop own border/margin. */
+  bare?: boolean;
 }
+
+// Max arg chips shown inline in the header; the rest collapse into "+N".
+const HEADER_CHIP_COUNT = 3;
 
 /**
  * Renders a lightweight tool result inline.
@@ -11,9 +19,9 @@ interface ToolCardProps {
  * Three display modes:
  * - "table": renders result as a simple key-value table
  * - "card": renders result as a structured card
- * - "text": renders result as plain text
+ * - "text": markdown for strings, key-value grid for objects
  */
-export function ToolCard({ message }: ToolCardProps) {
+export function ToolCard({ message, bare = false }: ToolCardProps) {
   const tc = message.toolCall;
   if (!tc) return null;
 
@@ -21,39 +29,77 @@ export function ToolCard({ message }: ToolCardProps) {
   const argEntries = args && typeof args === "object"
     ? Object.entries(args).filter(([, v]) => v !== undefined && v !== null && v !== "")
     : [];
+  const headerChips = argEntries.slice(0, HEADER_CHIP_COUNT);
+  const overflow = argEntries.length - headerChips.length;
+  const hasCallDetails = argEntries.length > 0 || (message.citations?.length ?? 0) > 0;
 
   return (
-    <div className="flex gap-3 justify-start">
-      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-indigo-500/30 bg-indigo-500/10">
-        <Wrench className="h-4 w-4 text-indigo-300" />
+    // Aligned with assistant bubbles (avatar width 8 + gap 3 = ml-11), no own avatar.
+    <div
+      className={
+        bare
+          ? "px-3 py-2 text-sm leading-6 text-stone-200"
+          : "ml-11 max-w-[85%] rounded-lg border border-stone-800 bg-stone-950/60 px-3 py-2 text-sm leading-6 text-stone-200"
+      }
+    >
+      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+        <Wrench className="h-3.5 w-3.5 shrink-0 text-indigo-300/80" />
+        <span className="text-xs font-medium text-stone-300">{toolLabel(tool)}</span>
+        {headerChips.map(([k, v]) => (
+          <span
+            key={k}
+            className="rounded border border-stone-800 bg-stone-900/60 px-1.5 py-0.5 text-[11px] text-stone-400"
+          >
+            <span className="text-stone-500">{k}:</span> <span className="text-stone-300">{formatArg(v)}</span>
+          </span>
+        ))}
+        {overflow > 0 && (
+          <span className="rounded border border-stone-800 bg-stone-900/60 px-1.5 py-0.5 text-[11px] text-stone-500">
+            +{overflow}
+          </span>
+        )}
       </div>
-      <div className="max-w-[80%] rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-3 py-2 text-sm leading-6 text-stone-200">
-        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-indigo-300/80">
-          {tool}
-        </div>
-        {argEntries.length > 0 && (
-          <div className="mb-1.5 flex flex-wrap gap-1 text-[11px] text-stone-400">
-            {argEntries.map(([k, v]) => (
-              <span key={k} className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5">
-                <span className="text-stone-500">{k}:</span> <span className="text-stone-300">{formatArg(v)}</span>
-              </span>
-            ))}
+      <ToolResult display={display} result={result} />
+      {hasCallDetails && (
+        <details className="mt-2 border-t border-stone-800 pt-1.5">
+          <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">调用详情</summary>
+          <div className="mt-1.5 space-y-1.5">
+            {argEntries.length > 0 && (
+              <div className="flex flex-wrap gap-1 text-[11px] text-stone-400">
+                {argEntries.map(([k, v]) => (
+                  <span key={k} className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5">
+                    <span className="text-stone-500">{k}:</span> <span className="text-stone-300">{formatArg(v)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {message.citations && message.citations.length > 0 && (
+              <Citations citations={message.citations} />
+            )}
           </div>
-        )}
-        {display === "table" && resultIsObject(result) ? (
-          <ToolTable result={result} />
-        ) : display === "card" && resultIsObject(result) ? (
-          <ToolCardBody result={result} />
-        ) : (
-          <pre className="whitespace-pre-wrap break-all font-mono text-xs text-stone-300">
-            {formatResult(result)}
-          </pre>
-        )}
-        {message.citations && message.citations.length > 0 && (
-          <Citations citations={message.citations} />
-        )}
-      </div>
+        </details>
+      )}
     </div>
+  );
+}
+
+function ToolResult({ display, result }: { display: string; result: unknown }) {
+  if (display === "table" && resultIsObject(result)) return <ToolTable result={result} />;
+  if (display === "card" && resultIsObject(result)) return <ToolCardBody result={result} />;
+  // "text" mode: strings render as markdown, objects as a key-value grid;
+  // raw <pre> is the last resort only.
+  if (typeof result === "string" && result.trim()) {
+    return (
+      <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap break-words">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
+      </div>
+    );
+  }
+  if (resultIsObject(result)) return <ToolTable result={result} />;
+  return (
+    <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs text-stone-300">
+      {formatResult(result)}
+    </pre>
   );
 }
 
@@ -177,7 +223,7 @@ function Citations({
   }>;
 }) {
   return (
-    <div className="mt-2 pt-2 border-t border-indigo-500/15 space-y-1">
+    <div className="mt-2 pt-2 border-t border-stone-800 space-y-1">
       <div className="text-xs text-stone-400">
         数据来源：
         {citations.map((c, i) => (

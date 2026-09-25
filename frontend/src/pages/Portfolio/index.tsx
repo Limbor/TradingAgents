@@ -34,6 +34,7 @@ import {
 } from "@/utils/portfolio";
 import { displayNameOf } from "@/components/common/StockName";
 import { queryKeys } from "@/api/queryKeys";
+import { positionAdviceHint, riskMonitorHint, useGoChat } from "@/lib/chatNav";
 
 type HoldingForm = {
   symbol: string;
@@ -54,6 +55,7 @@ const EMPTY_HOLDINGS: Holding[] = [];
 
 export default function Portfolio() {
   const navigate = useNavigate();
+  const goChat = useGoChat();
   const location = useLocation();
   const consumedAdjustmentRef = useRef(false);
   const queryClient = useQueryClient();
@@ -211,8 +213,10 @@ export default function Portfolio() {
   };
 
   const openRiskScan = () => {
-    navigate("/chat", {
-      state: { prompt: "分析当前持仓风险", autoSend: true },
+    goChat({
+      prompt: "分析当前持仓风险",
+      autoSend: true,
+      intentHint: riskMonitorHint(),
     });
   };
 
@@ -429,12 +433,11 @@ export default function Portfolio() {
                           <div className="flex justify-end gap-1.5">
                             <button
                               onClick={() =>
-                                navigate("/chat", {
-                                  state: {
-                                    prompt: `${item.symbol} 要不要卖，给出持仓建议`,
-                                    autoSend: true,
-                                    context: { holding_context: item },
-                                  },
+                                goChat({
+                                  prompt: `${item.symbol} 要不要卖，给出持仓建议`,
+                                  autoSend: true,
+                                  context: { holding_context: item as unknown as Record<string, unknown> },
+                                  intentHint: positionAdviceHint(item.symbol, "review"),
                                 })
                               }
                               className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-indigo-300"

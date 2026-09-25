@@ -3,6 +3,7 @@ import {
   BriefcaseBusiness,
   Brain,
   FileText,
+  Globe,
   LayoutDashboard,
   MessageSquareText,
   Settings,
@@ -14,6 +15,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/chat", label: "Chat", icon: MessageSquareText },
+  { to: "/market", label: "Market", icon: Globe },
   { to: "/portfolio", label: "Portfolio", icon: BriefcaseBusiness },
   { to: "/library", label: "Library", icon: FileText },
   { to: "/audit", label: "Audit", icon: ClipboardCheck },

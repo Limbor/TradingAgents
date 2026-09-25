@@ -9,8 +9,31 @@ function formatPrice(value: number | null | undefined): string {
   return Number.isFinite(value) ? value.toFixed(2) : "-";
 }
 
-function conditionLabel(kind?: string): string {
+type PlanDirection = "long" | "exit";
+
+function planDirection(plan: Plan): PlanDirection {
+  if (plan.plan_action === "REDUCE" || plan.plan_action === "EXIT") return "exit";
+  if (plan.plan_action === "ENTER" || plan.plan_action === "ADD") return "long";
+  const rating = (plan.rating ?? "").toLowerCase();
+  if (rating.includes("sell") || rating.includes("underweight") || rating.includes("reduce") || rating.includes("减持") || rating.includes("减仓") || rating.includes("卖出") || rating.includes("偏空")) return "exit";
+  if (plan.entry_zone?.length && plan.targets?.length && Math.max(...plan.targets) < Math.min(...plan.entry_zone)) return "exit";
+  return "long";
+}
+
+function conditionLabel(kind: string | undefined, direction: PlanDirection, triggerAction?: string): string {
+  const action = String(triggerAction || "").toUpperCase();
+  if (action === "ENTER") return "建仓";
+  if (action === "ADD") return "加仓";
+  if (action === "REDUCE") return "减仓";
+  if (action === "EXIT") return "清仓";
+  if (action === "HOLD") return "观望";
   const k = String(kind || "").toLowerCase();
+  if (direction === "exit") {
+    if (k === "entry") return "减仓";
+    if (k === "full") return "清仓";
+    if (k === "stop") return "看空失效";
+    if (k === "take_profit") return "下行止盈";
+  }
   if (k === "entry") return "建仓";
   if (k === "full") return "满仓";
   if (k === "stop") return "止损";
@@ -106,6 +129,12 @@ export function PlanListCard() {
 function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void; onRemove: () => void }) {
   const isTriggered = plan.status === "triggered";
   const displayName = displayNameOf(plan.name, plan.symbol);
+  const direction = planDirection(plan);
+  const isExit = direction === "exit";
+  const lifecycleLabel = plan.lifecycle_state === "waiting_trigger" ? "等待触发"
+    : plan.lifecycle_state === "executable" ? "可执行"
+      : plan.lifecycle_state === "cancelled" ? "已取消"
+        : plan.lifecycle_state === "expired" ? "已过期" : "";
 
   return (
     <div
@@ -129,6 +158,9 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
           {plan.name && plan.name !== plan.symbol && (
             <span className="shrink-0 font-mono text-[11px] text-stone-500">{plan.symbol}</span>
           )}
+          {lifecycleLabel && (
+            <span className="shrink-0 rounded bg-teal-500/10 px-1.5 py-0.5 text-[10px] text-teal-300">{lifecycleLabel}</span>
+          )}
         </div>
         {plan.rating && (
           <span className="shrink-0 rounded bg-stone-800 px-1.5 py-0.5 font-mono text-[10px] text-stone-300">
@@ -145,15 +177,22 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
       )}
 
       <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-        <PriceBlock label="建仓" value={plan.entry_zone?.length ? plan.entry_zone.map(formatPrice).join("-") : "-"} tone="blue" />
-        <PriceBlock label="止损" value={formatPrice(plan.stop_loss)} tone="red" />
-        <PriceBlock label="目标" value={plan.targets?.length ? plan.targets.map(formatPrice).join("/") : "-"} tone="green" />
+        <PriceBlock label={isExit ? "减仓/卖出" : "建仓"} value={plan.entry_zone?.length ? plan.entry_zone.map(formatPrice).join("-") : "-"} tone="blue" />
+        <PriceBlock label={isExit ? "风控位" : "止损"} value={formatPrice(plan.stop_loss)} tone="red" />
+        <PriceBlock label={isExit ? "下方目标" : "目标"} value={plan.targets?.length ? plan.targets.map(formatPrice).join("/") : "-"} tone="green" />
         <PriceBlock
-          label="仓位"
+          label={isExit ? "仓位上限" : "仓位"}
           value={plan.position_pct !== null && plan.position_pct !== undefined ? `${plan.position_pct}%` : "-"}
           tone="slate"
         />
       </div>
+
+      {(plan.reliability_score !== null || plan.expires_at) && (
+        <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-stone-500">
+          {plan.reliability_score !== null && <span>推荐可靠性 {Math.round(plan.reliability_score)}/100</span>}
+          {plan.expires_at && <span>有效至 {plan.expires_at}</span>}
+        </div>
+      )}
 
       {plan.conditions?.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
@@ -163,7 +202,7 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
               className="rounded border border-stone-700 bg-stone-800/50 px-1.5 py-0.5 text-[10px] text-stone-300"
               title={c.description}
             >
-              {conditionLabel(c.kind)} · {c.description}
+              {conditionLabel(c.kind, direction, c.trigger_action)} · {c.description}
             </span>
           ))}
         </div>

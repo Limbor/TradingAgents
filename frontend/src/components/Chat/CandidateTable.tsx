@@ -1,12 +1,16 @@
 import { Fragment, useState } from "react";
-import { AlertCircle, ArrowRight, ChevronDown, ChevronRight, Info, Plus, TrendingUp } from "lucide-react";
-import { saveCandidateAction } from "@/api/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertCircle, ArrowRight, ChevronDown, ChevronRight, Info, Plus, RefreshCw, ShieldCheck, TrendingUp } from "lucide-react";
+import { getTradeReview, saveCandidateAction, type ChipProfile, type TradeReviewResponse } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
+import { CandlestickChart } from "./CandlestickChart";
 
 export interface CandidateRow {
   rank: number;
   symbol: string;
   name?: string;
   industry?: string;
+  industryDetail?: string;
   board?: string;
   decision?: string;
   quantDecision?: string;
@@ -15,6 +19,13 @@ export interface CandidateRow {
   riskAssessment?: string;
   score?: number;
   quantScore?: number;
+  strategyScores?: {
+    attackScore?: number;
+    attackCoverage?: number;
+    defensiveScore?: number;
+    defensiveCoverage?: number;
+  };
+  activeSleeve?: string;
   latestPrice?: number;
   priceTradeDate?: string;
   entryZone?: number[];
@@ -57,6 +68,7 @@ interface CandidateTableProps {
 export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote, sessionState, onAnalyze, onAddWatchlist, actionContext }: CandidateTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
+  const queryClient = useQueryClient();
   if (candidates.length === 0) {
     return (
       <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-200 space-y-2">
@@ -119,8 +131,8 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
           </ul>
         </div>
       )}
-      <div className="overflow-hidden rounded-lg border border-stone-800">
-        <table className="w-full text-left text-sm">
+      <div className="overflow-x-auto rounded-lg border border-stone-800">
+        <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="bg-stone-900 text-xs uppercase text-stone-500">
             <tr>
               <th className="px-3 py-2 w-8">#</th>
@@ -153,7 +165,12 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                   {row.name && <span className="ml-2 text-stone-400">{row.name}</span>}
                   <div className="mt-1 flex flex-wrap gap-1 text-xs text-stone-500">
                     {row.board && <span>{row.board}</span>}
-                    {row.industry && <span>{row.industry}</span>}
+                    {row.industry && (
+                      <span>
+                        {row.industry}
+                        {row.industryDetail && row.industryDetail !== row.industry ? ` · ${row.industryDetail}` : ""}
+                      </span>
+                    )}
                     {row.gate_reasons?.slice(0, 2).map((reason) => (
                       <span key={reason} className="rounded bg-stone-800 px-1.5 py-0.5" title={explainGateReason(reason)}>{reason}</span>
                     ))}
@@ -193,6 +210,16 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                   {row.quantScore !== undefined && (
                     <div className="text-xs text-stone-500">Q {row.quantScore}</div>
                   )}
+                  {row.strategyScores && (
+                    <div
+                      className="mt-0.5 whitespace-nowrap text-[10px] text-stone-500"
+                      title={`当前采用${strategySleeveLabel(row.activeSleeve)}评分；括号内为因子覆盖率`}
+                    >
+                      进 {formatStrategyScore(row.strategyScores.attackScore, row.strategyScores.attackCoverage)}
+                      <span className="mx-1 text-stone-700">/</span>
+                      稳 {formatStrategyScore(row.strategyScores.defensiveScore, row.strategyScores.defensiveCoverage)}
+                    </div>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-1">
@@ -214,8 +241,9 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                   <td colSpan={8} className="px-3 py-3">
                     <CandidateExpanded
                       row={row}
+                      tradeDate={actionContext?.tradeDate ?? asOfDate ?? row.priceTradeDate}
                       feedback={actionFeedback[row.symbol]}
-                      onAction={async (action) => {
+                      onAction={async (action, review) => {
                         try {
                           const result = await saveCandidateAction({
                             action,
@@ -224,9 +252,10 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                             run_id: actionContext?.runId,
                             artifact_id: actionContext?.artifactId,
                             trade_date: actionContext?.tradeDate,
-                            payload: row.raw,
+                            payload: { ...(row.raw ?? {}), ...(review ? { trade_review: review } : {}) },
                           });
                           setActionFeedback((prev) => ({ ...prev, [row.symbol]: result.message }));
+                          if (result.plan_id) await queryClient.invalidateQueries({ queryKey: queryKeys.plans() });
                         } catch (exc) {
                           setActionFeedback((prev) => ({ ...prev, [row.symbol]: exc instanceof Error ? exc.message : "操作失败" }));
                         }
@@ -265,14 +294,39 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
 
 function CandidateExpanded({
   row,
+  tradeDate,
   feedback,
   onAction,
 }: {
   row: CandidateRow;
+  tradeDate?: string;
   feedback?: string;
-  onAction: (action: "adopt" | "watch" | "private" | "ignore") => void;
+  onAction: (action: "adopt" | "wait_trigger" | "watch" | "private" | "ignore", review?: TradeReviewResponse) => void;
 }) {
   const lessonHits = row.strategyLessonHits ?? [];
+  const [chartDays, setChartDays] = useState(60);
+  const reviewPlan = candidateReviewPlan(row);
+  const reviewQuery = useQuery({
+    queryKey: ["trade-review", row.symbol, tradeDate, reviewPlan],
+    queryFn: () => getTradeReview({
+      symbol: row.symbol,
+      trade_date: tradeDate,
+      lookback_days: 120,
+      plan: reviewPlan,
+      recommendation_context: {
+        final_decision: row.decision,
+        quant_decision: row.quantDecision,
+        llm_view: row.llmView,
+        data_coverage_warnings: row.dataCoverageWarnings ?? [],
+        requested_trade_date: tradeDate,
+      },
+    }),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const review = reviewQuery.data;
+  const gateStatus = review?.pretrade_gate.status;
+  const planAction = gateStatus === "actionable" ? "adopt" : "wait_trigger";
   return (
     <div className="grid gap-3 text-xs text-stone-400 lg:grid-cols-2">
       <div className="space-y-2">
@@ -286,8 +340,17 @@ function CandidateExpanded({
         <DataCoverageBlock row={row} />
       </div>
       <div className="space-y-2">
+        <TradeReviewPanel
+          review={review}
+          loading={reviewQuery.isLoading}
+          refreshing={reviewQuery.isFetching}
+          error={reviewQuery.error}
+          days={chartDays}
+          onDaysChange={setChartDays}
+          onRefresh={() => reviewQuery.refetch()}
+        />
         <ListBlock
-          title="反思经验命中"
+          title="反思经验命中（历史案例复盘，非本次门控状态）"
           items={lessonHits.map((item) => String(item.finding || item.suggested_adjustment || item.id || ""))}
           empty="本次未命中历史策略经验"
           tone="purple"
@@ -298,8 +361,13 @@ function CandidateExpanded({
           </div>
         )}
         <div className="flex flex-wrap gap-2">
-          <button onClick={() => onAction("adopt")} className="rounded border border-emerald-500/30 px-2 py-1 text-emerald-300 hover:bg-emerald-500/10">
-            加入次日计划
+          <button
+            disabled={!review || review.degraded || gateStatus === "reject" || reviewQuery.isFetching}
+            onClick={() => onAction(planAction, review)}
+            className="rounded border border-emerald-500/30 px-2 py-1 text-emerald-300 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:border-stone-700 disabled:text-stone-600"
+            title={gateStatus === "reject" ? "硬门控未通过，不能加入交易计划" : undefined}
+          >
+            {reviewQuery.isLoading ? "交易前复核中…" : review?.degraded ? "MCP 不可用，不能加入计划" : gateStatus === "actionable" ? "加入可执行计划" : gateStatus === "wait" ? "加入等待触发" : "不建议加入"}
           </button>
           <button onClick={() => onAction("watch")} className="rounded border border-teal-500/30 px-2 py-1 text-teal-300 hover:bg-teal-500/10">
             仅观察
@@ -315,6 +383,135 @@ function CandidateExpanded({
       </div>
     </div>
   );
+}
+
+function TradeReviewPanel({
+  review,
+  loading,
+  refreshing,
+  error,
+  days,
+  onDaysChange,
+  onRefresh,
+}: {
+  review?: TradeReviewResponse;
+  loading: boolean;
+  refreshing: boolean;
+  error: unknown;
+  days: number;
+  onDaysChange: (days: number) => void;
+  onRefresh: () => void;
+}) {
+  if (loading) {
+    return <div className="rounded border border-stone-800 bg-stone-900 p-4 text-center text-stone-500">正在加载时点 K 线并执行交易前复核…</div>;
+  }
+  if (error || !review) {
+    return (
+      <div className="rounded border border-red-500/20 bg-red-500/5 p-3 text-red-300">
+        交易前复核加载失败，当前禁止直接加入执行计划。
+        <button onClick={onRefresh} className="ml-2 underline">重试</button>
+      </div>
+    );
+  }
+  const gate = review.pretrade_gate;
+  const reliability = review.recommendation_reliability;
+  const statusLabel = review.degraded ? "无法复核" : gate.status === "actionable" ? "可以执行" : gate.status === "wait" ? "等待触发" : "取消计划";
+  const statusClass = review.degraded
+    ? "border-stone-600 bg-stone-800 text-stone-300"
+    : gate.status === "actionable"
+    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+    : gate.status === "wait"
+      ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+      : "border-red-500/30 bg-red-500/10 text-red-300";
+  return (
+    <div className="rounded border border-stone-800 bg-stone-900 p-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-teal-300" />
+          <span className="font-medium text-stone-200">近期 K 线与交易前复核</span>
+          <span className={`rounded border px-2 py-0.5 font-medium ${statusClass}`}>{statusLabel}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {[30, 60, 120].map((value) => (
+            <button key={value} onClick={() => onDaysChange(value)} className={`rounded px-1.5 py-0.5 ${days === value ? "bg-stone-700 text-stone-100" : "text-stone-500 hover:text-stone-300"}`}>{value}日</button>
+          ))}
+          <button onClick={onRefresh} disabled={refreshing} title="重新拉取并复核" className="ml-1 rounded p-1 text-stone-500 hover:bg-stone-800 hover:text-stone-200 disabled:opacity-50">
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+      <CandlestickChart candles={review.candles} plan={review.plan} days={days} chipProfile={review.chip_profile} />
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <MiniMetric label="推荐可靠性" value={review.degraded ? "不可用（缺正式门控）" : `${reliability.score}/100 · ${reliability.level}`} />
+        <MiniMetric label="技术门控可信度" value={review.degraded ? "不可用" : `${gate.reliability_score}/100`} />
+      </div>
+      <ChipProfileSummary profile={review.chip_profile} />
+      <div className="mt-2 text-stone-500">
+        截止 {review.effective_trade_date ?? review.as_of_date} · {review.gate_authority === "stockmanager_mcp" ? "MCP 确定性门控" : "本地降级，仅供看图"}。{reliability.note}
+      </div>
+      <div className="mt-2 space-y-1">
+        {gate.checks.map((check) => (
+          <div key={check.code} className="flex items-start gap-2 rounded bg-stone-950 px-2 py-1">
+            <span className={check.passed === true ? "text-emerald-300" : check.passed === false ? "text-red-300" : "text-stone-500"}>
+              {check.passed === true ? "通过" : check.passed === false ? "未过" : "未知"}
+            </span>
+            <span className="font-mono text-stone-300">{check.code}</span>
+            <span className="min-w-0 flex-1 text-stone-500">{check.detail}</span>
+          </div>
+        ))}
+      </div>
+      {review.warnings.length > 0 && <div className="mt-2 text-amber-300">{review.warnings.join("；")}</div>}
+    </div>
+  );
+}
+
+function ChipProfileSummary({ profile }: { profile?: ChipProfile }) {
+  if (!profile || profile.status !== "available" || !profile.current || !profile.trend) {
+    return (
+      <div className="mt-2 rounded border border-stone-800 bg-stone-950 px-2 py-1.5 text-stone-500">
+        筹码趋势：暂不可用（{profile?.reason ?? "数据源尚未返回筹码分布"}）
+      </div>
+    );
+  }
+  const { current, trend } = profile;
+  const labels: Record<string, string> = {
+    bullish_confirmed: "趋势确认",
+    improving: "成本改善",
+    neutral: "中性观察",
+    weakening: "趋势转弱",
+    crowded: "获利拥挤",
+  };
+  const tone = trend.state === "bullish_confirmed" || trend.state === "improving"
+    ? "text-emerald-300"
+    : trend.state === "weakening" || trend.state === "crowded"
+      ? "text-amber-300"
+      : "text-stone-300";
+  return (
+    <div className="mt-2 rounded border border-teal-500/20 bg-teal-500/5 p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-medium text-stone-200">筹码成本辅助判断</span>
+        <span className={tone}>{labels[trend.state] ?? trend.state} · {trend.confirmation_score}/100</span>
+      </div>
+      <div className="mt-1 grid grid-cols-2 gap-1 font-mono text-stone-400 sm:grid-cols-4">
+        <span>成本 {current.avg_cost.toFixed(2)}</span>
+        <span>获利盘 {(current.profit_ratio * 100).toFixed(1)}%</span>
+        <span>70%区间 {current.cost_70_low.toFixed(2)}–{current.cost_70_high.toFixed(2)}</span>
+        <span>成本偏离 {trend.price_vs_avg_cost_pct >= 0 ? "+" : ""}{trend.price_vs_avg_cost_pct.toFixed(1)}%</span>
+      </div>
+      {trend.reasons.length > 0 && <div className="mt-1 text-emerald-300/80">确认：{trend.reasons.join("；")}</div>}
+      {trend.risks.length > 0 && <div className="mt-1 text-amber-300">风险：{trend.risks.join("；")}</div>}
+      <div className="mt-1 text-stone-600">概率估算，仅作趋势确认，不会单独改变交易门控。</div>
+    </div>
+  );
+}
+
+function candidateReviewPlan(row: CandidateRow): Record<string, unknown> {
+  return {
+    plan_action: row.actionPlan?.plan_action ?? row.actionPlan?.action ?? "ENTER",
+    action_zone: row.entryZone ?? row.actionPlan?.action_zone ?? row.actionPlan?.entry_zone ?? [],
+    invalidation_level: row.stopLoss ?? row.actionPlan?.invalidation_level ?? row.actionPlan?.stop_loss,
+    objective_levels: row.targets ?? row.actionPlan?.objective_levels ?? row.actionPlan?.take_profit ?? [],
+  };
 }
 
 function QuantGateBlock({ row }: { row: CandidateRow }) {
@@ -455,13 +652,28 @@ function rowSelectionContext(row: CandidateRow): Record<string, unknown> {
     symbol: row.symbol,
     final_decision: row.decision,
   };
+  const raw = row.raw ?? {};
+  const evidenceKeys = [
+    "quant_decision", "quant_score", "llm_score", "llm_view",
+    "catalyst_strength", "risk_assessment", "score_confidence",
+    "factor_scores", "strategy_scores", "active_sleeve", "data_coverage", "quant_gate_reasons", "gate_reasons",
+    "risk_flags", "key_catalysts", "key_risks",
+  ];
+  evidenceKeys.forEach((key) => {
+    const value = raw[key];
+    if (value !== undefined && value !== null) ctx[key] = value;
+  });
   if (row.score !== undefined) ctx.display_score = row.score;
+  if (row.quantScore !== undefined) ctx.quant_score = row.quantScore;
   if (row.entryZone) ctx.entry_zone = row.entryZone;
   if (row.stopLoss !== undefined) ctx.stop_loss = row.stopLoss;
   if (row.targets) ctx.targets = row.targets;
   if (row.actionPlan) ctx.action_plan = row.actionPlan;
   if (row.reasoning) ctx.reasoning = row.reasoning;
-  if (row.priceTradeDate) ctx.price_trade_date = row.priceTradeDate;
+  if (row.priceTradeDate) {
+    ctx.price_trade_date = row.priceTradeDate;
+    ctx.trade_date = row.priceTradeDate;
+  }
   return ctx;
 }
 
@@ -476,6 +688,19 @@ function formatPrice(value: number) {
   return Number.isFinite(value) ? value.toFixed(2) : "-";
 }
 
+function strategySleeveLabel(value?: string): string {
+  if (value === "defensive") return "稳健轨";
+  if (value === "attack") return "进攻轨";
+  return "双轨";
+}
+
+function formatStrategyScore(score?: number, coverage?: number): string {
+  if (score === undefined) return "-";
+  const renderedScore = Number.isInteger(score) ? String(score) : score.toFixed(1);
+  if (coverage === undefined) return renderedScore;
+  return `${renderedScore} (${Math.round(coverage * 100)}%)`;
+}
+
 /**
  * Parse raw candidate data from WebSocket into typed rows.
  */
@@ -486,10 +711,12 @@ export function parseCandidates(raw: unknown): CandidateRow[] {
     const symbol = String(row.symbol ?? row.ticker ?? row.ts_code ?? `#${index + 1}`);
     const name = row.name ? String(row.name) : undefined;
     const industry = row.industry ? String(row.industry) : undefined;
+    const industryDetail = row.industry_detail ? String(row.industry_detail) : undefined;
     const board = row.board ? String(row.board) : undefined;
     const decision = row.final_decision ?? row.signal ?? row.quant_decision;
     const score = row.display_score ?? row.final_score ?? row.score ?? row.total_score;
     const quantScore = row.quant_score;
+    const strategyScores = parseStrategyScores(row.strategy_scores);
     const keyMetrics = row.key_metrics as Record<string, unknown> | undefined;
     const factorSnapshot = row.factor_snapshot as Record<string, unknown> | undefined;
     const latestPrice = firstNumber(row.latest_price, row.current_price, row.close, keyMetrics?.latest_price, keyMetrics?.close, factorSnapshot?.latest_price, factorSnapshot?.close);
@@ -507,6 +734,7 @@ export function parseCandidates(raw: unknown): CandidateRow[] {
       symbol,
       name,
       industry,
+      industryDetail,
       board,
       decision: decision ? String(decision) : undefined,
       quantDecision: row.quant_decision ? String(row.quant_decision) : undefined,
@@ -515,6 +743,8 @@ export function parseCandidates(raw: unknown): CandidateRow[] {
       riskAssessment: row.risk_assessment ? String(row.risk_assessment) : undefined,
       score: score !== undefined ? Number(score) : undefined,
       quantScore: quantScore !== undefined ? Number(quantScore) : undefined,
+      strategyScores,
+      activeSleeve: row.active_sleeve ? String(row.active_sleeve) : undefined,
       latestPrice,
       priceTradeDate: row.price_trade_date ? String(row.price_trade_date) : undefined,
       entryZone,
@@ -539,6 +769,18 @@ export function parseCandidates(raw: unknown): CandidateRow[] {
       raw: row,
     };
   });
+}
+
+function parseStrategyScores(raw: unknown): CandidateRow["strategyScores"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  const scores = {
+    attackScore: firstNumber(value.attack_score),
+    attackCoverage: firstNumber(value.attack_coverage),
+    defensiveScore: firstNumber(value.defensive_score),
+    defensiveCoverage: firstNumber(value.defensive_coverage),
+  };
+  return Object.values(scores).some((item) => item !== undefined) ? scores : undefined;
 }
 
 function parseQuantGateReasons(raw: unknown): QuantGateReason[] | undefined {

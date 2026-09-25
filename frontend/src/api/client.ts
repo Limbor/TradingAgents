@@ -31,6 +31,9 @@ export interface RunResponse {
   completed_at: string | null;
   error: string | null;
   params: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  duration_ms: number | null;
+  event_count: number;
 }
 
 export interface ReportInfo {
@@ -160,6 +163,7 @@ export interface PredictionScorecard {
 
 export interface TradeCondition {
   kind?: string;
+  trigger_action?: "ENTER" | "ADD" | "HOLD" | "REDUCE" | "EXIT";
   description?: string;
   source?: string;
 }
@@ -168,6 +172,10 @@ export interface Plan {
   id: string;
   symbol: string;
   name: string | null;
+  plan_action: "ENTER" | "ADD" | "HOLD" | "REDUCE" | "EXIT";
+  action_zone: number[];
+  invalidation_level: number | null;
+  objective_levels: number[];
   entry_zone: number[];
   stop_loss: number | null;
   targets: number[];
@@ -178,12 +186,102 @@ export interface Plan {
   source: string;
   artifact_id: string;
   reflection_case_id: string;
+  lifecycle_state: "draft" | "waiting_trigger" | "executable" | "cancelled" | "expired" | string;
+  expires_at: string | null;
+  reliability_score: number | null;
+  review_snapshot: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   triggered_at: string | null;
   trigger_reason: string | null;
   last_checked_trade_date: string | null;
   last_checked_at: string | null;
+}
+
+export interface TradeReviewCandle {
+  trade_date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  ma5: number | null;
+  ma10: number | null;
+  ma20: number | null;
+  ma60: number | null;
+  volume_ma5: number | null;
+  turnover_rate?: number | null;
+}
+
+export interface ChipProfilePoint {
+  trade_date: string;
+  close: number;
+  avg_cost: number;
+  profit_ratio: number;
+  cost_70_low: number;
+  cost_70_high: number;
+  concentration_70: number;
+  cost_90_low: number;
+  cost_90_high: number;
+  concentration_90: number;
+}
+
+export interface ChipProfileTrend {
+  state: "bullish_confirmed" | "improving" | "neutral" | "weakening" | "crowded" | string;
+  confirmation_score: number;
+  avg_cost_slope_5d_pct: number;
+  price_vs_avg_cost_pct: number;
+  concentration_change_5d: number;
+  reasons: string[];
+  risks: string[];
+  note: string;
+}
+
+export interface ChipProfile {
+  status: "available" | "unavailable" | string;
+  method: string;
+  advisory_only: boolean;
+  reason: string;
+  sample_days: number;
+  turnover_coverage?: number;
+  current: ChipProfilePoint | null;
+  trend: ChipProfileTrend | null;
+  series: ChipProfilePoint[];
+}
+
+export interface TradeReviewCheck {
+  code: string;
+  passed: boolean | null;
+  severity: "hard" | "soft" | string;
+  detail: string;
+}
+
+export interface TradeReviewResponse {
+  status: "success" | "partial" | "error";
+  as_of_date: string;
+  effective_trade_date?: string;
+  source: string;
+  method: string;
+  warnings: string[];
+  ts_code: string;
+  degraded: boolean;
+  gate_authority: "stockmanager_mcp" | "none" | string;
+  candles: TradeReviewCandle[];
+  chip_profile?: ChipProfile;
+  metrics: Record<string, unknown>;
+  plan: Record<string, unknown>;
+  pretrade_gate: {
+    status: "actionable" | "wait" | "reject";
+    reliability_score: number;
+    reasons: string[];
+    checks: TradeReviewCheck[];
+  };
+  recommendation_reliability: {
+    score: number;
+    level: "high" | "medium" | "low";
+    components: Record<string, number>;
+    note: string;
+  };
 }
 
 export interface ModelOption {
@@ -351,6 +449,141 @@ export async function listArtifacts(params: {
   return fetchJson(`${API_BASE}/artifacts?${search}`);
 }
 
+// --- Market overview (/market page) ---
+
+export interface MarketIndexEntry {
+  code: string;
+  name: string;
+  close: number;
+  pct_change: number | null;
+  above_ma20: boolean;
+  ma20: number;
+  closes_20d: number[];
+}
+
+export interface MarketBreadth {
+  up: number | null;
+  down: number | null;
+  flat: number | null;
+  limit_up: number | null;
+  limit_down: number | null;
+  broken_limit: number | null;
+}
+
+export interface MarketNorthbound {
+  latest_net: number | null;
+  five_day_net: number | null;
+  latest_date: string | null;
+}
+
+export interface MarketDriver {
+  dimension: "funds" | "sentiment" | "policy" | "macro";
+  direction: "positive" | "negative" | "neutral";
+  statement: string;
+}
+
+export interface MarketRegime {
+  trend_band: string;
+  confidence: "low" | "medium" | "high";
+  core_logic: string;
+  drivers: MarketDriver[];
+  suggested_position_range: string;
+  dominant_style: string;
+  risk_alerts: string[];
+}
+
+export interface IndustryStanceRow {
+  industry: string;
+  source_name?: string;
+  source_names?: string[];
+  board_type?: "concept" | "industry" | "industry_group";
+  taxonomy?: "CITICS" | "SW2021" | "PROVIDER_FALLBACK" | string;
+  industry_code?: string;
+  industry_level?: "L1" | "L2" | "L3" | string;
+  selection_industries?: string[];
+  selection_industry_codes?: string[];
+  selection_taxonomy?: "CITICS" | "SW2021" | string | null;
+  selection_level?: "L1" | "L2" | "L3" | string | null;
+  selection_concept?: string | null;
+  selection_mode?: "exact" | "proxy" | "unsupported";
+  pct_change: number | null;
+  main_inflow: number | null;
+  leader_stock: string | null;
+  turnover_rate?: number | null;
+  turnover_amount?: number | null;
+  advance_count?: number | null;
+  decline_count?: number | null;
+  score?: number;
+  rating: "bullish" | "neutral" | "bearish" | null;
+  rating_level?: "strong_bullish" | "bullish" | "neutral" | "bearish" | "strong_bearish";
+  confidence?: "low" | "medium" | "high";
+  data_coverage?: number;
+  phase?: string;
+  factor_scores?: Record<string, number | null>;
+  evidence?: string[];
+  reason: string | null;
+  ai_comment?: string | null;
+  key_stocks: string[];
+}
+
+export interface TaggedNewsItem {
+  title: string;
+  content: string;
+  datetime: string;
+  polarity: "bullish" | "bearish" | "neutral" | null;
+  impact_scope: "market" | "industry" | "stock" | null;
+  impact_level: "high" | "medium" | "low" | null;
+  industries: string[];
+  symbols: string[];
+  interpretation: string | null;
+}
+
+export interface MacroReading {
+  name: string;
+  date: string;
+  value: number | null;
+}
+
+export interface UnlockEvent {
+  symbol: string;
+  name: string;
+  date: string;
+  market_value: number | null;
+}
+
+export interface MarketOverviewPayload {
+  market_asof_date: string;
+  generated_at: string;
+  market_data: {
+    indices: MarketIndexEntry[];
+    breadth: MarketBreadth | null;
+    northbound: MarketNorthbound | null;
+    turnover_amount: number | null;
+    macro_tail: MacroReading[];
+    board_taxonomy?: string | {
+      industry: string;
+      industry_level: string;
+      theme: string;
+    };
+  };
+  regime: MarketRegime | null;
+  industry_stances: IndustryStanceRow[];
+  news: TaggedNewsItem[];
+  events: { macro: MacroReading[]; unlocks: UnlockEvent[] };
+  degraded: string[];
+}
+
+export interface MarketOverviewResponse {
+  available: boolean;
+  artifact: (Omit<ArtifactInfo, "payload"> & { payload: MarketOverviewPayload }) | null;
+  is_stale: boolean;
+  current_asof_date: string;
+}
+
+export async function getMarketOverview(): Promise<MarketOverviewResponse> {
+  return fetchJson(`${API_BASE}/market/overview`);
+}
+
 export interface ArtifactVersion {
   id: number;
   artifact_id: string;
@@ -442,15 +675,30 @@ export async function listLessonCases(lessonId: string): Promise<ReflectionCase[
 }
 
 export async function saveCandidateAction(body: {
-  action: "adopt" | "plan" | "executed" | "watch" | "observe" | "private" | "private_review" | "ignore" | "dismiss";
+  action: "adopt" | "plan" | "executed" | "wait_trigger" | "watch" | "observe" | "private" | "private_review" | "ignore" | "dismiss";
   symbol: string;
   name?: string;
   run_id?: string;
   artifact_id?: string;
   trade_date?: string;
   payload?: Record<string, unknown>;
-}): Promise<{ status: string; case_id?: string | null; message: string }> {
+}): Promise<{ status: string; case_id?: string | null; plan_id?: string | null; message: string }> {
   return fetchJson(`${API_BASE}/candidate-actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getTradeReview(body: {
+  symbol: string;
+  trade_date?: string;
+  lookback_days?: number;
+  adj_type?: "qfq" | "hfq" | "none";
+  plan?: Record<string, unknown>;
+  recommendation_context?: Record<string, unknown>;
+}): Promise<TradeReviewResponse> {
+  return fetchJson(`${API_BASE}/market/trade-review`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -460,6 +708,10 @@ export async function saveCandidateAction(body: {
 export async function createPlan(body: {
   symbol: string;
   name?: string;
+  plan_action?: "ENTER" | "ADD" | "HOLD" | "REDUCE" | "EXIT";
+  action_zone?: number[];
+  invalidation_level?: number;
+  objective_levels?: number[];
   entry_zone?: number[];
   stop_loss?: number;
   targets?: number[];
@@ -470,6 +722,10 @@ export async function createPlan(body: {
   source?: string;
   artifact_id?: string;
   reflection_case_id?: string;
+  lifecycle_state?: string;
+  expires_at?: string;
+  reliability_score?: number;
+  review_snapshot?: Record<string, unknown>;
 }): Promise<Plan> {
   return fetchJson(`${API_BASE}/plans`, {
     method: "POST",
@@ -547,12 +803,36 @@ export interface DecisionAuditSummary {
   execution_link_rate: number;
   execution_validation: { sample_count: number; win_rate: number; average_directional_return: number; statistically_usable: boolean };
   validation: {
-    overall: { sample_count: number; win_rate: number; average_return: number; statistically_usable: boolean };
-    by_decision: Record<string, { sample_count: number; win_rate: number; average_return: number; average_directional_return: number }>;
+    overall: DecisionValidationMetrics;
+    by_decision: Record<string, DecisionValidationMetrics>;
+    by_source?: Record<string, DecisionValidationMetrics>;
+    unique_signal_count?: number;
+    unique_symbol_count?: number;
+    unique_signal_date_count?: number;
+    duplicate_signal_count?: number;
     strategy_claims_allowed: boolean;
     effectiveness_claim_allowed?: boolean;
     warnings: string[];
   };
+}
+
+export interface DecisionValidationMetrics {
+  sample_count: number;
+  win_rate: number;
+  average_return: number;
+  average_directional_return: number;
+  statistically_usable: boolean;
+}
+
+export interface DecisionAuditEvaluation {
+  evaluated_outcomes: number;
+  skipped: number;
+  selected_records: number;
+  attempted_outcomes: number;
+  due_records: number;
+  not_due_records: number;
+  as_of_date: string;
+  warnings: string[];
 }
 
 export interface DecisionRecord {
@@ -580,7 +860,7 @@ export const getDecisionAuditSummary = (): Promise<DecisionAuditSummary> =>
 export const listDecisionRecords = (): Promise<DecisionRecord[]> =>
   fetchJson(`${API_BASE}/decision-audit/decisions?limit=100`);
 
-export const evaluateDecisionAudit = (): Promise<Record<string, unknown>> =>
+export const evaluateDecisionAudit = (): Promise<DecisionAuditEvaluation> =>
   fetchJson(`${API_BASE}/decision-audit/evaluate`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
   });
@@ -676,12 +956,12 @@ export interface AdjustPositionResult {
 
 export async function adjustHolding(
   symbol: string,
-  body: { action: "add" | "reduce"; quantity: number; price: number; decision_id?: string },
+  body: { action: "add" | "reduce"; quantity: number; price: number; decision_id?: string; idempotency_key?: string },
 ): Promise<AdjustPositionResult> {
   return fetchJson(`${API_BASE}/holdings/${encodeURIComponent(symbol)}/adjust`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, idempotency_key: body.idempotency_key ?? crypto.randomUUID() }),
   });
 }
 

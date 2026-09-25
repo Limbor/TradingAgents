@@ -28,6 +28,7 @@ export const SKILL_TITLES: Record<string, string> = {
   daily_pipeline: "每日选股管线",
   daily_review: "收盘复盘",
   risk_monitor: "持仓风险监控",
+  market_overview: "市场/板块分析",
 };
 
 export function skillTitle(skillId?: string): string {
@@ -79,31 +80,73 @@ export function normalizeTaskStatus(status: unknown): ChatTaskStatus {
   return "running";
 }
 
+function kvValue(value: unknown): string {
+  if (value !== null && typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+/**
+ * Human-friendly `k=v, k=v` brief for an object payload (up to 5 entries,
+ * truncated to maxLength). Returns undefined when there is nothing to show.
+ */
+export function formatKV(obj: unknown, maxLength = 120): string | undefined {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return undefined;
+  const entries = Object.entries(obj as Record<string, unknown>)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .slice(0, 5)
+    .map(([key, value]) => `${key}=${kvValue(value)}`);
+  if (entries.length === 0) return undefined;
+  const text = entries.join(", ");
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
 export function formatParams(params: unknown): string | undefined {
-  if (!params || typeof params !== "object") return undefined;
-  return JSON.stringify(params);
+  return formatKV(params);
 }
 
 export function formatPayloadBrief(payload: Record<string, unknown>): string | undefined {
   if ("agent" in payload && "status" in payload) return undefined;
   if ("skill_id" in payload) return undefined;
   if ("tool" in payload) {
-    const args = payload.args;
-    if (!args || typeof args !== "object") return String(payload.tool);
-    const entries = Object.entries(args as Record<string, unknown>)
-      .filter(([, value]) => value !== undefined && value !== null && value !== "")
-      .slice(0, 5)
-      .map(([key, value]) => `${key}=${String(value)}`);
-    return entries.length ? entries.join(", ") : String(payload.tool);
+    return formatKV(payload.args) ?? String(payload.tool);
   }
-  const keys = Object.keys(payload);
-  if (keys.length === 0) return undefined;
-  return JSON.stringify(payload).slice(0, 240);
+  return formatKV(payload);
 }
 
-function toolLabel(tool: string): string {
+/**
+ * Summarize a portfolio_update payload as "600519.SH 买入 · 数量 100" style text
+ * instead of raw JSON; falls back to formatKV when no known fields match.
+ */
+export function formatPortfolioBrief(payload: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  const symbol = payload.symbol ?? payload.ticker ?? payload.code;
+  if (typeof symbol === "string" && symbol.trim()) parts.push(symbol.trim());
+  const action = payload.action ?? payload.operation;
+  if (typeof action === "string" && action.trim()) parts.push(action.trim());
+  const quantity = payload.quantity ?? payload.shares;
+  if (typeof quantity === "number" || (typeof quantity === "string" && quantity.trim())) {
+    parts.push(`数量 ${quantity}`);
+  }
+  const price = payload.price ?? payload.avg_cost ?? payload.current_price;
+  if (typeof price === "number") parts.push(`价格 ${price}`);
+  return parts.length ? parts.join(" · ") : formatKV(payload);
+}
+
+export function toolLabel(tool: string): string {
   const normalized = tool.toLowerCase();
   const labels: Record<string, string> = {
+    get_portfolio_summary: "持仓概览",
+    search_artifacts: "检索产物",
+    get_recent_runs: "近期任务",
+    get_mcp_factor_snapshot: "量化因子快照",
+    get_strategy_lessons: "策略经验",
+    multi_tool: "组合查询",
     get_stock_data: "行情数据",
     get_verified_market_snapshot: "市场快照",
     get_market_structure_snapshot: "市场结构",

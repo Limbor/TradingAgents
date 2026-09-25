@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Boxes, FileText, Search } from "lucide-react";
@@ -14,6 +14,7 @@ import {
   parseRisks,
 } from "@/components/Chat";
 import { formatMoney, formatNumber } from "@/utils/portfolio";
+import { analyzeStockHint, useGoChat, type ChatContext } from "@/lib/chatNav";
 
 const FILTERS = [
   { label: "全部", value: "" },
@@ -51,7 +52,7 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export default function Library() {
-  const navigate = useNavigate();
+  const goChat = useGoChat();
   const [searchParams] = useSearchParams();
   const [artifactType, setArtifactType] = useState("");
   const [query, setQuery] = useState("");
@@ -88,8 +89,8 @@ export default function Library() {
   });
 
   return (
-    <div className="mx-auto flex h-full max-w-7xl gap-4">
-      <aside className="flex w-96 min-w-80 flex-col rounded-lg border border-stone-800 bg-stone-900">
+    <div className="flex h-full gap-4">
+      <aside className="flex w-80 shrink-0 flex-col rounded-lg border border-stone-800 bg-stone-900 xl:w-96">
         <div className="border-b border-stone-800 p-4">
           <div className="mb-3 flex items-center justify-between">
             <div>
@@ -153,7 +154,14 @@ export default function Library() {
         {detailQuery.data ? (
           <ArtifactDetail
             artifact={detailQuery.data}
-            onAnalyze={(symbol) => navigate("/chat", { state: { prompt: `帮我分析 ${symbol}`, autoSend: true } })}
+            onAnalyze={(symbol, context) =>
+              goChat({
+                prompt: `帮我分析 ${symbol}`,
+                autoSend: true,
+                context: context as ChatContext | undefined,
+                intentHint: analyzeStockHint(symbol),
+              })
+            }
           />
         ) : (
           !detailQuery.isLoading && (
@@ -201,7 +209,7 @@ function ArtifactListItem({
   );
 }
 
-function ArtifactDetail({ artifact, onAnalyze }: { artifact: ArtifactInfo; onAnalyze: (symbol: string) => void }) {
+function ArtifactDetail({ artifact, onAnalyze }: { artifact: ArtifactInfo; onAnalyze: (symbol: string, context?: Record<string, unknown>) => void }) {
   return (
     <div>
       <div className="mb-4 flex items-start justify-between gap-4 border-b border-stone-800 pb-4">
@@ -292,12 +300,13 @@ function ArtifactVersions({ artifactId }: { artifactId: string }) {
   );
 }
 
-function StructuredArtifact({ artifact, onAnalyze }: { artifact: ArtifactInfo; onAnalyze: (symbol: string) => void }) {
+function StructuredArtifact({ artifact, onAnalyze }: { artifact: ArtifactInfo; onAnalyze: (symbol: string, context?: Record<string, unknown>) => void }) {
   const payload = useMemo(() => artifact.payload ?? {}, [artifact.payload]);
   const candidates = useMemo(() => {
     const rows = payload.decision_pack ?? payload.reviewed_candidates ?? payload.quant_candidates ?? payload.candidates;
     return parseCandidates(rows);
   }, [payload]);
+  const tradeDate = artifactTradeDate(payload, artifact, candidates);
 
   if (["signal_pack", "decision_pack", "screening_report", "scanner_report"].includes(artifact.artifact_type) && candidates.length > 0) {
     const warnings = Array.isArray(payload.warnings) ? payload.warnings.map(String) : undefined;
@@ -305,11 +314,12 @@ function StructuredArtifact({ artifact, onAnalyze }: { artifact: ArtifactInfo; o
       <CandidateTable
         candidates={candidates}
         warnings={warnings}
+        asOfDate={tradeDate}
         onAnalyze={onAnalyze}
         actionContext={{
           runId: artifact.run_id,
           artifactId: artifact.id,
-          tradeDate: typeof payload.trade_date === "string" ? payload.trade_date : undefined,
+          tradeDate,
         }}
       />
     );
@@ -341,7 +351,7 @@ function DailyReviewArtifact({
 }: {
   payload: Record<string, unknown>;
   artifact: ArtifactInfo;
-  onAnalyze: (symbol: string) => void;
+  onAnalyze: (symbol: string, context?: Record<string, unknown>) => void;
 }) {
   const reflection = (payload.reflection ?? {}) as Record<string, unknown>;
   const lessons = Array.isArray(payload.active_strategy_lessons)
@@ -353,6 +363,7 @@ function DailyReviewArtifact({
   const risks = parseRisks(payload.risk_items);
   const highRisks = parseRisks(payload.high_risk_items);
   const candidates = parseCandidates(payload.candidates);
+  const tradeDate = artifactTradeDate(payload, artifact, candidates);
   const counts = (payload.candidate_counts ?? {}) as Record<string, unknown>;
   const refreshed = (payload.refreshed_prices ?? {}) as Record<string, unknown>;
   return (
@@ -390,11 +401,12 @@ function DailyReviewArtifact({
           <CandidateTable
             candidates={candidates}
             warnings={Array.isArray(payload.warnings) ? payload.warnings.map(String) : undefined}
+            asOfDate={tradeDate}
             onAnalyze={onAnalyze}
             actionContext={{
               runId: artifact.run_id,
               artifactId: artifact.id,
-              tradeDate: typeof payload.trade_date === "string" ? payload.trade_date : undefined,
+              tradeDate,
             }}
           />
         </section>
@@ -427,6 +439,37 @@ function DailyReviewArtifact({
       )}
     </div>
   );
+}
+
+export function artifactTradeDate(
+  payload: Record<string, unknown>,
+  artifact: ArtifactInfo,
+  candidates: ReturnType<typeof parseCandidates>,
+): string | undefined {
+  const temporal = payload.temporal_context as Record<string, unknown> | undefined;
+  const firstRaw = candidates[0]?.raw;
+  const values = [
+    payload.trade_date,
+    payload.market_asof_date,
+    payload.as_of_date,
+    payload.effective_trade_date,
+    temporal?.market_asof_date,
+    temporal?.latest_close_date,
+    candidates[0]?.priceTradeDate,
+    firstRaw?.trade_date,
+    firstRaw?.price_trade_date,
+    firstRaw?.effective_trade_date,
+    artifact.id,
+    artifact.created_at,
+  ];
+  for (const value of values) {
+    const text = String(value ?? "");
+    const iso = text.match(/(?:19|20)\d{2}-\d{2}-\d{2}/)?.[0];
+    if (iso) return iso;
+    const compact = text.match(/(?:19|20)\d{6}/)?.[0];
+    if (compact) return `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`;
+  }
+  return undefined;
 }
 
 function ReflectionAndPlanArtifact({ payload }: { payload: Record<string, unknown> }) {

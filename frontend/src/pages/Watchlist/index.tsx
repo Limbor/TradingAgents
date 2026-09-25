@@ -4,9 +4,11 @@ import { useNavigate } from "react-router-dom";
 import { CalendarDays, Play, RefreshCw } from "lucide-react";
 import { listRuns } from "../../api/client";
 import { queryKeys } from "@/api/queryKeys";
+import { dailyPipelineHint, useGoChat } from "@/lib/chatNav";
 
 export default function Watchlist() {
   const navigate = useNavigate();
+  const goChat = useGoChat();
   const runsQuery = useQuery({
     queryKey: queryKeys.runsWatchlist(),
     queryFn: () => listRuns(50),
@@ -22,11 +24,10 @@ export default function Watchlist() {
   const startDailyPipeline = async () => {
     setStarting(true);
     try {
-      navigate("/chat", {
-        state: {
-          prompt: `每日选股 top ${Number(limit)}`,
-          autoSend: true,
-        },
+      goChat({
+        prompt: `每日选股 top ${Number(limit)}`,
+        autoSend: true,
+        intentHint: dailyPipelineHint(Number(limit)),
       });
     } finally {
       setStarting(false);

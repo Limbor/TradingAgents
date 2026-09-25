@@ -4,6 +4,7 @@ import { Brain, ChevronDown, Lightbulb, RefreshCw, Sparkles, Target, BarChart3 }
 import {
   approveLesson,
   deactivateLesson,
+  getConfig,
   getPredictionScorecard,
   getReflectionSummary,
   listLessonCases,
@@ -586,12 +587,27 @@ function ScorecardBody({ data }: { data: PredictionScorecard }) {
 
 function AlphaSuggestionCard({ suggestion }: { suggestion: AlphaSuggestion }) {
   const { applicable, static_alpha, suggested_alpha, delta } = suggestion;
+  // The badge reflects the real production switch (adaptive_alpha_enabled):
+  // when ON, daily_pipeline uses the suggested alpha as the fusion weight.
+  const configQuery = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig, staleTime: 60_000 });
+  const alphaLive = configQuery.data?.adaptive_alpha_enabled ?? false;
   return (
     <div className="rounded border border-stone-800 bg-stone-950 p-3">
       <div className="mb-2 flex items-center justify-between">
         <p className="text-xs font-medium text-stone-300">融合权重 α 建议（quant 权重）</p>
-        <span className="rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-500">
-          仅建议 · 未改实盘
+        <span
+          className={`rounded border px-1.5 py-0.5 text-[10px] ${
+            alphaLive
+              ? "border-teal-500/40 bg-teal-500/10 text-teal-300"
+              : "border-stone-700 text-stone-500"
+          }`}
+          title={
+            alphaLive
+              ? "设置中已开启自适应α：每日选股按此建议动态调整量化权重（样本不足时自动回退静态α）"
+              : "设置中未开启自适应α：实盘仍使用静态 STYLE_ALPHA，可在 设置 → 高级 中开启"
+          }
+        >
+          {alphaLive ? "已实装 · 实盘生效" : "仅建议 · 未改实盘"}
         </span>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">

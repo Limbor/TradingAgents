@@ -3,7 +3,7 @@
  *
  * When the backend has `api_auth_token` configured (env
  * TRADINGAGENTS_API_AUTH_TOKEN), REST requests must carry
- * `Authorization: Bearer <token>` and WebSocket URLs must append `?token=`.
+ * `Authorization: Bearer <token>` and WebSocket handshakes use subprotocol auth.
  * Desktop builds use a per-launch token supplied by the Rust shell and never
  * persist it. Web deployments may still use localStorage for an explicitly
  * configured remote API token.
@@ -48,4 +48,10 @@ export function withTokenQuery(url: string): string {
   if (!token) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
+/** WebSocket protocols keep the secret out of URLs/access logs. */
+export function websocketProtocols(): string[] {
+  const token = getAuthToken();
+  return token ? ["tradingagents", `auth.${token}`] : ["tradingagents"];
 }

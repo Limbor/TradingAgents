@@ -433,7 +433,7 @@ export default function Settings() {
                 setProfile({
                   ...profile,
                   sector_prefs: e.target.value
-                    .split(",")
+                    .split(/[,，、]/)
                     .map((item) => item.trim())
                     .filter(Boolean),
                 })

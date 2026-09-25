@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   getConfig,
-  createRun,
+  getMarketOverview,
   healthCheck,
   listArtifacts,
   listHoldings,
@@ -25,6 +25,7 @@ import {
   Brain,
   Clock,
   Filter,
+  Globe,
   PieChart,
   Play,
   RefreshCw,
@@ -36,15 +37,23 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import type { ArtifactInfo, RiskEvent } from "../../api/client";
+import type { ArtifactInfo, MarketOverviewResponse, RiskEvent } from "../../api/client";
 import { authHeaders } from "../../api/auth";
 import { queryKeys } from "@/api/queryKeys";
+import {
+  analyzeStockHint,
+  dailyPipelineHint,
+  dailyReviewHint,
+  positionAdviceHint,
+  riskMonitorHint,
+  useGoChat,
+  type ChatContext,
+} from "@/lib/chatNav";
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [refreshingPrices, setRefreshingPrices] = useState(false);
-  const [startingDailyReview, setStartingDailyReview] = useState(false);
   const [refreshFeedback, setRefreshFeedback] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
 
@@ -120,6 +129,12 @@ export default function Dashboard() {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
+  const marketOverviewQuery = useQuery({
+    queryKey: queryKeys.marketOverview(),
+    queryFn: getMarketOverview,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
 
   const runs = runsQuery.data ?? [];
   const holdings = holdingsQuery.data ?? [];
@@ -142,9 +157,7 @@ export default function Dashboard() {
   const dailyReviewDone = todayRuns.some((run) => run.skill_id === "daily_review" && run.status === "completed");
   const dailyReviewRunning = todayRuns.some((run) => run.skill_id === "daily_review" && ["pending", "running"].includes(run.status));
 
-  const goChat = (prompt: string, context?: Record<string, unknown>) => {
-    navigate("/chat", { state: { prompt, autoSend: true, context } });
-  };
+  const goChat = useGoChat();
 
   const refreshPrices = async () => {
     setRefreshingPrices(true);
@@ -169,15 +182,12 @@ export default function Dashboard() {
     }
   };
 
-  const startDailyReview = async () => {
-    setStartingDailyReview(true);
-    try {
-      const run = await createRun("daily_review", { daily_limit: 5, candidate_limit: 80 });
-      await runsQuery.refetch();
-      navigate(`/library?run_id=${run.id}`);
-    } finally {
-      setStartingDailyReview(false);
-    }
+  const startDailyReview = () => {
+    goChat({
+      prompt: "执行今日收盘复盘并生成次日计划",
+      autoSend: true,
+      intentHint: dailyReviewHint(5, 120),
+    });
   };
 
   const openRunDetail = (run: typeof runs[number]) => {
@@ -207,6 +217,9 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Market pulse strip: renders only when a market overview artifact exists */}
+      <MarketPulseStrip data={marketOverviewQuery.data} onOpen={() => navigate("/market")} />
+
       {/* KPI Bar */}
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KPICard icon={WalletCards} label="持仓市值" value={formatMoney(portfolio.value)} sub={`${portfolio.count} 个持仓`} tone="teal" />
@@ -232,11 +245,11 @@ export default function Dashboard() {
           </div>
           <button
             onClick={startDailyReview}
-            disabled={startingDailyReview || dailyReviewRunning}
+            disabled={dailyReviewRunning}
             className="inline-flex items-center justify-center gap-2 rounded-lg border border-teal-500/40 bg-teal-500/10 px-4 py-2 text-sm font-semibold text-teal-100 transition hover:bg-teal-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Play className="h-4 w-4" />
-            {startingDailyReview || dailyReviewRunning ? "复盘运行中" : "开始收盘复盘"}
+            {dailyReviewRunning ? "复盘运行中" : "开始收盘复盘"}
           </button>
         </div>
       </section>
@@ -283,7 +296,19 @@ export default function Dashboard() {
             </button>
           </div>
         ) : (
-          <HoldingsTable holdings={holdings} totalValue={portfolio.value} onAnalyze={(symbol, context) => goChat(`帮我分析 ${symbol}`, context)} onManage={() => navigate("/portfolio")} />
+          <HoldingsTable
+            holdings={holdings}
+            totalValue={portfolio.value}
+            onAnalyze={(symbol, context) =>
+              goChat({
+                prompt: `帮我分析 ${symbol}`,
+                autoSend: true,
+                context: context as ChatContext | undefined,
+                intentHint: analyzeStockHint(symbol),
+              })
+            }
+            onManage={() => navigate("/portfolio")}
+          />
         )}
       </section>
 
@@ -334,14 +359,14 @@ export default function Dashboard() {
                     过滤
                   </button>
                   <button
-                    onClick={() => goChat("每日选股 top 5")}
+                    onClick={() => goChat({ prompt: "每日选股 top 5", autoSend: true, intentHint: dailyPipelineHint(5) })}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-teal-500/30 bg-teal-500/10 text-teal-300 transition hover:bg-teal-500/20"
                   >
                     <Play className="h-4 w-4" />
                   </button>
                 </div>
               </div>
-              <QuickActionBtn icon={ShieldAlert} label="风险扫描" desc="检查当前持仓的公告和风险事件" onClick={() => goChat("分析当前持仓风险")} />
+              <QuickActionBtn icon={ShieldAlert} label="风险扫描" desc="检查当前持仓的公告和风险事件" onClick={() => goChat({ prompt: "分析当前持仓风险", autoSend: true, intentHint: riskMonitorHint() })} />
               <QuickActionBtn icon={TrendingUp} label="分析个股" desc="深度 13-Agent 分析管道" onClick={() => navigate("/chat")} />
             </div>
           </section>
@@ -358,7 +383,26 @@ export default function Dashboard() {
               await updateRiskEventStatus(id, "resolved");
               await riskEventsQuery.refetch();
             }}
-            onAdvice={(symbol) => goChat(`${symbol} 要不要卖，结合风险事件给出持仓建议`)}
+            onAdvice={(event) => {
+              const holding = holdings.find((item) => item.symbol === event.symbol);
+              goChat({
+                prompt: `${event.symbol} 要不要卖，结合风险事件给出持仓建议`,
+                autoSend: true,
+                context: {
+                  ...(holding ? { holding_context: holding as unknown as Record<string, unknown> } : {}),
+                  risk_event_context: {
+                    symbol: event.symbol,
+                    level: event.level,
+                    event_type: event.event_type,
+                    title: event.title,
+                    source: event.source,
+                    event_date: event.event_date,
+                    status: event.status,
+                  },
+                },
+                intentHint: positionAdviceHint(event.symbol, "review"),
+              });
+            }}
           />
           <StrategyLessonsCard lessons={lessonsQuery.data ?? []} />
 
@@ -398,6 +442,51 @@ export default function Dashboard() {
 }
 
 /* ─── Sub-components (Dashboard-specific) ─── */
+
+const PULSE_BAND_STYLES: Record<string, { label: string; badge: string }> = {
+  "Strong Bullish": { label: "强多", badge: "border-red-500/40 bg-red-500/15 text-red-300" },
+  "Mildly Bullish": { label: "偏多", badge: "border-orange-500/40 bg-orange-500/15 text-orange-300" },
+  Sideways: { label: "震荡", badge: "border-stone-600 bg-stone-800 text-stone-300" },
+  "Mildly Bearish": { label: "偏空", badge: "border-teal-500/40 bg-teal-500/15 text-teal-300" },
+  "Strong Bearish": { label: "强空", badge: "border-emerald-500/40 bg-emerald-500/15 text-emerald-300" },
+};
+
+function MarketPulseStrip({ data, onOpen }: { data: MarketOverviewResponse | undefined; onOpen: () => void }) {
+  const payload = data?.available ? data.artifact?.payload : null;
+  if (!payload) return null;
+  const regime = payload.regime;
+  const breadth = payload.market_data.breadth;
+  const band = regime ? PULSE_BAND_STYLES[regime.trend_band] : null;
+  return (
+    <button
+      onClick={onOpen}
+      className="flex w-full flex-wrap items-center gap-3 rounded-lg border border-stone-800 bg-stone-900 px-4 py-2.5 text-left transition hover:border-teal-500/40"
+    >
+      <Globe className="h-4 w-4 shrink-0 text-teal-300" />
+      <span className="text-xs font-semibold text-stone-100">市场温度</span>
+      {band && regime ? (
+        <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${band.badge}`}>{band.label}</span>
+      ) : (
+        <span className="rounded border border-stone-700 px-2 py-0.5 text-xs text-stone-400">AI 汇总暂缺</span>
+      )}
+      {breadth && (
+        <span className="font-mono text-xs text-stone-300">
+          <span className="text-red-300">↑{breadth.up ?? "-"}</span>
+          <span className="mx-1 text-stone-600">/</span>
+          <span className="text-emerald-300">↓{breadth.down ?? "-"}</span>
+          {breadth.limit_up != null && <span className="ml-2 text-red-300">涨停 {breadth.limit_up}</span>}
+          {breadth.limit_down != null && <span className="ml-1.5 text-emerald-300">跌停 {breadth.limit_down}</span>}
+        </span>
+      )}
+      {regime?.core_logic && (
+        <span className="hidden min-w-0 flex-1 truncate text-xs text-stone-500 lg:inline">{regime.core_logic}</span>
+      )}
+      <span className="ml-auto shrink-0 text-xs text-teal-300">
+        {payload.market_asof_date} · 查看全景 →
+      </span>
+    </button>
+  );
+}
 
 function QuickActionBtn({
   icon: Icon,
@@ -448,7 +537,7 @@ function RiskEventCard({
   events: RiskEvent[];
   onMonitor: (id: string) => void;
   onResolve: (id: string) => void;
-  onAdvice: (symbol: string) => void;
+  onAdvice: (event: RiskEvent) => void;
 }) {
   return (
     <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
@@ -471,7 +560,7 @@ function RiskEventCard({
                 </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                <button onClick={() => onAdvice(event.symbol)} className="rounded border border-indigo-500/30 px-2 py-1 text-[11px] text-indigo-200">持仓建议</button>
+                <button onClick={() => onAdvice(event)} className="rounded border border-indigo-500/30 px-2 py-1 text-[11px] text-indigo-200">持仓建议</button>
                 <button onClick={() => onMonitor(event.id)} className="rounded border border-stone-700 px-2 py-1 text-[11px] text-stone-300">持续关注</button>
                 <button onClick={() => onResolve(event.id)} className="rounded border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300">标记解除</button>
               </div>

@@ -147,16 +147,35 @@ describe("chatWsManager reconnect + lifecycle", () => {
     expect(latest().closeCalls.length).toBeGreaterThan(0);
   });
 
-  it("send throws when not open and serializes payload when open", () => {
+  it("send throws when not open and serializes the full protocol payload when open", () => {
     expect(() => chatWsManager.send("hi")).toThrow();
 
     chatWsManager.connect();
     latest().triggerOpen();
-    chatWsManager.send("hi", { symbol: "600519.SH" });
+    chatWsManager.send("hi", {
+      context: { holding_context: { symbol: "600519.SH" } },
+      intentHint: { skill_id: "stock_analysis", params: { ticker: "600519.SH" } },
+    });
     expect(JSON.parse(latest().sent[0] ?? "")).toEqual({
       message: "hi",
-      context: { symbol: "600519.SH" },
+      context: { holding_context: { symbol: "600519.SH" } },
+      session_id: chatWsManager.getSessionId(),
+      intent_hint: { skill_id: "stock_analysis", params: { ticker: "600519.SH" } },
     });
+  });
+
+  it("plain sends omit optional fields but always carry a stable session_id", () => {
+    chatWsManager.connect();
+    latest().triggerOpen();
+    chatWsManager.send("first");
+    chatWsManager.send("second");
+
+    const first = JSON.parse(latest().sent[0] ?? "") as Record<string, unknown>;
+    const second = JSON.parse(latest().sent[1] ?? "") as Record<string, unknown>;
+    // JSON.stringify drops undefined keys: no context / intent_hint on plain text.
+    expect(Object.keys(first).sort()).toEqual(["message", "session_id"]);
+    expect(first.session_id).toBeTruthy();
+    expect(second.session_id).toBe(first.session_id);
   });
 
   it("dispatches parsed messages and ignores malformed frames", () => {

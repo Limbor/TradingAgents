@@ -145,7 +145,7 @@ test("analysis renders replayed WebSocket report content", async ({ page }) => {
   });
   await page.goto("/analysis/run-1");
   await expect(page.getByText("趋势保持强势")).toBeVisible();
-  await expect(page.getByText("Market", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Market", exact: true })).toBeVisible();
 });
 
 test("chat renders a lightweight tool answer with provenance", async ({ page }) => {
@@ -168,8 +168,9 @@ test("chat renders a lightweight tool answer with provenance", async ({ page }) 
   await page.goto("/chat");
   await page.getByPlaceholder(/例如/).fill("我的持仓怎么样");
   await page.locator("form button").click();
-  await expect(page.getByText("get_portfolio_summary")).toBeVisible();
+  await expect(page.getByText("持仓概览", { exact: true })).toBeVisible();
   await expect(page.getByText("600519.SH")).toBeVisible();
+  await page.getByText("调用详情", { exact: true }).click();
   await expect(page.getByText(/2026-07-10/)).toBeVisible();
 });
 

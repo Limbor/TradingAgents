@@ -19,6 +19,23 @@ function fmt(n: number, digits = 2) {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: digits }).format(n);
 }
 
+function cnASellQuantityError(symbol: string, current: number, sell: number): string | null {
+  if (!/\.(SH|SZ|BJ)$/i.test(symbol)) return null;
+  if (!Number.isInteger(current) || !Number.isInteger(sell)) {
+    return "A 股卖出数量必须是整数股。";
+  }
+  if (sell <= 0 || sell > current || sell === current) return null;
+  const remainder = current % 100;
+  const valid = remainder === 0 ? sell % 100 === 0 : sell % 100 === 0 || sell % 100 === remainder;
+  if (valid) return null;
+  if (current <= 100) {
+    return `当前仅持有 ${fmt(current)} 股，不支持部分减仓；如需卖出必须一次性清仓 ${fmt(current)} 股。`;
+  }
+  return remainder
+    ? `部分卖出须为 100 股整手，或一次性包含全部 ${remainder} 股零股余数。`
+    : "部分卖出数量必须是 100 股的整数倍。";
+}
+
 /** 加仓 / 减仓 弹窗:按一笔交易调整持仓,实时预览新成本(加仓)或已实现盈亏(减仓)。 */
 export function AdjustPositionDialog({ holding, action, submitting, error, initialQuantity, initialPrice, onConfirm, onClose }: Props) {
   const isAdd = action === "add";
@@ -34,7 +51,10 @@ export function AdjustPositionDialog({ holding, action, submitting, error, initi
   const qtyValid = Number.isFinite(qty) && qty > 0;
   const pxValid = Number.isFinite(px) && px > 0;
   const overSell = !isAdd && qtyValid && qty > holding.quantity;
-  const canSubmit = qtyValid && pxValid && !overSell && !submitting;
+  const lotError = !isAdd && qtyValid && !overSell
+    ? cnASellQuantityError(holding.symbol, holding.quantity, qty)
+    : null;
+  const canSubmit = qtyValid && pxValid && !overSell && !lotError && !submitting;
 
   const oldQty = holding.quantity;
   const oldAvg = holding.avg_cost;
@@ -71,7 +91,7 @@ export function AdjustPositionDialog({ holding, action, submitting, error, initi
               <input
                 type="number"
                 min={0}
-                step="any"
+                step={1}
                 value={quantity}
                 placeholder="100"
                 onChange={(e) => setQuantity(e.target.value)}
@@ -95,6 +115,11 @@ export function AdjustPositionDialog({ holding, action, submitting, error, initi
           {overSell && (
             <div className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
               卖出数量超过当前持仓({fmt(oldQty)} 股)。
+            </div>
+          )}
+          {lotError && (
+            <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {lotError}
             </div>
           )}
           {error && (

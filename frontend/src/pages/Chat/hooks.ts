@@ -13,6 +13,7 @@ import {
   eventStepLabel,
   formatParams,
   formatPayloadBrief,
+  formatPortfolioBrief,
   normalizeTaskStatus,
   progressStepDetail,
   progressStepLabel,
@@ -49,6 +50,18 @@ export function useChatWebSocket() {
         const run = await getRun(currentRunId);
         const status = String(run.status || "").toLowerCase();
         if (status === "completed") {
+          const result = run.result;
+          const structured = result?.structured_conclusion;
+          if (structured && typeof structured === "object") {
+            appendTaskResult(currentRunId, JSON.stringify({
+              __type: "analysis_summary",
+              data: structured,
+              selectionContext: result?.selection_context ?? undefined,
+              artifactId: typeof result?.artifact_id === "string" ? result.artifact_id : undefined,
+            }));
+          } else if (result && Object.keys(result).length > 0) {
+            appendTaskResult(currentRunId, JSON.stringify(result));
+          }
           setRunning(false);
           setCurrentRunId(null);
           finishTask(currentRunId, "completed");
@@ -59,9 +72,8 @@ export function useChatWebSocket() {
           finishTask(currentRunId, "failed", status === "cancelled" ? "任务已取消" : "任务失败");
           queryClient.invalidateQueries({ queryKey: queryKeys.runs() });
         }
-        // If still "running", leave it — the run continues server-side; the
-        // task card stays open but won't get more chat-WS events. The user
-        // can view progress on the Analysis page or Dashboard.
+        // If still running, the persisted run id keeps the card recoverable;
+        // the next reconnect polls again and the final REST result is retained.
       } catch {
         // REST failed (auth/network) — leave state as-is; user can retry.
       }
@@ -165,7 +177,9 @@ export function useChatWebSocket() {
         addTaskStep(message.run_id, {
           label: "完成每日选股打分",
           detail: `输出 ${count} 个候选标的${count === 0 ? "（无候选）" : ""}`,
-          status: count === 0 ? "failed" : "completed",
+          // An explicit sector screen can validly return no eligible stocks;
+          // that is a completed screening result, not an execution failure.
+          status: "completed",
         });
         appendTaskResult(
           message.run_id,
@@ -176,6 +190,17 @@ export function useChatWebSocket() {
             adaptiveAlpha: message.payload.adaptive_alpha ?? undefined,
           }),
         );
+        const shadowRows = message.payload.shadow_candidates as unknown[] | undefined;
+        if (shadowRows && shadowRows.length > 0) {
+          appendTaskResult(
+            message.run_id,
+            JSON.stringify({
+              __type: "shadow_candidates",
+              data: shadowRows,
+              warnings: ["扩展发现池仅作前向观察，不回填核心 Top 5，也不生成买入信号。"],
+            }),
+          );
+        }
       } else if (message.type === "risk_monitor_results") {
         const rows = message.payload.risks as unknown[] | undefined;
         addTaskStep(message.run_id, {
@@ -197,7 +222,7 @@ export function useChatWebSocket() {
       } else if (message.type === "portfolio_update") {
         addTaskStep(message.run_id, {
           label: "更新持仓数据",
-          detail: JSON.stringify(message.payload),
+          detail: formatPortfolioBrief(message.payload),
           status: "completed",
         });
       } else if (message.type === "skill_start") {
