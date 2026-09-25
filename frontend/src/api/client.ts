@@ -378,7 +378,7 @@ export interface RefreshHoldingPricesResponse {
   holdings: Holding[];
 }
 
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = { ...authHeaders(), ...(options?.headers ?? {}) };
   const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
@@ -387,6 +387,8 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   }
   return res.json();
 }
+
+export const paperApiBase = `${API_BASE}/paper`;
 
 export async function listSkills(): Promise<SkillInfo[]> {
   return fetchJson(`${API_BASE}/skills`);

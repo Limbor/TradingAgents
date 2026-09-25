@@ -31,6 +31,7 @@ from .routes import (
     decision_audit,
     health,
     market,
+    paper,
     plans,
     portfolio,
     profile,
@@ -310,6 +311,7 @@ def create_app() -> FastAPI:
     app.include_router(risk_events.router, prefix="/api/v1", tags=["risk-events"])
     app.include_router(trading_time.router, prefix="/api/v1", tags=["trading-time"])
     app.include_router(market.router, prefix="/api/v1", tags=["market"])
+    app.include_router(paper.router, prefix="/api/v1", tags=["paper"])
 
     # Register WebSocket routes
     app.include_router(stream.router)

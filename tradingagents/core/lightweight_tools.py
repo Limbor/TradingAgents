@@ -16,6 +16,52 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def make_get_paper_session(config: dict[str, Any]):
+    """Read current strategy-paper evidence from StockManager for chat."""
+    async def _handler(session_id: str = "") -> dict[str, Any]:
+        import re
+
+        from tradingagents.core.stockmanager_paper import PaperServiceError, paper_request
+
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", session_id):
+            return {"error": "有效的模拟盘 session_id 必填", "warnings": []}
+        root = f"/api/v2/paper/{session_id}"
+        try:
+            status = (await paper_request(config, "GET", root + "/status")).get("data") or {}
+        except PaperServiceError as exc:
+            return {"error": str(exc), "warnings": ["StockManager 模拟盘不可用"]}
+        warnings: list[str] = []
+        try:
+            plan = (await paper_request(config, "GET", root + "/next_plan")).get("data")
+        except PaperServiceError as exc:
+            plan = None
+            warnings.append(f"下一日计划不可用: {exc}")
+        try:
+            trades = (await paper_request(config, "GET", root + "/trades?limit=30")).get("items", [])
+        except PaperServiceError as exc:
+            trades = []
+            warnings.append(f"近期成交不可用: {exc}")
+        snapshot = status.get("snapshot") or {}
+        if status.get("caveat"):
+            warnings.append(status["caveat"])
+        return {
+            "session_id": session_id,
+            "as_of_date": snapshot.get("as_of_date") or status.get("session", {}).get("last_date"),
+            "source": "StockManager strategy paper ledger",
+            "session": status.get("session"),
+            "snapshot": snapshot,
+            "decision": status.get("decision"),
+            "recent_decisions": (status.get("decisions") or [])[-5:],
+            "readiness": status.get("readiness"),
+            "summary": status.get("summary"),
+            "next_plan": plan,
+            "recent_trades": trades[:30],
+            "warnings": warnings,
+        }
+
+    return _handler
+
+
 # ---------------------------------------------------------------------------
 # Handler factories — each returns an async handler with the right signature
 # for ToolRegistry. Closures capture db / config at startup; the MCP client is
@@ -271,6 +317,22 @@ def build_all_tools(
     Call ``ToolRegistry.register(LightweightTool(**d))`` in the app lifespan.
     """
     return [
+        {
+            "name": "get_paper_session",
+            "description": (
+                "Read a StockManager strategy paper trading session: authoritative equity, "
+                "cash, positions, allocator decision, next plan and recent trades. "
+                "Use for questions about a paper session, its performance, trades, or why it switched. "
+                "The session_id is in paper_session_context when opened from the paper page."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"session_id": {"type": "string", "description": "Paper session ID"}},
+                "required": ["session_id"],
+            },
+            "handler": make_get_paper_session(config),
+            "display": "card",
+        },
         {
             "name": "get_portfolio_summary",
             "description": (

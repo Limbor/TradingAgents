@@ -25,6 +25,7 @@ export interface ChatContext {
   selection_context?: Record<string, unknown>;
   news_context?: Record<string, unknown>;
   risk_event_context?: Record<string, unknown>;
+  paper_session_context?: Record<string, unknown>;
 }
 
 export interface ChatNavState {
@@ -40,7 +41,10 @@ export function useGoChat() {
   const navigate = useNavigate();
   return useCallback(
     (state: Omit<ChatNavState, "nonce">) => {
-      navigate("/chat", { state: { ...state, nonce: crypto.randomUUID() } });
+      const paperId = state.context?.paper_session_context?.session_id;
+      const target = typeof paperId === "string"
+        ? `/chat?paper_session=${encodeURIComponent(paperId)}` : "/chat";
+      navigate(target, { state: { ...state, nonce: crypto.randomUUID() } });
     },
     [navigate],
   );

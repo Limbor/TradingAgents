@@ -29,4 +29,6 @@ export const queryKeys = {
   artifact: (id: string) => ["artifact", id] as const,
   artifactVersions: (id: string) => ["artifact-versions", id] as const,
   marketOverview: () => ["market-overview"] as const,
+  paperSessions: () => ["paper-sessions"] as const,
+  paperSession: (id: string) => ["paper-session", id] as const,
 };

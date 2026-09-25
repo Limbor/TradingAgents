@@ -9,6 +9,7 @@ import {
   Settings,
   TrendingUp,
   ClipboardCheck,
+  Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +18,7 @@ const navItems = [
   { to: "/chat", label: "Chat", icon: MessageSquareText },
   { to: "/market", label: "Market", icon: Globe },
   { to: "/portfolio", label: "Portfolio", icon: BriefcaseBusiness },
+  { to: "/paper", label: "模拟盘", icon: Wallet },
   { to: "/library", label: "Library", icon: FileText },
   { to: "/audit", label: "Audit", icon: ClipboardCheck },
   { to: "/reflection", label: "Reflection", icon: Brain },

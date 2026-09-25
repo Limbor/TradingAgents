@@ -11,6 +11,7 @@ import { InputBar } from "./InputBar";
 export default function Chat() {
   const [input, setInput] = useState("");
   const location = useLocation();
+  const boundPaperId = new URLSearchParams(location.search).get("paper_session");
   const navigate = useNavigate();
   const autoSentNonceRef = useRef<string | null>(null);
   // Context/hint waiting to ride along with the next manual submit (set when a
@@ -43,11 +44,14 @@ export default function Chat() {
       return;
     }
     useChatStore.getState().addMessage({ role: "user", content: text });
-    chatWsManager.send(text, opts);
+    const sendOptions = boundPaperId
+      ? { ...opts, context: { ...opts?.context, paper_session_context: { session_id: boundPaperId } } }
+      : opts;
+    chatWsManager.send(text, sendOptions);
     setInput("");
     pendingSendRef.current = null;
     useChatStore.getState().setRunning(true);
-  }, [connected, running]);
+  }, [connected, running, boundPaperId]);
 
   // Auto-send from navigation state (e.g. Dashboard quick action)
   useEffect(() => {
@@ -62,14 +66,14 @@ export default function Chat() {
       if (!connected) return; // wait for the socket; nonce not consumed yet
       autoSentNonceRef.current = nonce; // mark before send (StrictMode guard)
       sendPrompt(prompt, opts);
-      navigate(location.pathname, { replace: true, state: null });
+      navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
     } else {
       autoSentNonceRef.current = nonce;
       setInput(prompt);
       pendingSendRef.current = opts.context || opts.intentHint ? opts : null;
-      navigate(location.pathname, { replace: true, state: null });
+      navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
     }
-  }, [connected, location.pathname, location.state, navigate, sendPrompt]);
+  }, [connected, location.pathname, location.search, location.state, navigate, sendPrompt]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -108,6 +112,7 @@ export default function Chat() {
           <p className="text-xs text-stone-500">
             自然语言驱动: 股票分析 · 选股推荐 · 持仓管理 · 风险监控
           </p>
+          {boundPaperId && <p className="mt-1 text-xs text-teal-300">已绑定策略模拟盘 {boundPaperId} · 可追问净值、成交和下一日计划</p>}
         </div>
         <div className="flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-900 px-3 py-1.5 text-xs">
           <span className={`h-2 w-2 rounded-full ${connected ? "bg-teal-300" : "bg-red-300"}`} />

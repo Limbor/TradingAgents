@@ -43,11 +43,11 @@ function NavCapture() {
   return null;
 }
 
-function renderChat(state?: Omit<ChatNavState, "nonce"> & { nonce: string }) {
+function renderChat(state?: Omit<ChatNavState, "nonce"> & { nonce: string }, path = "/chat") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[{ pathname: "/chat", state }]}>
+      <MemoryRouter initialEntries={[{ pathname: path.split("?")[0], search: path.includes("?") ? `?${path.split("?")[1]}` : "", state }]}>
         <NavCapture />
         <Routes>
           <Route path="/chat" element={<Chat />} />
@@ -88,6 +88,19 @@ afterEach(() => {
 });
 
 describe("Chat autoSend from navigation state", () => {
+  it("keeps the selected paper session on subsequent turns", () => {
+    useChatStore.getState().setConnected(true);
+    renderChat({ prompt: "总结模拟盘", autoSend: true, nonce: "paper-1" }, "/chat?paper_session=paper%3Ademo");
+    expect(sendMock).toHaveBeenCalledWith("总结模拟盘", {
+      context: { paper_session_context: { session_id: "paper:demo" } },
+    });
+    act(() => useChatStore.getState().setRunning(false));
+    fireEvent.change(chatInput(), { target: { value: "再看成交" } });
+    fireEvent.submit(chatInput().closest("form")!);
+    expect(sendMock).toHaveBeenLastCalledWith("再看成交", {
+      context: { paper_session_context: { session_id: "paper:demo" } },
+    });
+  });
   it("sends immediately with context + intent hint when connected and idle", () => {
     useChatStore.getState().setConnected(true);
     renderChat({ prompt: PROMPT, autoSend: true, context: CONTEXT, intentHint: HINT, nonce: "n1" });
