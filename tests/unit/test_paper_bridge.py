@@ -24,6 +24,8 @@ def client(tmp_path, monkeypatch):
 
 def test_paper_routes_use_stockmanager_ledger(client):
     async def fake_request(_config, method, path, payload=None):
+        if path == "/api/v2/allocator-configs":
+            return {"ok": True, "items": [{"path": "config/allocators/demo.json"}]}
         if path == "/api/v2/sessions?mode=paper":
             return {"ok": True, "items": [{"session_id": "paper:one"}]}
         if path == "/api/v2/sessions":
@@ -41,10 +43,12 @@ def test_paper_routes_use_stockmanager_ledger(client):
         raise AssertionError(path)
 
     with patch("tradingagents.api.routes.paper.paper_request", fake_request):
+        assert client.get("/api/v1/paper/allocator-configs").json()[0]["path"] == "config/allocators/demo.json"
         assert client.get("/api/v1/paper/sessions").json() == [{"session_id": "paper:one"}]
         created = client.post("/api/v1/paper/sessions", json={"strategy": "demo", "start_date": "2026-01-02"})
         assert created.json()["session_id"] == "paper:one"
         assert client.post("/api/v1/paper/sessions", json={"strategy": "demo"}).status_code == 422
+        assert client.post("/api/v1/paper/sessions", json={"allocator_config_path": "../../secrets.json"}).status_code == 422
         assert client.post("/api/v1/paper/sessions/paper:one/advance", json={"target_date": "2026-01-05"}).json()["job_id"] == "job-1"
         assert client.get("/api/v1/paper/jobs/job-1").json()["state"] == "success"
         assert client.get("/api/v1/paper/sessions/%2Fetc/status").status_code in (400, 404)

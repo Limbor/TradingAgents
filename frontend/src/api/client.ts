@@ -378,12 +378,19 @@ export interface RefreshHoldingPricesResponse {
   holdings: Holding[];
 }
 
+export class ApiHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiHttpError";
+  }
+}
+
 export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = { ...authHeaders(), ...(options?.headers ?? {}) };
   const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(error.detail || res.statusText);
+    throw new ApiHttpError(error.detail || res.statusText, res.status);
   }
   return res.json();
 }

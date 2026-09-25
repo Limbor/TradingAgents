@@ -11,11 +11,11 @@ from pydantic import BaseModel, Field
 from tradingagents.core.stockmanager_paper import PaperServiceError, paper_request
 
 router = APIRouter(prefix="/paper")
-_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
+_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 
 
 def _id(value: str) -> str:
-    if not _ID.fullmatch(value):
+    if not _ID.fullmatch(value) or ".." in value:
         raise HTTPException(400, "无效的会话或任务 ID")
     return value
 
@@ -52,6 +52,11 @@ async def configs(request: Request):
     return (await _call(request, "GET", "/api/v2/configs")).get("items", [])
 
 
+@router.get("/allocator-configs")
+async def allocator_configs(request: Request):
+    return (await _call(request, "GET", "/api/v2/allocator-configs")).get("items", [])
+
+
 @router.get("/sessions")
 async def sessions(request: Request):
     return (await _call(request, "GET", "/api/v2/sessions?mode=paper")).get("items", [])
@@ -61,6 +66,10 @@ async def sessions(request: Request):
 async def create_session(request: Request, body: CreatePaperSession):
     if not body.allocator_config_path and (not body.start_date or not body.strategy):
         raise HTTPException(422, "单策略模拟盘需要策略和起始日期")
+    if body.allocator_config_path:
+        available = (await _call(request, "GET", "/api/v2/allocator-configs")).get("items", [])
+        if body.allocator_config_path not in {item.get("path") for item in available}:
+            raise HTTPException(422, "组合配置不在 StockManager 可用列表中")
     payload = body.model_dump(mode="json", exclude_none=True)
     return await _call(request, "POST", "/api/v2/sessions", {"mode": "paper", **payload})
 

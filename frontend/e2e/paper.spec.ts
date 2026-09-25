@@ -51,3 +51,82 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
   await expect.poll(() => advanced).toBe(true);
   expect(advanceBody).toEqual({ target_date: "2026-01-05" });
 });
+
+test("composite decision is readable and Agent chat stays bound to its account", async ({ page }) => {
+  const sessionId = "paper:allocator:demo:follow";
+  let sentContext: Record<string, unknown> | undefined;
+  await page.routeWebSocket(/\/ws\/chat/, (ws) => {
+    ws.onMessage((message) => {
+      const data = JSON.parse(message) as { context?: Record<string, unknown> };
+      sentContext = data.context;
+      ws.send(JSON.stringify({ type: "chat_answer", run_id: "", timestamp: "2026-09-24T00:00:00Z", payload: { content: "当前由 wfo 子策略运行。" } }));
+    });
+  });
+  await page.route("**/api/v1/**", async (route) => {
+    const { pathname } = new URL(route.request().url());
+    let body: unknown = {};
+    if (pathname === "/api/v1/paper/sessions") body = [{ session_id: sessionId, mode: "paper", strategy: "allocator", config_name: "demo", initial_cash: 100000, last_date: "2026-09-24", params: { kind: "composite", allocator_config_path: "config/allocators/demo.json" } }];
+    else if (pathname === "/api/v1/paper/allocator-configs") body = [{ name: "demo", path: "config/allocators/demo.json", description: "测试组合配置", status: "ready", initial_cash: 100000, start_date: "2026-07-01", sleeves: ["wfo", "csi"] }];
+    else if (pathname.endsWith("/status")) body = {
+      kind: "composite", session: { initial_cash: 100000 }, snapshot: { as_of_date: "2026-09-24", equity: 108000, cash: 20000, positions: {} }, trades_count: 3,
+      decision: { date: "2026-09-24", active_sleeve: "wfo", switched: false, switch_count: 1, fast_relative_return: 0.02 },
+      readiness: { status: "ready_to_observe", can_reference_plan: true, reasons: [] },
+      freshness: { is_shadow_aligned: true, active_plan_lag_days: 0 },
+      summary: { total_return: 0.08, max_drawdown: -0.1, sharpe: 1.2 },
+      sleeves: { wfo: { strategy: "smallcap", equity: 105000, last_date: "2026-09-24" }, csi: { strategy: "breakout", equity: 95000, last_date: "2026-09-24" } },
+    };
+    else if (pathname.endsWith("/equity")) body = { daily_records: [{ date: "2026-09-24", equity: 108000, cash: 20000 }], benchmark_curve: [] };
+    else if (pathname.endsWith("/trades")) body = [];
+    else if (pathname.endsWith("/next-plan")) body = { signal_date: "2026-09-24", equity: 108000, items: [] };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/paper");
+  await expect(page.getByText("账户权益以组合可执行账本为准")).toBeVisible();
+  await expect(page.getByText("wfo", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("计划可参考")).toBeVisible();
+  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByRole("combobox", { name: "类型" }).selectOption("composite");
+  await expect(page.getByRole("combobox", { name: "组合配置" })).toHaveValue("config/allocators/demo.json");
+  await expect(page.getByText(/测试组合配置/)).toBeVisible();
+  await page.getByRole("button", { name: "问 Agent 原因" }).click();
+  await expect(page).toHaveURL(/paper_session=paper%3Aallocator%3Ademo%3Afollow/);
+  await expect.poll(() => (sentContext?.paper_session_context as { session_id?: string } | undefined)?.session_id).toBe(sessionId);
+  await expect(page.getByText("已绑定策略模拟盘")).toBeVisible();
+});
+
+test("an advancing paper job can be observed again after page reload", async ({ page }) => {
+  let polls = 0;
+  let jobLost = false;
+  await page.route("**/api/v1/**", async (route) => {
+    const { pathname } = new URL(route.request().url());
+    let body: unknown = {};
+    if (pathname === "/api/v1/paper/sessions") body = [{ session_id: "paper:demo", mode: "paper", strategy: "demo", config_name: "", initial_cash: 100000, last_date: "2026-01-02", params: {} }];
+    else if (pathname.endsWith("/status")) body = { session: { initial_cash: 100000 }, snapshot: null, trades_count: 0 };
+    else if (pathname.endsWith("/equity")) body = { daily_records: [], benchmark_curve: [] };
+    else if (pathname.endsWith("/trades")) body = [];
+    else if (pathname.endsWith("/next-plan")) body = null;
+    else if (pathname.endsWith("/advance")) body = { job_id: "job-running" };
+    else if (pathname.endsWith("/jobs/job-running")) {
+      polls += 1;
+      if (jobLost) {
+        await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "Job not found" }) });
+        return;
+      }
+      body = { job_id: "job-running", state: "running", progress: 25, message: "计算中", result: null };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/paper");
+  await page.getByLabel("推进至交易日").fill("2026-01-05");
+  await page.getByRole("button", { name: "推进模拟盘" }).click();
+  await expect.poll(() => polls).toBeGreaterThan(0);
+  await page.reload();
+  await page.getByLabel("推进至交易日").fill("2026-01-05");
+  await expect.poll(() => polls).toBeGreaterThan(1);
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
+  jobLost = true;
+  await expect(page.getByText(/任务记录已失效。StockManager/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeEnabled();
+});

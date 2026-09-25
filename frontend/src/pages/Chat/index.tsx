@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { chatWsManager, type ChatSendOptions } from "@/api/ws";
 import type { ChatContext, ChatNavState, IntentHint } from "@/lib/chatNav";
 import { analyzeStockHint } from "@/lib/chatNav";
@@ -112,7 +112,7 @@ export default function Chat() {
           <p className="text-xs text-stone-500">
             自然语言驱动: 股票分析 · 选股推荐 · 持仓管理 · 风险监控
           </p>
-          {boundPaperId && <p className="mt-1 text-xs text-teal-300">已绑定策略模拟盘 {boundPaperId} · 可追问净值、成交和下一日计划</p>}
+          {boundPaperId && <p className="mt-1 text-xs text-teal-300">已绑定策略模拟盘 {boundPaperId} · 可追问净值、成交和下一日计划 <Link className="ml-2 underline" to={`/paper?session=${encodeURIComponent(boundPaperId)}`}>返回模拟盘</Link></p>}
         </div>
         <div className="flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-900 px-3 py-1.5 text-xs">
           <span className={`h-2 w-2 rounded-full ${connected ? "bg-teal-300" : "bg-red-300"}`} />

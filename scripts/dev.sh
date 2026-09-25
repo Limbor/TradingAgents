@@ -19,12 +19,20 @@ LOG_DIR="$ROOT_DIR/.dev-logs"
 
 BACKEND_PID_FILE="$PID_DIR/backend.pid"
 FRONTEND_PID_FILE="$PID_DIR/frontend.pid"
+STOCKMANAGER_PID_FILE="$PID_DIR/stockmanager-web.pid"
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
+STOCKMANAGER_LOG="$LOG_DIR/stockmanager-web.log"
 
 # ── 端口配置 ──────────────────────────────────────────────
 BACKEND_PORT="${TRADINGAGENTS_API_PORT:-8422}"
 FRONTEND_PORT="${VITE_PORT:-5173}"
+STOCKMANAGER_ROOT="${TRADINGAGENTS_MCP_STOCKMANAGER_DIR:-$ROOT_DIR/../StockManager}"
+STOCKMANAGER_WEB_URL="${STOCKMANAGER_WEB_URL:-http://127.0.0.1:8787}"
+STOCKMANAGER_WEB_PORT=""
+if [[ "$STOCKMANAGER_WEB_URL" =~ ^http://(127\.0\.0\.1|localhost):([0-9]+)$ ]]; then
+  STOCKMANAGER_WEB_PORT="${BASH_REMATCH[2]}"
+fi
 
 # ── 本地服务直连 ──────────────────────────────────────────
 # 避免系统/终端代理（例如 127.0.0.1:7897）劫持本地 API、WS、MCP。
@@ -56,6 +64,7 @@ header(){ echo -e "\n${CYAN}═══ $* ═══${NC}\n"; }
 # ── 前置检查 ──────────────────────────────────────────────
 precheck() {
   mkdir -p "$PID_DIR" "$LOG_DIR"
+  touch "$STOCKMANAGER_LOG"
 
   if [ -z "$PYTHON" ]; then
     error "未找到 Python 虚拟环境 (.venv)"
@@ -106,6 +115,12 @@ is_tradingagents_frontend() {
   [[ "$command" == *"$ROOT_DIR/frontend/node_modules/.bin/vite"* ]] \
     || [[ "$command" == *"npm exec vite --port"* ]] \
     || [[ "$command" == *"npx vite --port"* ]]
+}
+
+is_stockmanager_web() {
+  local command
+  command="$(pid_command "$1")"
+  [[ "$command" == *"$STOCKMANAGER_ROOT/.venv/bin/python -m uvicorn stockmanager.web.app:app"* ]]
 }
 
 pid_or_child_owns_port() {
@@ -302,6 +317,69 @@ start_frontend() {
   warn "日志: $FRONTEND_LOG"
 }
 
+# ── 启动 StockManager 现有 Web API（不启动第二套前端）───────
+start_stockmanager_web() {
+  if [ -z "$STOCKMANAGER_WEB_PORT" ]; then
+    warn "StockManager Web 地址不是本机 HTTP 端口，由用户自行管理: $STOCKMANAGER_WEB_URL"
+    return 0
+  fi
+  if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
+    info "StockManager Web 已就绪，复用现有服务 → $STOCKMANAGER_WEB_URL"
+    if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/allocator-configs" >/dev/null 2>&1; then
+      warn "现有 StockManager Web 进程未加载组合配置接口；请重启该进程后使用组合会话创建"
+    fi
+    return 0
+  fi
+  if port_in_use "$STOCKMANAGER_WEB_PORT"; then
+    warn "StockManager Web 端口 $STOCKMANAGER_WEB_PORT 已被其他服务占用，但健康检查失败"
+    return 0
+  fi
+  if [ ! -x "$STOCKMANAGER_ROOT/.venv/bin/python" ]; then
+    warn "未找到 StockManager 虚拟环境: $STOCKMANAGER_ROOT/.venv/bin/python"
+    return 0
+  fi
+
+  info "启动 StockManager Web → $STOCKMANAGER_WEB_URL"
+  (
+    cd "$STOCKMANAGER_ROOT"
+    PYTHONPATH=. nohup "$STOCKMANAGER_ROOT/.venv/bin/python" -m uvicorn \
+      stockmanager.web.app:app --host 127.0.0.1 --port "$STOCKMANAGER_WEB_PORT" \
+      > "$STOCKMANAGER_LOG" 2>&1 &
+    echo "$!" > "$STOCKMANAGER_PID_FILE"
+  )
+  local pid
+  pid="$(cat "$STOCKMANAGER_PID_FILE")"
+  local i=0
+  while [ $i -lt 120 ]; do
+    if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
+      info "StockManager Web 就绪 ✓ (PID: $pid)"
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      warn "StockManager Web 启动失败，查看日志: $STOCKMANAGER_LOG"
+      tail -20 "$STOCKMANAGER_LOG" 2>/dev/null || true
+      rm -f "$STOCKMANAGER_PID_FILE"
+      return 0
+    fi
+    sleep 0.5
+    i=$((i + 1))
+  done
+  warn "StockManager Web 启动超时，查看日志: $STOCKMANAGER_LOG"
+}
+
+stop_stockmanager_web() {
+  if [ ! -f "$STOCKMANAGER_PID_FILE" ]; then
+    return 0
+  fi
+  local pid
+  pid="$(cat "$STOCKMANAGER_PID_FILE")"
+  if is_running "$STOCKMANAGER_PID_FILE" && is_stockmanager_web "$pid"; then
+    stop_pid "$STOCKMANAGER_PID_FILE" "StockManager Web"
+  else
+    rm -f "$STOCKMANAGER_PID_FILE"
+  fi
+}
+
 # ── 停止单个进程 ─────────────────────────────────────────
 stop_pid() {
   local pid_file="$1"
@@ -328,12 +406,14 @@ stop_pid() {
 cmd_start() {
   header "启动 TradingAgents 开发服务"
   precheck
+  start_stockmanager_web
   start_backend
   start_frontend
   echo
   info "全栈已启动！"
   echo -e "  ${CYAN}前端${NC}:  http://localhost:${FRONTEND_PORT}"
   echo -e "  ${CYAN}后端${NC}:  http://127.0.0.1:${BACKEND_PORT}"
+  echo -e "  ${CYAN}模拟盘账本${NC}: $STOCKMANAGER_WEB_URL"
   echo -e "  ${CYAN}API 文档${NC}: http://127.0.0.1:${BACKEND_PORT}/docs"
   echo -e "  日志: tail -f $LOG_DIR/{backend,frontend}.log"
   echo -e "  停止: ./scripts/dev.sh stop"
@@ -345,6 +425,7 @@ cmd_stop() {
   header "停止 TradingAgents 开发服务"
   stop_pid "$FRONTEND_PID_FILE" "前端"
   stop_pid "$BACKEND_PID_FILE"  "后端"
+  stop_stockmanager_web
   echo
   info "所有服务已停止"
   echo
@@ -385,6 +466,11 @@ cmd_status() {
   else
     echo -e "  ${RED}○${NC} 前端  未运行"
   fi
+  if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
+    echo -e "  ${GREEN}●${NC} StockManager Web  $STOCKMANAGER_WEB_URL  状态: healthy"
+  else
+    echo -e "  ${RED}○${NC} StockManager Web  $STOCKMANAGER_WEB_URL  未连接"
+  fi
   echo
 }
 
@@ -400,9 +486,13 @@ cmd_logs() {
       info "前端日志 (Ctrl+C 退出):"
       tail -f "$FRONTEND_LOG"
       ;;
+    stockmanager|sm)
+      info "StockManager Web 日志 (Ctrl+C 退出):"
+      tail -f "$STOCKMANAGER_LOG"
+      ;;
     all|*)
       info "全部日志 (Ctrl+C 退出):"
-      tail -f "$BACKEND_LOG" "$FRONTEND_LOG"
+      tail -f "$BACKEND_LOG" "$FRONTEND_LOG" "$STOCKMANAGER_LOG"
       ;;
   esac
 }
@@ -417,11 +507,13 @@ cmd_foreground() {
     info "收到退出信号，正在清理 ..."
     stop_pid "$FRONTEND_PID_FILE" "前端"
     stop_pid "$BACKEND_PID_FILE"  "后端"
+    stop_stockmanager_web
     exit 0
   }
   trap cleanup INT TERM
 
   # 后台启动后端
+  start_stockmanager_web
   start_backend
 
   prepare_frontend_start || true
@@ -448,7 +540,7 @@ case "${1:-fg}" in
   logs)    shift; cmd_logs "${1:-all}" ;;
   fg|"")   cmd_foreground ;;
   *)
-    echo "用法: $0 {fg|start|stop|restart|status|logs [backend|frontend|all]}"
+    echo "用法: $0 {fg|start|stop|restart|status|logs [backend|frontend|stockmanager|all]}"
     echo
     echo "命令:"
     echo "  fg (默认)     前台启动前后端，Ctrl+C 统一退出"

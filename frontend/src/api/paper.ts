@@ -10,6 +10,16 @@ export interface PaperSession {
   params: Record<string, unknown>;
 }
 
+export interface PaperAllocatorConfig {
+  name: string;
+  path: string;
+  description: string;
+  status: string;
+  initial_cash: number;
+  start_date: string;
+  sleeves: string[];
+}
+
 export interface PaperPosition {
   name?: string;
   shares: number;
@@ -29,8 +39,41 @@ export interface PaperStatus {
   } | null;
   trades_count: number;
   kind?: "composite";
-  decision?: Record<string, unknown> | null;
-  summary?: Record<string, unknown> | null;
+  decision?: {
+    date?: string | null;
+    active_sleeve?: string;
+    switched?: boolean;
+    switch_count?: number;
+    relative_return?: number | null;
+    fast_relative_return?: number | null;
+    fast_gate_triggered?: boolean;
+    blocked_until_rebalance?: boolean;
+    exposure_fallback_triggered?: boolean;
+  } | null;
+  readiness?: {
+    status?: string;
+    can_reference_plan?: boolean;
+    reasons?: string[];
+  } | null;
+  freshness?: {
+    latest_common_date?: string | null;
+    active_plan_lag_days?: number | null;
+    is_shadow_aligned?: boolean;
+    is_active_plan_current?: boolean;
+  } | null;
+  summary?: {
+    total_return?: number | null;
+    cagr?: number | null;
+    max_drawdown?: number | null;
+    sharpe?: number | null;
+    switch_count?: number;
+  } | null;
+  sleeves?: Record<string, {
+    strategy?: string;
+    config_name?: string;
+    equity?: number | null;
+    last_date?: string | null;
+  }>;
   caveat?: string;
 }
 
@@ -54,6 +97,8 @@ export interface PaperPlan {
   signal_date: string;
   equity: number;
   reason?: string;
+  active_sleeve?: string;
+  mode?: string;
   items: Array<{
     code: string;
     name: string;
@@ -83,6 +128,7 @@ const postJson = (body: unknown): RequestInit => ({
 export const listPaperSessions = () => fetchJson<PaperSession[]>(`${root}/sessions`);
 export const listPaperStrategies = () => fetchJson<Array<{ name: string }>>(`${root}/strategies`);
 export const listPaperConfigs = () => fetchJson<Array<{ name: string }>>(`${root}/configs`);
+export const listPaperAllocators = () => fetchJson<PaperAllocatorConfig[]>(`${root}/allocator-configs`);
 export const createPaperSession = (body: Record<string, unknown>) =>
   fetchJson<{ session_id: string }>(`${root}/sessions`, postJson(body));
 export const getPaperStatus = (id: string) => fetchJson<PaperStatus>(`${sessionUrl(id)}/status`);

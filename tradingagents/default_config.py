@@ -23,6 +23,7 @@ _ENV_OVERRIDES = {
     "STOCKMANAGER_MCP_URL":               "stockmanager_mcp_url",
     "STOCKMANAGER_WEB_URL":               "stockmanager_web_url",
     "STOCKMANAGER_WEB_TIMEOUT":           "stockmanager_web_timeout",
+    "TRADINGAGENTS_PAPER_AGENT_TIMEOUT": "paper_agent_timeout_seconds",
     "STOCKMANAGER_MCP_ENABLED":           "stockmanager_mcp_enabled",
     "STOCKMANAGER_MCP_TIMEOUT":           "stockmanager_mcp_timeout",
     "TRADINGAGENTS_SCHEDULER_ENABLED":    "scheduler_enabled",
@@ -187,6 +188,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "stockmanager_mcp_url": os.getenv("STOCKMANAGER_MCP_URL", "http://127.0.0.1:8765/mcp"),
     "stockmanager_web_url": "http://127.0.0.1:8787",
     "stockmanager_web_timeout": 90.0,
+    "paper_agent_timeout_seconds": 45.0,
     "stockmanager_mcp_enabled": True,
     # Per-call MCP tool timeout (seconds). Large-pool ranking (e.g. CSI300
     # rank_factor_candidates over ~300 constituents) measured ~260s end-to-end,

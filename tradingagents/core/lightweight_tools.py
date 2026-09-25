@@ -23,24 +23,32 @@ def make_get_paper_session(config: dict[str, Any]):
 
         from tradingagents.core.stockmanager_paper import PaperServiceError, paper_request
 
-        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", session_id):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", session_id) or ".." in session_id:
             return {"error": "有效的模拟盘 session_id 必填", "warnings": []}
         root = f"/api/v2/paper/{session_id}"
         try:
             status = (await paper_request(config, "GET", root + "/status")).get("data") or {}
         except PaperServiceError as exc:
             return {"error": str(exc), "warnings": ["StockManager 模拟盘不可用"]}
+        from asyncio import gather
+
+        plan_result, trades_result, curve_result = await gather(
+            paper_request(config, "GET", root + "/next_plan"),
+            paper_request(config, "GET", root + "/trades?limit=30"),
+            paper_request(config, "GET", root + "/equity_curve"),
+            return_exceptions=True,
+        )
         warnings: list[str] = []
-        try:
-            plan = (await paper_request(config, "GET", root + "/next_plan")).get("data")
-        except PaperServiceError as exc:
-            plan = None
-            warnings.append(f"下一日计划不可用: {exc}")
-        try:
-            trades = (await paper_request(config, "GET", root + "/trades?limit=30")).get("items", [])
-        except PaperServiceError as exc:
-            trades = []
-            warnings.append(f"近期成交不可用: {exc}")
+        for label, result in (
+            ("下一日计划", plan_result),
+            ("近期成交", trades_result),
+            ("净值曲线", curve_result),
+        ):
+            if isinstance(result, BaseException):
+                warnings.append(f"{label}不可用: {result}")
+        plan = plan_result.get("data") if isinstance(plan_result, dict) else None
+        trades = trades_result.get("items", []) if isinstance(trades_result, dict) else []
+        curve = curve_result.get("data") if isinstance(curve_result, dict) else None
         snapshot = status.get("snapshot") or {}
         if status.get("caveat"):
             warnings.append(status["caveat"])
@@ -53,9 +61,12 @@ def make_get_paper_session(config: dict[str, Any]):
             "decision": status.get("decision"),
             "recent_decisions": (status.get("decisions") or [])[-5:],
             "readiness": status.get("readiness"),
+            "freshness": status.get("freshness"),
+            "sleeves": status.get("sleeves"),
             "summary": status.get("summary"),
             "next_plan": plan,
             "recent_trades": trades[:30],
+            "equity_tail": (curve.get("daily_records") or [])[-30:] if isinstance(curve, dict) else [],
             "warnings": warnings,
         }
 
