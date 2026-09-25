@@ -48,3 +48,39 @@ test("paper advance proposal requires an explicit confirmation", async ({ page }
   await expect.poll(() => approvals).toBe(1);
   await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
 });
+
+test("uncertain paper action can be reconciled without another approval", async ({ page }) => {
+  const time = "2026-09-25T08:00:00Z";
+  let checks = 0;
+  const conversation = { id: "conversation-2", title: "模拟盘 · paper:one", paper_session_id: "paper:one",
+    created_at: time, updated_at: time, latest_status: "needs_review" };
+  const proposal = () => ({ id: "proposal-2", task_id: "task-2", action_type: "advance_paper_day",
+    session_id: "paper:one", args: { target_date: "2026-09-28" },
+    baseline: { as_of_date: "2026-09-25", equity: 100000 }, status: "unknown",
+    result: checks ? { job_id: "job:lost", observed_date: "2026-09-28", job_error: "Job not found" } : { job_id: "job:lost" },
+    expires_at: "2026-09-25T08:15:00Z" });
+  const detail = () => ({ ...conversation,
+    messages: [{ id: "m1", conversation_id: conversation.id, task_id: "task-2", role: "user",
+      content: "推进模拟盘到 2026-09-28", created_at: time }],
+    tasks: [{ id: "task-2", conversation_id: conversation.id, goal: "推进模拟盘到 2026-09-28",
+      status: "needs_review", result: {}, error: "执行状态待核对", created_at: time, updated_at: time,
+      events: [], evidence: [], proposal: proposal() }],
+  });
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/agent/conversations") body = [conversation];
+    else if (path === "/api/v1/agent/conversations/conversation-2") body = detail();
+    else if (path === "/api/v1/agent/proposals/proposal-2/reconcile") {
+      checks += 1;
+      body = proposal();
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/chat?paper_session=paper%3Aone");
+  await expect(page.getByText("执行结果待核对", { exact: false }).first()).toBeVisible();
+  await page.getByRole("button", { name: "核对执行结果" }).click();
+  await expect.poll(() => checks).toBe(1);
+  await expect(page.getByText("最近核对的账本日期：2026-09-28")).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
+});

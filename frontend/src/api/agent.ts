@@ -96,3 +96,6 @@ export const approveAgentProposal = (id: string) =>
 
 export const rejectAgentProposal = (id: string) =>
   fetchJson<{ status: string }>(`${agentApiBase}/proposals/${encodeURIComponent(id)}/reject`, { method: "POST" });
+
+export const reconcileAgentProposal = (id: string) =>
+  fetchJson<{ status: string }>(`${agentApiBase}/proposals/${encodeURIComponent(id)}/reconcile`, { method: "POST" });

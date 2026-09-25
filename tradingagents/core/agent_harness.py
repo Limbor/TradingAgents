@@ -56,7 +56,7 @@ class AgentStore:
             )
             conn.execute(
                 "UPDATE agent_proposals SET status = 'unknown', updated_at = ? "
-                "WHERE status IN ('executing', 'submitted')",
+                "WHERE status IN ('executing', 'submitted', 'reconciling')",
                 (_now(),),
             )
 
@@ -322,6 +322,7 @@ class TradingAgentHarness:
         self.config = config
         self._active: dict[str, asyncio.Task] = {}
         self._slots = asyncio.Semaphore(3)
+        self._reconcile_locks: dict[str, asyncio.Lock] = {}
 
     def submit(self, conversation_id: str, goal: str,
                intent_hint: dict | None = None) -> dict:
@@ -390,6 +391,105 @@ class TradingAgentHarness:
                 self.store.set_status(task["id"], "completed", result={"content": content, "read_only": True})
                 self.store.event(task["id"], "action_rejected", {"proposal_id": proposal_id})
         return self.store.get_proposal(proposal_id) or proposal
+
+    async def reconcile(self, proposal_id: str) -> dict:
+        """Read a submitted job and ledger again; never issue an advance POST."""
+        from tradingagents.core.stockmanager_paper import PaperServiceError, paper_request
+
+        lock = self._reconcile_locks.setdefault(proposal_id, asyncio.Lock())
+        async with lock:
+            proposal = self.store.get_proposal(proposal_id)
+            if not proposal:
+                raise KeyError(proposal_id)
+            if proposal["status"] != "unknown":
+                return proposal
+            task = self.store.get_task(proposal["task_id"])
+            conversation = self.store.get_conversation(task["conversation_id"]) if task else None
+            if not conversation or conversation.get("paper_session_id") != proposal["session_id"]:
+                raise ValueError("提案与模拟盘会话不匹配")
+
+            job_id = str(proposal["result"].get("job_id") or "")
+            job = None
+            job_error = None
+            if job_id:
+                try:
+                    job = await paper_request(self.config, "GET", f"/api/jobs/{job_id}")
+                except PaperServiceError as exc:
+                    job_error = str(exc)
+            try:
+                ledger = (await paper_request(
+                    self.config, "GET", f"/api/v2/paper/{proposal['session_id']}/status"
+                )).get("data") or {}
+                snapshot = ledger.get("snapshot") or {}
+                observed_date = snapshot.get("as_of_date") or (ledger.get("session") or {}).get("last_date")
+            except PaperServiceError as exc:
+                observed_date = None
+                snapshot = {}
+                ledger_error = str(exc)
+            else:
+                ledger_error = None
+
+            if job and str(job.get("state") or "").lower() in {"success", "completed"} and not ledger_error:
+                self._finish_paper_action(proposal, job, observed_date, snapshot)
+            elif job and str(job.get("state") or "").lower() in {"failed", "error", "cancelled"} and not ledger_error and observed_date == proposal["baseline"].get("as_of_date"):
+                message = str(job.get("message") or job.get("state"))[:500]
+                self.store.set_proposal_status(proposal_id, "failed", {**proposal["result"], "error": message, "observed_date": observed_date})
+                self.store.set_status(task["id"], "failed", error=message)
+                self.store.event(task["id"], "action_failed", {"job_id": job_id, "message": message})
+            else:
+                state = str(job.get("state") or "").lower() if job else None
+                result = {**proposal["result"], "observed_date": observed_date,
+                          "job_state": state, "job_error": job_error, "ledger_error": ledger_error,
+                          "checked_at": _now()}
+                self.store.set_proposal_status(proposal_id, "unknown", result)
+                self.store.set_status(task["id"], "needs_review", error="执行结果仍待核对")
+                self.store.event(task["id"], "action_reconciled", {
+                    "proposal_id": proposal_id, "job_state": state,
+                    "observed_date": observed_date, "job_error": job_error,
+                    "ledger_error": ledger_error,
+                })
+            return self.store.get_proposal(proposal_id) or proposal
+
+    def _finish_paper_action(self, proposal: dict, job: dict,
+                             observed_date: str | None, snapshot: dict) -> None:
+        """Accept success only when the job receipt and this account's ledger agree."""
+        task_id = proposal["task_id"]
+        job_id = str(proposal["result"].get("job_id") or job.get("job_id") or "")
+        receipt = (job.get("result") or {}).get("data") or {}
+        receipt_session = receipt.get("session_id")
+        receipt_date = receipt.get("last_date")
+        target = proposal["args"]["target_date"]
+        baseline_date = proposal["baseline"].get("as_of_date")
+        try:
+            valid_dates = (date.fromisoformat(str(receipt_date)) <= date.fromisoformat(target)
+                           and date.fromisoformat(str(observed_date)) >= date.fromisoformat(str(baseline_date)))
+        except ValueError:
+            valid_dates = False
+        if (receipt_session != proposal["session_id"] or
+                not receipt_date or observed_date != receipt_date or not valid_dates):
+            reason = "作业回执与账户账本不一致，请人工核对"
+            self.store.set_proposal_status(proposal["id"], "unknown", {
+                **proposal["result"], "job_id": job_id, "job_state": "success",
+                "receipt_session_id": receipt_session, "receipt_date": receipt_date,
+                "observed_date": observed_date, "error": reason,
+            })
+            self.store.set_status(task_id, "needs_review", error=reason)
+            self.store.event(task_id, "action_reconciled", {
+                "proposal_id": proposal["id"], "job_state": "success",
+                "receipt_date": receipt_date, "observed_date": observed_date,
+                "status": "mismatch",
+            })
+            return
+        result = {"job_id": job_id, "target_date": target,
+                  "as_of_date": observed_date, "equity": snapshot.get("equity"),
+                  "advanced_days": receipt.get("advanced_days")}
+        self.store.set_proposal_status(proposal["id"], "completed", result)
+        content = (f"模拟盘推进任务已完成。账本基准日：{observed_date}；"
+                   f"账户权益：{result['equity'] if result['equity'] is not None else '未知'}。"
+                   "请以 StockManager 账本中的成交和持仓为准。")
+        self.store.set_status(task_id, "completed", result={"content": content, "action": result})
+        self.store.add_message(self.store.get_task(task_id)["conversation_id"], "assistant", content, task_id)
+        self.store.event(task_id, "action_completed", result)
 
     async def close(self) -> None:
         for task in tuple(self._active.values()):
@@ -661,25 +761,19 @@ class TradingAgentHarness:
                 if state in {"success", "completed"}:
                     updated = (await paper_request(self.config, "GET", root + "/status")).get("data") or {}
                     snapshot = updated.get("snapshot") or {}
-                    result = {"job_id": job_id, "target_date": proposal["args"]["target_date"],
-                              "as_of_date": snapshot.get("as_of_date"), "equity": snapshot.get("equity")}
-                    self.store.set_proposal_status(proposal_id, "completed", result)
-                    content = (f"模拟盘推进任务已完成。账本基准日：{result['as_of_date'] or '未知'}；"
-                               f"账户权益：{result['equity'] if result['equity'] is not None else '未知'}。"
-                               "请以 StockManager 账本中的成交和持仓为准。")
-                    self.store.set_status(task_id, "completed", result={"content": content, "action": result})
-                    self.store.add_message(self.store.get_task(task_id)["conversation_id"], "assistant", content, task_id)
-                    self.store.event(task_id, "action_completed", result)
+                    observed_date = snapshot.get("as_of_date") or (updated.get("session") or {}).get("last_date")
+                    self._finish_paper_action(
+                        self.store.get_proposal(proposal_id), job, observed_date, snapshot
+                    )
                     return
                 if state in {"failed", "error", "cancelled"}:
-                    message = str(job.get("message") or state)
-                    self.store.set_proposal_status(proposal_id, "failed", {
-                        "job_id": job_id, "error": message,
+                    # A failed job may already have changed the ledger before
+                    # failing. Read it before declaring the action failed.
+                    self.store.set_proposal_status(proposal_id, "unknown", {
+                        "job_id": job_id, "error": str(job.get("message") or state)[:500],
                     })
-                    self.store.set_status(task_id, "failed", error=message)
-                    self.store.event(task_id, "action_failed", {
-                        "job_id": job_id, "message": message,
-                    })
+                    self.store.set_status(task_id, "needs_review", error="正在核对失败作业的账本")
+                    await self.reconcile(proposal_id)
                     return
                 await asyncio.sleep(2)
             raise PaperServiceError("推进任务仍在运行，请在模拟盘页面按任务编号核对结果")
@@ -696,7 +790,10 @@ class TradingAgentHarness:
                 self.store.set_status(task_id, "failed", error=str(exc))
                 self.store.event(task_id, "action_failed", {"message": str(exc)})
             else:
-                self.store.set_proposal_status(proposal_id, "unknown", {"error": str(exc)})
+                previous = self.store.get_proposal(proposal_id) or proposal
+                self.store.set_proposal_status(proposal_id, "unknown", {
+                    **previous["result"], "error": str(exc),
+                })
                 self.store.set_status(task_id, "needs_review", error=str(exc))
                 self.store.event(task_id, "action_unknown", {"message": str(exc)})
 

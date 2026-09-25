@@ -7,7 +7,7 @@ import { ArrowRight, Check, CircleAlert, CircleCheck, Clock3, Database, LoaderCi
 import {
   approveAgentProposal, cancelAgentTask, createAgentConversation, getAgentConversation,
   listAgentConversations, submitAgentTask,
-  rejectAgentProposal,
+  reconcileAgentProposal, rejectAgentProposal,
   type AgentConversation, type AgentTask,
 } from "@/api/agent";
 import type { ChatNavState, IntentHint } from "@/lib/chatNav";
@@ -58,11 +58,12 @@ function TaskTimeline({ task }: { task: AgentTask }) {
   </div>;
 }
 
-function ProposalCard({ task, busy, onApprove, onReject }: {
+function ProposalCard({ task, busy, onApprove, onReject, onReconcile }: {
   task: AgentTask;
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
+  onReconcile: () => void;
 }) {
   const proposal = task.proposal;
   if (!proposal) return null;
@@ -71,7 +72,7 @@ function ProposalCard({ task, busy, onApprove, onReject }: {
     <div className="mt-3 grid grid-cols-2 gap-3 text-xs"><div><span className="block text-[#829087]">目标账户</span><strong className="mt-1 block break-all font-medium">{proposal.session_id}</strong></div><div><span className="block text-[#829087]">目标日期</span><strong className="mt-1 block font-medium">{proposal.args.target_date}</strong></div><div><span className="block text-[#829087]">当前基准日</span><strong className="mt-1 block font-medium">{proposal.baseline.as_of_date}</strong></div><div><span className="block text-[#829087]">当前权益</span><strong className="mt-1 block font-medium">{proposal.baseline.equity == null ? "—" : `¥${Number(proposal.baseline.equity).toLocaleString("zh-CN")}`}</strong></div></div>
     <p className="mt-3 text-xs leading-5 text-[#68776d]">确认后 StockManager 将推进策略模拟盘；实际成交以执行后的账本为准。提案到期后需要重新核对。</p>
     {proposal.status === "pending" && <div className="mt-4 flex gap-2"><button disabled={busy} onClick={onApprove} className="rounded-md bg-[#087d68] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">确认推进</button><button disabled={busy} onClick={onReject} className="rounded-md border border-[#cbd8ce] px-3 py-1.5 text-xs text-[#405047] disabled:opacity-50">取消提案</button></div>}
-    {(proposal.status === "unknown" || task.status === "needs_review") && <p className="mt-3 text-xs text-amber-700">执行结果待核对{proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。</p>}
+    {(proposal.status === "unknown" || task.status === "needs_review") && <div className="mt-3 space-y-2 text-xs text-amber-700"><p>执行结果待核对{proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。</p>{typeof proposal.result?.observed_date === "string" && <p>最近核对的账本日期：{proposal.result.observed_date}</p>}{typeof proposal.result?.error === "string" && <p>{proposal.result.error}</p>}<button disabled={busy} onClick={onReconcile} className="rounded-md border border-amber-400 px-3 py-1.5 font-medium disabled:opacity-50">核对执行结果</button></div>}
   </div>;
 }
 
@@ -169,13 +170,14 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     try { await cancelAgentTask(latestTask.id); await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] }); }
     catch (exc) { setError(exc instanceof Error ? exc.message : "取消失败"); }
   };
-  const decideProposal = async (decision: "approve" | "reject", task: AgentTask) => {
+  const decideProposal = async (decision: "approve" | "reject" | "reconcile", task: AgentTask) => {
     if (!task.proposal) return;
     setBusy(true);
     setError("");
     try {
       if (decision === "approve") await approveAgentProposal(task.proposal.id);
-      else await rejectAgentProposal(task.proposal.id);
+      else if (decision === "reject") await rejectAgentProposal(task.proposal.id);
+      else await reconcileAgentProposal(task.proposal.id);
       await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] });
       await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
     } catch (exc) { setError(exc instanceof Error ? exc.message : "操作失败"); }
@@ -204,7 +206,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
                 {message.role === "assistant" && task?.result.citations?.length ? <div className="mt-2 flex items-center gap-1 text-xs text-[#68776d]"><Check className="h-3.5 w-3.5 text-[#087d68]" />已关联 {task.evidence.length} 项证据 · 只读任务</div> : null}
               </div>
             </div>
-            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} /></div>}
+            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} /></div>}
           </div>;
         })}
       </div></div>

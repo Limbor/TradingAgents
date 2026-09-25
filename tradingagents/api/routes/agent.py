@@ -96,3 +96,13 @@ async def reject_proposal(request: Request, proposal_id: str):
         return request.app.state.agent_harness.reject(proposal_id)
     except KeyError as exc:
         raise HTTPException(404, "提案不存在") from exc
+
+
+@router.post("/proposals/{proposal_id}/reconcile")
+async def reconcile_proposal(request: Request, proposal_id: str):
+    try:
+        return await request.app.state.agent_harness.reconcile(proposal_id)
+    except KeyError as exc:
+        raise HTTPException(404, "提案不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

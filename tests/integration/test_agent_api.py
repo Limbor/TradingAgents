@@ -82,7 +82,8 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
         if path.endswith("/status"):
             as_of = "2026-09-28" if writes else "2026-09-25"
             return {"data": {"snapshot": {"as_of_date": as_of, "equity": 101000}}}
-        return {"state": "success"}
+        return {"state": "success", "result": {"data": {
+            "session_id": "paper:api", "last_date": "2026-09-28", "advanced_days": 1}}}
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     app = create_app()
@@ -109,3 +110,8 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
             time.sleep(0.01)
         assert task["status"] == "completed"
         assert writes == [{"target_date": "2026-09-28"}]
+        checked = client.post(f"/api/v1/agent/proposals/{pid}/reconcile")
+        assert checked.status_code == 200
+        assert checked.json()["status"] == "completed"
+        assert writes == [{"target_date": "2026-09-28"}]
+        assert client.post("/api/v1/agent/proposals/missing/reconcile").status_code == 404

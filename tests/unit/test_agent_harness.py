@@ -173,7 +173,8 @@ async def test_advance_requires_one_time_approval_and_reconciles_ledger(tmp_path
         if path.endswith("/status"):
             date_value = "2026-09-28" if any(call[0] == "POST" for call in calls) else "2026-09-25"
             return {"data": {"snapshot": {"as_of_date": date_value, "equity": 101000}}}
-        return {"state": "success"}
+        return {"state": "success", "result": {"data": {
+            "session_id": "paper:advance", "last_date": "2026-09-28", "advanced_days": 1}}}
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     assert harness.approve(proposal["id"])["status"] == "executing"
@@ -241,3 +242,135 @@ async def test_restart_never_replays_submitted_paper_action(tmp_path):
     assert reopened.get_task(task["id"])["status"] == "needs_review"
     assert reopened.get_proposal(proposal["id"])["status"] == "unknown"
     assert reopened.get_proposal(proposal["id"])["result"]["job_id"] == "job:pending"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_submitted_job_after_restart_without_reposting(tmp_path, monkeypatch):
+    _, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "submitted", {"job_id": "job:done"})
+    store.set_status(task["id"], "executing_action")
+    reopened = AgentStore(Database(tmp_path / "agent.db"))
+    harness = TradingAgentHarness(reopened, None, None, None, None, {})
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append((method, path))
+        if path == "/api/jobs/job:done":
+            return {"state": "success", "result": {"data": {
+                "session_id": "paper:advance", "last_date": "2026-09-28", "advanced_days": 1}}}
+        return {"data": {"snapshot": {"as_of_date": "2026-09-28", "equity": 102000}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    result = await harness.reconcile(proposal["id"])
+    assert result["status"] == "completed"
+    assert reopened.get_task(task["id"])["status"] == "completed"
+    assert calls == [("GET", "/api/jobs/job:done"),
+                     ("GET", "/api/v2/paper/paper:advance/status")]
+    assert (await harness.reconcile(proposal["id"]))["status"] == "completed"
+    assert calls == [("GET", "/api/jobs/job:done"),
+                     ("GET", "/api/v2/paper/paper:advance/status")]
+    assert len([m for m in reopened.list_messages(task["conversation_id"]) if m["role"] == "assistant"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_reconcile_missing_job_keeps_unknown_and_reports_ledger(tmp_path, monkeypatch):
+    _, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "submitted", {"job_id": "job:lost"})
+    store.set_status(task["id"], "executing_action")
+    reopened = AgentStore(Database(tmp_path / "agent.db"))
+    harness = TradingAgentHarness(reopened, None, None, None, None, {})
+
+    async def paper_request(config, method, path, payload=None):
+        assert method == "GET"
+        if path.startswith("/api/jobs/"):
+            raise PaperServiceError("Job not found", 404)
+        return {"data": {"snapshot": {"as_of_date": "2026-09-28"}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    result = await harness.reconcile(proposal["id"])
+    assert result["status"] == "unknown"
+    assert result["result"]["job_id"] == "job:lost"
+    assert result["result"]["observed_date"] == "2026-09-28"
+    assert reopened.get_task(task["id"])["status"] == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_success_receipt_must_match_account_ledger(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+
+    async def paper_request(config, method, path, payload=None):
+        if method == "POST":
+            return {"job_id": "job:other"}
+        if path.startswith("/api/jobs/"):
+            return {"state": "success", "result": {"data": {
+                "session_id": "paper:someone-else", "last_date": "2026-09-28"}}}
+        as_of = "2026-09-28" if store.get_proposal(proposal["id"])["status"] == "submitted" else "2026-09-25"
+        return {"data": {"snapshot": {"as_of_date": as_of}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert store.get_proposal(proposal["id"])["status"] == "unknown"
+    assert store.get_proposal(proposal["id"])["result"]["job_id"] == "job:other"
+    assert store.get_task(task["id"])["status"] == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_poll_failure_keeps_job_id_for_later_reconciliation(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+
+    async def paper_request(config, method, path, payload=None):
+        if method == "POST":
+            return {"job_id": "job:recover"}
+        if path.startswith("/api/jobs/"):
+            raise PaperServiceError("服务重启")
+        return {"data": {"snapshot": {"as_of_date": "2026-09-25"}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    result = store.get_proposal(proposal["id"])
+    assert result["status"] == "unknown"
+    assert result["result"]["job_id"] == "job:recover"
+
+
+@pytest.mark.asyncio
+async def test_failed_job_with_changed_ledger_needs_review(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+
+    async def paper_request(config, method, path, payload=None):
+        if method == "POST":
+            return {"job_id": "job:partial"}
+        if path.startswith("/api/jobs/"):
+            return {"state": "error", "message": "计算中断"}
+        as_of = "2026-09-26" if store.get_proposal(proposal["id"])["status"] != "executing" else "2026-09-25"
+        return {"data": {"snapshot": {"as_of_date": as_of}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    result = store.get_proposal(proposal["id"])
+    assert result["status"] == "unknown"
+    assert result["result"]["observed_date"] == "2026-09-26"
+    assert store.get_task(task["id"])["status"] == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_successful_non_trading_target_uses_receipt_date(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+
+    async def paper_request(config, method, path, payload=None):
+        if method == "POST":
+            return {"job_id": "job:weekend"}
+        if path.startswith("/api/jobs/"):
+            return {"state": "success", "result": {"data": {
+                "session_id": "paper:advance", "last_date": "2026-09-25", "advanced_days": 0}}}
+        return {"data": {"snapshot": {"as_of_date": "2026-09-25", "equity": 100000}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert store.get_proposal(proposal["id"])["status"] == "completed"
+    assert store.get_task(task["id"])["result"]["action"]["advanced_days"] == 0
