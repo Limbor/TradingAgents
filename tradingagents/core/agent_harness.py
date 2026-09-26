@@ -414,6 +414,16 @@ def _answer_evidence_result(item: dict) -> dict:
                                      "available 维度保留原始分数，但没有评分定义时不能推断中性或方向")}
 
 
+def _latest_evidence(evidence: list[dict]) -> list[dict]:
+    """Keep each tool's last observation; earlier attempts remain in the audit log."""
+    def key(item: dict) -> tuple[str, str | None]:
+        ticker = item["result"].get("ts_code") if item["tool_name"] == "get_mcp_factor_snapshot" else None
+        return item["tool_name"], ticker
+
+    latest = {key(item): item for item in evidence}
+    return [item for item in evidence if latest[key(item)] is item]
+
+
 class TradingAgentHarness:
     """Bounded orchestration for one conversation task at a time."""
 
@@ -630,6 +640,7 @@ class TradingAgentHarness:
                 evidence: list[dict] = []
                 step_index = 0
                 replanned = False
+                factor_retried: set[str] = set()
                 while step_index < len(plan):
                     step = plan[step_index]
                     step_index += 1
@@ -649,6 +660,7 @@ class TradingAgentHarness:
                                 # The account's ledger date owns the time scope. A
                                 # model-supplied date must never replace it.
                                 step = {**step, "args": {**step["args"], "trade_date": trade_date}}
+                    factor_date_conflict = False
                     self.store.event(task_id, "step_started", step)
                     if step["tool"] == "skill":
                         result = await self._run_skill(task_id, step["skill_id"], step["args"])
@@ -668,14 +680,23 @@ class TradingAgentHarness:
                         result = {"value": result}
                     if step["tool"] == "get_mcp_factor_snapshot":
                         result.setdefault("ts_code", step["args"]["ts_code"])
-                        if paper_session_id and not result.get("error"):
+                        if paper_session_id:
                             ledger = next((item for item in evidence
                                            if item["tool_name"] == "get_paper_session" and
                                            not item["result"].get("error")), None)
                             ledger_date = ledger["as_of_date"] if ledger else None
-                            if not ledger_date or result.get("as_of_date") != ledger_date:
+                            factor_date_conflict = bool(
+                                ledger_date and (
+                                    "基准日与请求交易日不一致" in str(result.get("error") or "") or
+                                    (not result.get("error") and result.get("as_of_date") != ledger_date)
+                                )
+                            )
+                            if factor_date_conflict:
                                 result["warnings"] = [*(result.get("warnings") or []),
                                     "因子快照与模拟盘账本基准日不一致，不能合并为同一时点的交易判断"]
+                                if result.get("error"):
+                                    result["source_error"] = result["error"]
+                                result["error"] = "因子快照基准日与模拟盘账本不一致"
                     if step["tool"] == "skill":
                         result.setdefault("source", f"TradingAgents Skill: {step['skill_id']}")
                     if step["tool"] == "get_paper_session" and not result.get("error"):
@@ -703,9 +724,19 @@ class TradingAgentHarness:
                     self.store.event(task_id, "step_completed", {
                         "id": step["id"], "status": "failed" if result.get("error") else "completed"
                     })
+                    if (factor_date_conflict and
+                            step["args"]["ts_code"] not in factor_retried and
+                            len(plan) < _MAX_PLAN_STEPS):
+                        factor_retried.add(step["args"]["ts_code"])
+                        retry = {**step, "id": f"{step['id']}-verify",
+                                 "label": f"复核 {step['args']['ts_code']} 因子快照日期"}
+                        plan.insert(step_index, retry)
+                        self.store.event(task_id, "plan_revised", {
+                            "steps": [retry], "reason": "因子快照日期与模拟盘账本冲突，按账本日期重读一次",
+                        })
                     if (step_index == len(plan) and not replanned and
                             not self._advance_target(goal, paper_session_id) and
-                            any(item["result"].get("error") for item in evidence) and
+                            any(item["result"].get("error") for item in _latest_evidence(evidence)) and
                             not (paper_session_id and any(
                                 item["tool_name"] == "get_paper_session" and item["result"].get("error")
                                 for item in evidence
@@ -979,6 +1010,7 @@ class TradingAgentHarness:
         return plan
 
     async def _synthesize(self, goal: str, conversation_id: str, evidence: list[dict]) -> str:
+        evidence = _latest_evidence(evidence)
         conversation = self.store.get_conversation(conversation_id) or {}
         required_tools: list[tuple[str, str | None]] = []
         if conversation.get("paper_session_id"):
@@ -997,6 +1029,9 @@ class TradingAgentHarness:
         usable = next((item for item in evidence if not item["result"].get("error")), None)
         if missing or not usable:
             reason = missing or evidence[0]
+            if "因子快照基准日与模拟盘账本不一致" in reason["summary"]:
+                return ("模拟盘账本与标的因子快照的基准日无法对齐，不能把不同日期的数据合并"
+                        "为同一时点的交易判断。请核对数据源后重试。")
             return f"当前无法核对所需数据：{reason['summary']}。本轮没有生成交易判断，请检查数据源后重试。"
         if conversation.get("paper_session_id"):
             ledger = next((item for item in evidence if item["tool_name"] == "get_paper_session"), None)

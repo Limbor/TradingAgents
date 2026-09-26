@@ -1,6 +1,8 @@
 """Durable Agent task lifecycle and account evidence boundaries."""
 
 import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -398,7 +400,10 @@ async def test_paper_factor_date_conflict_abstains_before_model(tmp_path):
         return {"session_id": session_id, "as_of_date": "2026-09-25",
                 "snapshot": {"equity": 100000}}
 
+    calls = []
+
     async def factor(ts_code, trade_date=""):
+        calls.append((ts_code, trade_date))
         assert trade_date == "2026-09-25"
         return {"ts_code": ts_code, "as_of_date": "2026-09-24",
                 "source": "StockManager MCP", "snapshot": {"rows": []}}
@@ -414,8 +419,67 @@ async def test_paper_factor_date_conflict_abstains_before_model(tmp_path):
     await harness._active[task["id"]]
 
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert calls == [("600519.SH", "2026-09-25")] * 2
+    assert len([event for event in detail["events"]
+                if event["event_type"] == "plan_revised"]) == 1
     assert "不能把不同日期的数据合并" in detail["result"]["content"]
     assert "基准日不一致" in detail["evidence"][1]["warnings"][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_result", ["wrong_date", "tool_error"])
+async def test_paper_factor_date_conflict_recovers_with_one_read_only_retry(
+    tmp_path, monkeypatch, first_result,
+):
+    async def paper(session_id):
+        return {"session_id": session_id, "as_of_date": "2026-09-25",
+                "snapshot": {"equity": 100000}}
+
+    calls = []
+
+    async def factor(ts_code, trade_date=""):
+        calls.append((ts_code, trade_date))
+        if len(calls) == 1 and first_result == "tool_error":
+            return {"ts_code": ts_code, "error": "因子快照基准日与请求交易日不一致"}
+        return {"ts_code": ts_code, "as_of_date": "2026-09-24" if len(calls) == 1 else trade_date,
+                "source": "StockManager MCP", "snapshot": {"rows": []}}
+
+    captured = []
+
+    class FakeLLM:
+        async def ainvoke(self, messages):
+            captured.extend(messages)
+            return SimpleNamespace(content="复核后基准日一致。")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=FakeLLM))
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "评估模拟盘内 600519.SH 的风险")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert calls == [("600519.SH", "2026-09-25")] * 2
+    assert detail["status"] == "completed"
+    assert len(detail["evidence"]) == 3  # Both attempts remain auditable.
+    assert detail["evidence"][1]["result"]["error"]
+    if first_result == "tool_error":
+        assert detail["evidence"][1]["result"]["source_error"] == "因子快照基准日与请求交易日不一致"
+    assert detail["evidence"][2]["as_of_date"] == "2026-09-25"
+    assert len([event for event in detail["events"]
+                if event["event_type"] == "plan_revised"]) == 1
+    model_evidence = json.loads(captured[1].content.split("证据 JSON：\n", 1)[1])
+    assert len(model_evidence) == 2
+    factors = [item for item in model_evidence if item["data"].get("ts_code") == "600519.SH"]
+    assert len(factors) == 1
+    assert factors[0]["as_of_date"] == "2026-09-25"
+    assert not factors[0]["data"].get("error")
+    assert "2026-09-24" not in detail["result"]["content"]
 
 
 @pytest.mark.asyncio
