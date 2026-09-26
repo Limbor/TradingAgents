@@ -200,6 +200,13 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     navigate({ pathname: location.pathname, search: search.toString() }, { replace: true });
   }, [location.pathname, location.search, navigate]);
 
+  const selectCreatedConversation = useCallback((created: AgentConversation) => {
+    queryClient.setQueryData<AgentConversation[]>(["agent-conversations"], (items) => [
+      created, ...(items ?? []).filter((item) => item.id !== created.id),
+    ]);
+    selectConversation(created.id);
+  }, [queryClient, selectConversation]);
+
   useEffect(() => {
     if (!conversations.isSuccess || legacyImportAttempted.current) return;
     legacyImportAttempted.current = true;
@@ -226,7 +233,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
       if (!id) {
         const created = await createAgentConversation(paperId);
         id = created.id;
-        selectConversation(id);
+        selectCreatedConversation(created);
         await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
       }
       await submitAgentTask(id, message, intentHint);
@@ -240,7 +247,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     } finally {
       setBusy(false);
     }
-  }, [busy, running, legacyArchive, currentId, paperId, queryClient, selectConversation]);
+  }, [busy, running, legacyArchive, currentId, paperId, queryClient, selectCreatedConversation]);
 
   useEffect(() => {
     if (!promptRequest || !conversations.isSuccess || (currentId && !detail.isSuccess) || consumedPrompt.current === promptRequest.nonce) return;
@@ -272,12 +279,15 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const submit = (event: FormEvent) => { event.preventDefault(); void send(input, pendingHint); };
   const inspectTask = (taskId: string) => { setInspectedTaskId(taskId); setShowInspector(true); };
   const newConversation = async () => {
+    if (busy) return;
+    setBusy(true);
     setError("");
     try {
       const created = await createAgentConversation(paperId);
-      selectConversation(created.id);
+      selectCreatedConversation(created);
       await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
     } catch (exc) { setError(exc instanceof Error ? exc.message : "创建对话失败"); }
+    finally { setBusy(false); }
   };
   const stop = async () => {
     if (!latestTask) return;
@@ -300,14 +310,14 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
 
   return <div className={`agent-workspace flex min-h-0 w-full overflow-hidden border border-ui-line bg-ui-canvas text-ui-ink ${embedded ? "h-full rounded-lg" : "h-full rounded-lg"}`}>
     {!embedded && <aside aria-label="Agent 对话列表" className="hidden w-[190px] shrink-0 flex-col border-r border-ui-line bg-ui-subtle md:flex">
-      <div className="flex h-[54px] items-center justify-between border-b border-ui-line px-3"><span className="text-xs font-semibold text-ui-muted">交易任务</span><button onClick={() => void newConversation()} aria-label="新建对话" className="rounded p-1.5 text-ui-accent hover:bg-ui-accentSoft"><MessageSquarePlus className="h-4 w-4" /></button></div>
+      <div className="flex h-[54px] items-center justify-between border-b border-ui-line px-3"><span className="text-xs font-semibold text-ui-muted">交易任务</span><button disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" className="rounded p-1.5 text-ui-accent hover:bg-ui-accentSoft disabled:opacity-50"><MessageSquarePlus className="h-4 w-4" /></button></div>
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">{scoped.map((item: AgentConversation) => <button key={item.id} onClick={() => selectConversation(item.id)} className={`w-full rounded-md px-2.5 py-2 text-left text-xs ${currentId === item.id ? "bg-ui-accentSoft text-ui-accent" : "text-ui-muted hover:bg-ui-hover"}`}><span className="block truncate font-medium">{item.title}</span><span className="mt-1 block text-xs opacity-75">{statusText[item.latest_status || ""] ?? "新对话"}</span></button>)}</div>
       <div className="border-t border-ui-line px-3 py-3 text-xs text-ui-faint">任务与证据保存在本机</div>
     </aside>}
 
     <section aria-label="交易 Agent 对话" className="flex min-w-0 flex-1 flex-col bg-ui-canvas">
       <header className="flex h-[54px] shrink-0 items-center justify-between border-b border-ui-line bg-ui-panel px-4"><div className="min-w-0"><p className="truncate text-sm font-semibold">{detail.data?.title || (paperId ? `模拟盘 · ${paperId}` : "交易 Agent")}</p><p className="text-xs text-ui-faint">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? "已绑定 StockManager 模拟盘" : "分析 · 取证 · 风险核对"}</p></div><div className="flex items-center gap-2">{embedded && paperId && <Link to={`/chat?paper_session=${encodeURIComponent(paperId)}${currentId ? `&conversation=${encodeURIComponent(currentId)}` : ""}`} className="inline-flex items-center gap-1 rounded border border-ui-line px-2 py-1 text-xs text-ui-accent hover:bg-ui-accentSoft">在工作台继续 <ArrowRight className="h-3.5 w-3.5" /></Link>}{running && <span className="flex items-center gap-1 text-xs text-ui-accent">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!showInspector && <button onClick={() => { setInspectedTaskId(null); setShowInspector(true); }} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}</div></header>
-      {(embedded || scoped.length > 0) && <div className={`flex items-center gap-2 border-b border-ui-line bg-ui-panel px-3 py-2 ${embedded ? "" : "md:hidden"}`}><select aria-label="选择 Agent 对话" value={currentId ?? ""} onChange={(event) => { if (event.target.value) selectConversation(event.target.value); else void newConversation(); }} className="min-w-0 flex-1 rounded border border-ui-line bg-ui-panel px-2 py-1.5 text-xs"><option value="">新对话</option>{scoped.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button onClick={() => void newConversation()} aria-label="新建对话" className="rounded border border-ui-line p-1.5 text-ui-accent"><MessageSquarePlus className="h-4 w-4" /></button></div>}
+      {(embedded || scoped.length > 0) && <div className={`flex items-center gap-2 border-b border-ui-line bg-ui-panel px-3 py-2 ${embedded ? "" : "md:hidden"}`}><select aria-label="选择 Agent 对话" value={currentId ?? ""} onChange={(event) => { if (event.target.value) selectConversation(event.target.value); else void newConversation(); }} className="min-w-0 flex-1 rounded border border-ui-line bg-ui-panel px-2 py-1.5 text-xs"><option value="">新对话</option>{scoped.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" className="rounded border border-ui-line p-1.5 text-ui-accent disabled:opacity-50"><MessageSquarePlus className="h-4 w-4" /></button></div>}
       {error && <div role="alert" className="flex items-center justify-between border-b border-ui-danger bg-ui-danger/10 px-4 py-2 text-xs text-ui-danger">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X className="h-3.5 w-3.5" /></button></div>}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-8"><div className="mx-auto max-w-[760px] space-y-5">
         {messages.length === 0 && <div className="mx-auto max-w-[590px] py-12 text-center"><div className="mx-auto mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-ui-accentSoft text-ui-accent"><Database className="h-5 w-5" /></div><h1 className="text-xl font-semibold">从交易目标开始</h1><p className="mt-3 text-sm leading-6 text-ui-muted">Agent 会制定步骤，读取当前数据，标出来源和时点，再给出有条件的结论。</p><div className="mt-6 flex flex-wrap justify-center gap-2">{(paperId ? ["总结当前权益、持仓和近期成交", "解释下一交易日计划", "当前策略切换的依据是什么"] : ["看看当前持仓风险", "分析我的组合", "查找近期的研究报告"]).map((prompt) => <button key={prompt} onClick={() => void send(prompt)} className="rounded-md border border-ui-line bg-ui-panel px-3 py-2 text-xs text-ui-body hover:border-ui-accent">{prompt}</button>)}</div></div>}
