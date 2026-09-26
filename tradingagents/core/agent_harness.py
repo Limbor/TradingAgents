@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _PAPER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _ARTIFACT_WORDS = ("以前", "历史", "之前", "报告", "分析", "回测", "复盘", "依据")
 _HOLDING_WORDS = ("持仓", "组合", "账户", "盈亏", "仓位", "股票")
+_A_SHARE_TICKER = re.compile(r"(?<![A-Za-z0-9])\d{6}\.(?:SH|SZ|BJ)(?![A-Za-z0-9])", re.IGNORECASE)
 _MAX_EVIDENCE_CHARS = 60_000
 _MAX_PLAN_STEPS = 4
 _ADVANCE_TARGET = re.compile(r"推进(?:模拟盘|策略模拟盘)?(?:至|到)\s*(\d{4}-\d{2}-\d{2})")
@@ -357,6 +358,9 @@ def _evidence_summary(tool_name: str, result: dict) -> str:
                 f"· 持仓 {len(snapshot.get('positions') or {})} 只")
     if tool_name == "get_portfolio_summary":
         return f"手工持仓 {result.get('total_symbols', 0)} 只"
+    if tool_name == "get_mcp_factor_snapshot":
+        return (f"{result.get('ts_code', '标的')} 因子快照 · 基准日 "
+                f"{result.get('as_of_date') or '未知'}")
     if tool_name == "search_artifacts":
         return f"关联产物 {result.get('total', 0)} 项"
     return str(result.get("message") or tool_name)[:250]
@@ -559,6 +563,13 @@ class TradingAgentHarness:
             return
         goal = task["goal"]
         try:
+            tickers = self._goal_tickers(goal)
+            if len(tickers) > 2:
+                content = "一次最多核对两个明确的 A 股代码。请缩小到两个标的后重试。"
+                self.store.add_message(conversation["id"], "assistant", content, task_id)
+                self.store.set_status(task_id, "needs_input", result={"content": content})
+                self.store.event(task_id, "task_needs_input", {"content": content})
+                return
             async with self._slots:
                 self.store.set_status(task_id, "planning")
                 paper_session_id = conversation.get("paper_session_id")
@@ -590,6 +601,8 @@ class TradingAgentHarness:
                                 result = {"error": str(exc), "warnings": ["工具执行失败"]}
                     if not isinstance(result, dict):
                         result = {"value": result}
+                    if step["tool"] == "get_mcp_factor_snapshot":
+                        result.setdefault("ts_code", step["args"]["ts_code"])
                     if step["tool"] == "skill":
                         result.setdefault("source", f"TradingAgents Skill: {step['skill_id']}")
                     if step["tool"] == "get_paper_session" and not result.get("error"):
@@ -681,6 +694,11 @@ class TradingAgentHarness:
             self.store.event(task_id, "task_failed", {"message": str(exc)})
 
     @staticmethod
+    def _goal_tickers(goal: str) -> list[str]:
+        return list(dict.fromkeys(match.group(0).upper()
+                                  for match in _A_SHARE_TICKER.finditer(goal)))
+
+    @staticmethod
     def _advance_target(goal: str, paper_session_id: str | None) -> str | None:
         if not paper_session_id:
             return None
@@ -719,8 +737,14 @@ class TradingAgentHarness:
         )
         if proposed is None:
             return []
-        used = {step["tool"] if step["tool"] != "skill" else f"skill:{step['skill_id']}"
-                for step in plan}
+        used = set()
+        for step in plan:
+            if step["tool"] == "skill":
+                used.add(f"skill:{step['skill_id']}")
+            elif step["tool"] == "get_mcp_factor_snapshot":
+                used.add(f"get_mcp_factor_snapshot:{step['args']['ts_code']}")
+            else:
+                used.add(step["tool"])
         return self._validate_model_steps(
             proposed, goal, paper_session_id, used=used, max_steps=remaining
         )
@@ -743,6 +767,8 @@ class TradingAgentHarness:
         else:
             available.insert(0, "get_portfolio_summary")
             available.append("skill (仅分析/回测 Skill，最多一项)")
+        if self._goal_tickers(goal):
+            available.append("get_mcp_factor_snapshot (标的由服务端从目标提取)")
         prompt = (
             "你是交易任务的只读规划器。只输出 JSON："
             '{"steps":[{"tool":"工具名","query":"可选检索词","skill_id":"可选技能","args":{}}]}。'
@@ -782,9 +808,12 @@ class TradingAgentHarness:
         """Build executable steps from allowlisted names and server-owned scope."""
         seen = set(used or ())
         steps: list[dict] = []
+        goal_tickers = self._goal_tickers(goal)
 
         def add(tool: str, label: str, args: dict, skill_id: str | None = None) -> None:
-            key = f"skill:{skill_id}" if skill_id else tool
+            key = (f"skill:{skill_id}" if skill_id else
+                   f"get_mcp_factor_snapshot:{args['ts_code']}"
+                   if tool == "get_mcp_factor_snapshot" else tool)
             if key in seen or len(steps) >= max_steps:
                 return
             seen.add(key)
@@ -797,6 +826,9 @@ class TradingAgentHarness:
             add("get_paper_session", "读取当前模拟盘账本与计划", {"session_id": paper_session_id})
         elif not paper_session_id and any(word in goal for word in _HOLDING_WORDS):
             add("get_portfolio_summary", "读取当前手工持仓", {})
+        for ticker in goal_tickers:
+            add("get_mcp_factor_snapshot", f"读取 {ticker} 因子快照",
+                {"ts_code": ticker})
         for raw in proposed[:8]:
             if not isinstance(raw, dict) or len(steps) >= max_steps:
                 continue
@@ -806,6 +838,8 @@ class TradingAgentHarness:
                     {"session_id": paper_session_id})
             elif tool == "get_portfolio_summary" and not paper_session_id:
                 add("get_portfolio_summary", "读取当前手工持仓", {})
+            elif tool == "get_mcp_factor_snapshot" and goal_tickers:
+                continue  # Explicit symbols were bound by the server above.
             elif tool == "search_artifacts":
                 raw_args = raw.get("args") if isinstance(raw.get("args"), dict) else {}
                 query = raw.get("query") or raw_args.get("q") or goal[:80]
@@ -825,9 +859,16 @@ class TradingAgentHarness:
     def _plan(self, goal: str, paper_session_id: str | None,
               intent_hint: dict | None = None) -> list[dict]:
         plan: list[dict] = []
+        goal_tickers = self._goal_tickers(goal)
         skill_id = str((intent_hint or {}).get("skill_id") or "")
         if skill_id in _SAFE_ANALYSIS_SKILLS and self.skills.get(skill_id) is not None:
             params = (intent_hint or {}).get("params")
+            if paper_session_id:
+                plan.append({"id": "paper", "label": "读取模拟盘账本与下一日计划",
+                             "tool": "get_paper_session", "args": {"session_id": paper_session_id}})
+            for ticker in goal_tickers:
+                plan.append({"id": f"factor-{ticker}", "label": f"读取 {ticker} 因子快照",
+                             "tool": "get_mcp_factor_snapshot", "args": {"ts_code": ticker}})
             plan.append({"id": "requested-skill", "label": f"运行 {skill_id} 分析",
                          "tool": "skill", "skill_id": skill_id,
                          "args": params if isinstance(params, dict) else {}})
@@ -838,6 +879,10 @@ class TradingAgentHarness:
         elif any(word in goal for word in _HOLDING_WORDS):
             plan.append({"id": "portfolio", "label": "读取当前手工持仓",
                          "tool": "get_portfolio_summary", "args": {}})
+        if not self._advance_target(goal, paper_session_id):
+            for ticker in goal_tickers:
+                plan.append({"id": f"factor-{ticker}", "label": f"读取 {ticker} 因子快照",
+                             "tool": "get_mcp_factor_snapshot", "args": {"ts_code": ticker}})
         if not self._advance_target(goal, paper_session_id) and any(word in goal for word in _ARTIFACT_WORDS):
             # Artifact search is advisory context. It is never a substitute
             # for the current paper ledger or a fresh account snapshot.
@@ -851,13 +896,24 @@ class TradingAgentHarness:
 
     async def _synthesize(self, goal: str, conversation_id: str, evidence: list[dict]) -> str:
         conversation = self.store.get_conversation(conversation_id) or {}
-        required_tool = ("get_paper_session" if conversation.get("paper_session_id") else
-                         "get_portfolio_summary" if any(word in goal for word in _HOLDING_WORDS) else None)
-        required = next((item for item in evidence if item["tool_name"] == required_tool), None)
+        required_tools: list[tuple[str, str | None]] = []
+        if conversation.get("paper_session_id"):
+            required_tools.append(("get_paper_session", None))
+        elif any(word in goal for word in _HOLDING_WORDS):
+            required_tools.append(("get_portfolio_summary", None))
+        required_tools.extend(("get_mcp_factor_snapshot", ticker)
+                              for ticker in self._goal_tickers(goal))
+        missing = None
+        for tool_name, ticker in required_tools:
+            item = next((e for e in evidence if e["tool_name"] == tool_name and
+                         (ticker is None or e["result"].get("ts_code") == ticker)), None)
+            if item is None or item["result"].get("error"):
+                missing = item or {"summary": f"{ticker or tool_name} 未返回证据"}
+                break
         usable = next((item for item in evidence if not item["result"].get("error")), None)
-        if (required_tool and (not required or required["result"].get("error"))) or not usable:
-            missing = required or evidence[0]
-            return f"当前无法核对所需数据：{missing['summary']}。本轮没有生成交易判断，请检查数据源后重试。"
+        if missing or not usable:
+            reason = missing or evidence[0]
+            return f"当前无法核对所需数据：{reason['summary']}。本轮没有生成交易判断，请检查数据源后重试。"
         from langchain_core.messages import HumanMessage, SystemMessage
 
         from tradingagents.llm_clients import create_llm_client

@@ -218,6 +218,152 @@ async def test_model_plan_cannot_change_bound_paper_account_or_run_write_skill(t
 
 
 @pytest.mark.asyncio
+async def test_model_cannot_switch_explicit_stock_symbol(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+
+    async def proposed(*_args, **_kwargs):
+        return [{"tool": "get_mcp_factor_snapshot", "args": {"ts_code": "000001.SZ"}}]
+
+    harness._request_model_plan = proposed
+    plan, source = await harness._build_plan("看 600519.sh 估值", None, None)
+    assert source == "model"
+    assert [(step["tool"], step["args"]) for step in plan] == [
+        ("get_mcp_factor_snapshot", {"ts_code": "600519.SH"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_stock_question_reads_factor_evidence(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    calls = []
+
+    async def factor(ts_code):
+        calls.append(ts_code)
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-25", "snapshot": {"valuation": 12.0}}
+
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+
+    async def synthesize(*_args):
+        return "截至 2026-09-25 的因子快照已读取。"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "看 600519.sh 估值")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert calls == ["600519.SH"]
+    assert detail["evidence"][0]["as_of_date"] == "2026-09-25"
+    assert detail["result"]["citations"][0]["tool_name"] == "get_mcp_factor_snapshot"
+
+
+@pytest.mark.asyncio
+async def test_factor_failure_does_not_become_current_stock_advice(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+
+    async def factor(ts_code):
+        return {"error": f"{ts_code} 行情不可用"}
+
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "看 600519.SH 估值")
+    await harness._active[task["id"]]
+    content = store.get_task(task["id"])["result"]["content"]
+    assert "无法核对" in content
+    assert "没有生成交易判断" in content
+
+
+@pytest.mark.asyncio
+async def test_paper_stock_question_requires_both_ledger_and_factor_snapshot(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "source": "StockManager ledger",
+                "as_of_date": "2026-09-25", "snapshot": {"equity": 100000}}
+
+    async def factor(ts_code):
+        return {"error": f"{ts_code} 因子源不可用"}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "评估模拟盘内 600519.SH 的风险")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert [item["tool_name"] for item in detail["evidence"]] == [
+        "get_paper_session", "get_mcp_factor_snapshot",
+    ]
+    assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_two_explicit_stocks_each_get_a_bound_factor_snapshot(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    calls = []
+
+    async def factor(ts_code):
+        calls.append(ts_code)
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-25", "snapshot": {"rows": [{"ts_code": ts_code}]}}
+
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+
+    async def synthesize(*_args):
+        return "两个标的证据已核对。"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "比较 600519.SH 和 000001.SZ")
+    await harness._active[task["id"]]
+    assert calls == ["600519.SH", "000001.SZ"]
+    assert store.get_task(task["id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_more_than_two_explicit_stocks_asks_to_narrow_scope(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"],
+                          "比较 600519.SH、000001.SZ 和 688981.SH")
+    await harness._active[task["id"]]
+    result = store.get_task(task["id"])
+    assert result["status"] == "needs_input"
+    assert "最多核对两个" in result["result"]["content"]
+    assert store.list_evidence(task["id"]) == []
+
+
+@pytest.mark.asyncio
 async def test_failed_required_portfolio_source_stays_abstained_after_replan(tmp_path):
     async def paper(session_id):
         raise AssertionError("不应读取模拟盘")
@@ -292,9 +438,11 @@ async def test_model_plan_allows_one_registered_analysis_skill(tmp_path):
     plan, source = await harness._build_plan("分析 600519.SH", None, None)
     assert source == "model"
     assert [(step["tool"], step.get("skill_id")) for step in plan] == [
+        ("get_mcp_factor_snapshot", None),
         ("skill", "stock_analysis"),
     ]
-    assert plan[0]["args"] == {"ticker": "600519.SH"}
+    assert plan[0]["args"] == {"ts_code": "600519.SH"}
+    assert plan[1]["args"] == {"ticker": "600519.SH"}
 
 
 async def _proposed_advance(tmp_path):

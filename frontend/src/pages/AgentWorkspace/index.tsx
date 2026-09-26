@@ -23,6 +23,7 @@ const activeStatuses = new Set(["queued", "planning", "running", "reviewing", "a
 const statusText: Record<string, string> = {
   queued: "排队中", planning: "制定计划", running: "执行中", reviewing: "核对证据",
   completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断",
+  needs_input: "需要补充信息",
   awaiting_approval: "等待确认", executing_action: "模拟盘执行中", needs_review: "执行结果待核对",
 };
 

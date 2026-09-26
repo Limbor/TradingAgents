@@ -127,12 +127,15 @@ def make_get_portfolio_summary(db: Any):
                 "holdings": [],
                 "total_symbols": 0,
                 "message": "No holdings found.",
+                "source": "TradingAgents local holdings",
             }
 
         rows: list[dict[str, Any]] = []
         warnings: list[str] = []
         for h in holdings:
             cost = h.get("cost_basis")
+            if cost is None:
+                cost = h.get("avg_cost")
             current = h.get("current_price")
             quantity = h.get("quantity", 0)
             pnl = None
@@ -151,11 +154,16 @@ def make_get_portfolio_summary(db: Any):
                 "pnl": pnl,
                 "sector": h.get("sector", ""),
                 "weight_pct": h.get("weight_pct"),
+                "record_updated_at": h.get("updated_at"),
             })
+
+        if any(row["current_price"] is not None for row in rows):
+            warnings.append("持仓价格为本地保存值，未核对实时行情或价格时点")
 
         return {
             "holdings": rows,
             "total_symbols": len(rows),
+            "source": "TradingAgents local holdings",
             "warnings": warnings,
         }
 
@@ -289,15 +297,47 @@ def make_get_mcp_factor_snapshot(config: dict[str, Any]):
                 "warnings": ["MCP returned None — session may have timed out"],
             }
 
+        source = "StockManager MCP (get_factor_snapshot)"
+        if not isinstance(result, dict):
+            return {"error": "StockManager 因子快照格式无效", "warnings": [],
+                    "ts_code": ts_code, "source": source}
+        warnings = ([str(item)[:500] for item in result["warnings"][:10]]
+                    if isinstance(result.get("warnings"), list) else [])
+        if result.get("status") == "error":
+            remote_error = result.get("error")
+            message = (result.get("message") or
+                       (remote_error.get("message") if isinstance(remote_error, dict) else remote_error) or
+                       "StockManager 因子快照不可用")
+            return {"error": str(message)[:500], "warnings": warnings,
+                    "ts_code": ts_code, "source": source}
+        rows = result.get("rows") if isinstance(result.get("rows"), list) else []
+        matching = [row for row in rows if isinstance(row, dict) and
+                    str(row.get("ts_code") or "").upper() == ts_code.upper()]
+        if result.get("status") not in {"success", "partial"} or not matching:
+            return {"error": "StockManager 未返回当前标的的有效因子快照",
+                    "warnings": warnings, "ts_code": ts_code, "source": source}
+        as_of_date = str(result.get("as_of_date") or "")[:10]
+        row_date = str(matching[0].get("trade_date") or as_of_date)[:10]
+        if as_of_date != trade_date or row_date != trade_date:
+            return {"error": "因子快照基准日与请求交易日不一致",
+                    "warnings": warnings, "ts_code": ts_code, "source": source}
+        raw_factors = matching[0].get("raw_factors")
+        if not isinstance(raw_factors, dict) or not any(
+            value is not None for value in raw_factors.values()
+        ):
+            return {"error": "当前标的缺少可用的原始因子数据",
+                    "warnings": warnings, "ts_code": ts_code, "source": source}
+        if result.get("status") == "partial":
+            warnings = [*warnings, "因子快照覆盖不完整，缺失维度不能当作中性分"]
+
         rv: dict[str, Any] = {
             "ts_code": ts_code,
             "trade_date": trade_date,
-            "as_of_date": trade_date,
-            "source": "StockManager MCP (get_factor_snapshot)",
+            "as_of_date": result.get("as_of_date") or trade_date,
+            "source": source,
+            "warnings": warnings,
+            "snapshot": result,
         }
-
-        if isinstance(result, dict):
-            rv["snapshot"] = result
 
         return rv
 

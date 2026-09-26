@@ -91,13 +91,31 @@ class TestLightweightToolHandlers:
 
         mock_db = MagicMock()
         mock_db.list_holdings.return_value = [
-            {"symbol": "600519.SH", "name": "贵州茅台", "quantity": 100, "cost_basis": 1800, "current_price": 1900},
+            {"symbol": "600519.SH", "name": "贵州茅台", "quantity": 100,
+             "avg_cost": 1800, "current_price": 1900,
+             "updated_at": "2026-09-20T08:00:00+00:00"},
         ]
         handler = make_get_portfolio_summary(mock_db)
         result = await handler()
         assert result["total_symbols"] == 1
         assert result["holdings"][0]["symbol"] == "600519.SH"
         assert result["holdings"][0]["pnl"] == 10000.0
+        assert result["holdings"][0]["cost_basis"] == 1800
+        assert result["holdings"][0]["record_updated_at"] == "2026-09-20T08:00:00+00:00"
+        assert "未核对实时行情" in result["warnings"][0]
+
+    @pytest.mark.asyncio
+    async def test_portfolio_summary_uses_persisted_cost_field(self, tmp_path):
+        from tradingagents.core.lightweight_tools import make_get_portfolio_summary
+        from tradingagents.core.persistence import Database
+
+        db = Database(tmp_path / "holdings.db")
+        db.upsert_holding("600519.SH", quantity=100, avg_cost=1800,
+                          current_price=1900)
+        result = await make_get_portfolio_summary(db)()
+        assert result["holdings"][0]["cost_basis"] == 1800
+        assert result["holdings"][0]["pnl"] == 10000
+        assert result["source"] == "TradingAgents local holdings"
 
     @pytest.mark.asyncio
     async def test_get_portfolio_summary_empty(self):
@@ -176,6 +194,47 @@ class TestLightweightToolHandlers:
         result = await handler(ts_code="600519.SH")
         assert "error" in result
         assert "not connected" in result["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload, expected_error", [
+        ({"status": "error", "message": "行情源无数据", "rows": []}, "行情源无数据"),
+        ({"status": "success", "rows": [{"ts_code": "000001.SZ"}]}, "当前标的"),
+        ({"status": "success", "as_of_date": "2026-09-24",
+          "rows": [{"ts_code": "600519.SH", "raw_factors": {"pe_ttm": 12.0}}]}, "基准日"),
+        ({"status": "partial", "as_of_date": "2026-09-25",
+          "rows": [{"ts_code": "600519.SH", "raw_factors": {"pe_ttm": None}}]}, "原始因子"),
+    ])
+    async def test_factor_snapshot_rejects_remote_error_or_wrong_symbol(
+        self, monkeypatch, payload, expected_error,
+    ):
+        from tradingagents.core.lightweight_tools import make_get_mcp_factor_snapshot
+
+        client = MagicMock()
+        client.get_factor_snapshot = AsyncMock(return_value=payload)
+        monkeypatch.setattr("tradingagents.core.mcp_client.get_mcp_client",
+                            AsyncMock(return_value=client))
+        result = await make_get_mcp_factor_snapshot({})(
+            ts_code="600519.SH", trade_date="2026-09-25"
+        )
+        assert expected_error in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_factor_snapshot_preserves_partial_coverage_warning(self, monkeypatch):
+        from tradingagents.core.lightweight_tools import make_get_mcp_factor_snapshot
+
+        client = MagicMock()
+        client.get_factor_snapshot = AsyncMock(return_value={
+            "status": "partial", "as_of_date": "2026-09-25",
+            "rows": [{"ts_code": "600519.SH", "raw_factors": {"pe_ttm": 12.0}}],
+            "warnings": ["flow_missing"],
+        })
+        monkeypatch.setattr("tradingagents.core.mcp_client.get_mcp_client",
+                            AsyncMock(return_value=client))
+        result = await make_get_mcp_factor_snapshot({})(
+            ts_code="600519.SH", trade_date="2026-09-25"
+        )
+        assert result["snapshot"]["rows"][0]["ts_code"] == "600519.SH"
+        assert "覆盖不完整" in result["warnings"][-1]
 
     @pytest.mark.asyncio
     async def test_get_strategy_lessons(self):
