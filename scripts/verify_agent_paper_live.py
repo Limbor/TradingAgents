@@ -52,6 +52,11 @@ calls = []
 def synthetic_advance(self, session_id, *, target_date, skip_next_plan=False):
     calls.append((session_id, target_date))
     assert session_id == "paper:synthetic"
+    if target_date == "2026-09-26":
+        assert self.store.get_session(session_id).last_date == "2026-09-25"
+        return PaperAdvanceResult(session_id=session_id, advanced_days=0,
+            last_date="2026-09-25", equity=101000, cash=101000,
+            positions_count=0, new_trades=0)
     assert target_date == "2026-09-25"
     self.store.set_last_date(session_id, target_date)
     self.store.put_snapshot(session_id, as_of_date=target_date, equity=101000,
@@ -174,7 +179,36 @@ async def main() -> None:
                 events = [item["event_type"] for item in task["events"]]
                 assert "proposal_created" in events and "action_submitted" in events
                 assert "action_completed" in events
-                print(json.dumps({"status": task["status"], "advance_calls": len(calls),
+                no_day = await ta.post(f"/api/v1/agent/conversations/{cid}/tasks", json={
+                    "message": "推进模拟盘到 2026-09-26"})
+                assert no_day.status_code == 202, no_day.text
+                no_day_id = no_day.json()["id"]
+                no_day_task = None
+                for _ in range(100):
+                    no_day_task = (await ta.get(f"/api/v1/agent/tasks/{no_day_id}")).json()
+                    if no_day_task["status"] == "awaiting_approval":
+                        break
+                    await asyncio.sleep(0.1)
+                assert no_day_task and no_day_task["status"] == "awaiting_approval", no_day_task
+                no_day_proposal = no_day_task["proposal"]["id"]
+                assert (await ta.post(f"/api/v1/agent/proposals/{no_day_proposal}/approve")).status_code == 200
+                assert (await ta.post(f"/api/v1/agent/proposals/{no_day_proposal}/approve")).status_code == 200
+                for _ in range(100):
+                    no_day_task = (await ta.get(f"/api/v1/agent/tasks/{no_day_id}")).json()
+                    if no_day_task["status"] in {"completed", "failed", "needs_review"}:
+                        break
+                    await asyncio.sleep(0.1)
+                assert no_day_task["status"] == "completed", no_day_task
+                assert no_day_task["proposal"]["status"] == "no_change", no_day_task
+                assert "账本未推进" in no_day_task["result"]["content"]
+                assert "action_no_change" in [event["event_type"] for event in no_day_task["events"]]
+                no_day_ledger = (await sm.get("/api/v2/paper/paper:synthetic/status")).json()["data"]
+                assert no_day_ledger["session"]["last_date"] == "2026-09-25"
+                calls = (await sm.get("/__test/advance_calls")).json()["calls"]
+                assert calls == [["paper:synthetic", "2026-09-25"],
+                                 ["paper:synthetic", "2026-09-26"]], calls
+                print(json.dumps({"status": task["status"], "no_day_status": no_day_task["proposal"]["status"],
+                                  "advance_calls": len(calls),
                                   "before": before["session"]["last_date"],
                                   "after": after["session"]["last_date"],
                                   "events": events}, ensure_ascii=False))

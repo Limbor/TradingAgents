@@ -84,10 +84,11 @@ function ProposalCard({ task, busy, onApprove, onReject, onReconcile }: {
   const proposal = task.proposal;
   if (!proposal) return null;
   return <div className="mt-3 rounded-md border border-ui-strong bg-ui-panel p-4 text-sm">
-    <div className="flex items-center justify-between"><strong>模拟盘动作预览</strong><span className="text-xs text-ui-muted">{proposal.status === "pending" ? "等待确认" : statusText[task.status] ?? proposal.status}</span></div>
+    <div className="flex items-center justify-between"><strong>模拟盘动作预览</strong><span className="text-xs text-ui-muted">{proposal.status === "pending" ? "等待确认" : proposal.status === "no_change" ? "账本未推进" : statusText[task.status] ?? proposal.status}</span></div>
     <div className="mt-3 grid grid-cols-2 gap-3 text-xs"><div><span className="block text-ui-faint">目标账户</span><strong className="mt-1 block break-all font-medium">{proposal.session_id}</strong></div><div><span className="block text-ui-faint">目标日期</span><strong className="mt-1 block font-medium">{proposal.args.target_date}</strong></div><div><span className="block text-ui-faint">当前基准日</span><strong className="mt-1 block font-medium">{proposal.baseline.as_of_date}</strong></div><div><span className="block text-ui-faint">当前权益</span><strong className="mt-1 block font-medium">{proposal.baseline.equity == null ? "—" : `¥${Number(proposal.baseline.equity).toLocaleString("zh-CN")}`}</strong></div></div>
-    <p className="mt-3 text-xs leading-5 text-ui-muted">确认后 StockManager 将推进策略模拟盘；实际成交以执行后的账本为准。提案到期后需要重新核对。</p>
+    {proposal.status === "pending" && <p className="mt-3 text-xs leading-5 text-ui-muted">确认后 StockManager 将推进策略模拟盘；实际成交以执行后的账本为准。提案到期后需要重新核对。</p>}
     {proposal.status === "pending" && <div className="mt-4 flex gap-2"><button disabled={busy} onClick={onApprove} className="rounded-md bg-ui-accent px-3 py-1.5 text-xs font-medium text-ui-onAccent disabled:opacity-50">确认推进</button><button disabled={busy} onClick={onReject} className="rounded-md border border-ui-strong px-3 py-1.5 text-xs text-ui-body disabled:opacity-50">取消提案</button></div>}
+    {proposal.status === "no_change" && <p role="status" className="mt-3 text-xs leading-5 text-ui-warning">StockManager 作业已结束，但账本日期仍为 {String(proposal.result.as_of_date || proposal.baseline.as_of_date)}；目标日期 {proposal.args.target_date} 尚未达到。</p>}
     {(proposal.status === "unknown" || task.status === "needs_review") && <div className="mt-3 space-y-2 text-xs text-ui-warning"><p>执行结果待核对{proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。</p>{typeof proposal.result?.observed_date === "string" && <p>最近核对的账本日期：{proposal.result.observed_date}</p>}{typeof proposal.result?.error === "string" && <p>{proposal.result.error}</p>}<button disabled={busy} onClick={onReconcile} className="rounded-md border border-ui-warning px-3 py-1.5 font-medium disabled:opacity-50">核对执行结果</button></div>}
   </div>;
 }
@@ -160,7 +161,7 @@ function Inspector({ task, paperId, overlay, onClose }: { task?: AgentTask; pape
       <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">证据快照 <span className="font-normal text-ui-faint">{task?.evidence.length ?? 0} 项</span></h3>
         {task?.evidence.length ? <div className="mt-3 space-y-2">{task.evidence.map((item) => <EvidenceCard key={item.id} item={item} />)}</div> : <p className="mt-2 text-xs leading-5 text-ui-faint">等待工具返回可核对的数据来源。</p>}
       </section>
-      <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">操作权限</h3><p className="mt-2 text-xs leading-5 text-ui-muted">{task?.proposal ? `已准备推进至 ${task.proposal.args.target_date}，需要针对该提案确认。` : "当前不会修改持仓或模拟盘账本。模拟盘状态变更需另行确认。"}</p></section>
+      <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">操作权限</h3><p className="mt-2 text-xs leading-5 text-ui-muted">{task?.proposal?.status === "pending" ? `已准备推进至 ${task.proposal.args.target_date}，需要针对该提案确认。` : task?.proposal?.status === "no_change" ? `本次作业未推进账本；目标日期 ${task.proposal.args.target_date} 尚未达到。` : task?.proposal?.status === "completed" ? `已核对账本推进结果；目标日期 ${task.proposal.args.target_date}。` : task?.proposal ? "提案已处理；如需再次操作，请提交新任务。" : "当前不会修改持仓或模拟盘账本。模拟盘状态变更需另行确认。"}</p></section>
     </div>
   </aside>;
 }

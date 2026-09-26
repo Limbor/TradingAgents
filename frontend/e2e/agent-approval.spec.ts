@@ -84,3 +84,35 @@ test("uncertain paper action can be reconciled without another approval", async 
   await expect(page.getByText("最近核对的账本日期：2026-09-28")).toBeVisible();
   await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
 });
+
+test("completed paper job without ledger advance is shown as no change", async ({ page }) => {
+  const time = "2026-09-26T08:00:00Z";
+  const conversation = { id: "conversation-no-day", title: "模拟盘 · paper:one", paper_session_id: "paper:one",
+    created_at: time, updated_at: time, latest_status: "completed" };
+  const detail = { ...conversation,
+    messages: [
+      { id: "m1", conversation_id: conversation.id, task_id: "task-no-day", role: "user",
+        content: "推进模拟盘到 2026-09-26", created_at: time },
+      { id: "m2", conversation_id: conversation.id, task_id: "task-no-day", role: "assistant",
+        content: "StockManager 作业已结束，但模拟盘账本未推进。", created_at: time },
+    ],
+    tasks: [{ id: "task-no-day", conversation_id: conversation.id, goal: "推进模拟盘到 2026-09-26",
+      status: "completed", result: { content: "模拟盘账本未推进" }, error: null,
+      created_at: time, updated_at: time, events: [], evidence: [],
+      proposal: { id: "proposal-no-day", task_id: "task-no-day", action_type: "advance_paper_day",
+        session_id: "paper:one", args: { target_date: "2026-09-26" },
+        baseline: { as_of_date: "2026-09-25", equity: 100000 }, status: "no_change",
+        result: { job_id: "job:no-day", as_of_date: "2026-09-25", advanced_days: 0 },
+        expires_at: time } }],
+  };
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path === "/api/v1/agent/conversations" ? [conversation] : detail;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/chat?paper_session=paper%3Aone");
+  await expect(page.getByText("账本未推进", { exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("账本日期仍为 2026-09-25");
+  await expect(page.getByRole("status")).toContainText("目标日期 2026-09-26 尚未达到");
+  await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
+});

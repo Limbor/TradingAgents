@@ -1166,6 +1166,33 @@ async def test_reconcile_submitted_job_after_restart_without_reposting(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_reconcile_successful_job_without_new_trading_day(tmp_path, monkeypatch):
+    _, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "submitted", {"job_id": "job:no-day"})
+    store.set_status(task["id"], "executing_action")
+    reopened = AgentStore(Database(tmp_path / "agent.db"))
+    harness = TradingAgentHarness(reopened, None, None, None, None, {})
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append((method, path))
+        if path == "/api/jobs/job:no-day":
+            return {"state": "success", "result": {"data": {
+                "session_id": "paper:advance", "last_date": "2026-09-25", "advanced_days": 0}}}
+        return {"data": {"snapshot": {"as_of_date": "2026-09-25", "equity": 100000}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    result = await harness.reconcile(proposal["id"])
+    assert result["status"] == "no_change"
+    assert reopened.get_task(task["id"])["status"] == "completed"
+    assert "账本未推进" in reopened.get_task(task["id"])["result"]["content"]
+    assert (await harness.reconcile(proposal["id"]))["status"] == "no_change"
+    assert calls == [("GET", "/api/jobs/job:no-day"),
+                     ("GET", "/api/v2/paper/paper:advance/status")]
+
+
+@pytest.mark.asyncio
 async def test_reconcile_missing_job_keeps_unknown_and_reports_ledger(tmp_path, monkeypatch):
     _, store, task, proposal = await _proposed_advance(tmp_path)
     assert store.claim_proposal(proposal["id"])
@@ -1264,5 +1291,45 @@ async def test_successful_non_trading_target_uses_receipt_date(tmp_path, monkeyp
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     harness.approve(proposal["id"])
     await harness._active[task["id"]]
-    assert store.get_proposal(proposal["id"])["status"] == "completed"
+    assert store.get_proposal(proposal["id"])["status"] == "no_change"
     assert store.get_task(task["id"])["result"]["action"]["advanced_days"] == 0
+    assert "账本未推进" in store.get_task(task["id"])["result"]["content"]
+    assert store.list_events(task["id"])[-1]["event_type"] == "action_no_change"
+
+
+@pytest.mark.asyncio
+async def test_success_receipt_with_zero_days_and_new_date_needs_review(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+
+    async def paper_request(config, method, path, payload=None):
+        if method == "POST":
+            return {"job_id": "job:contradictory"}
+        if path.startswith("/api/jobs/"):
+            return {"state": "success", "result": {"data": {
+                "session_id": "paper:advance", "last_date": "2026-09-26", "advanced_days": 0}}}
+        as_of = "2026-09-26" if store.get_proposal(proposal["id"])["status"] == "submitted" else "2026-09-25"
+        return {"data": {"snapshot": {"as_of_date": as_of}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert store.get_proposal(proposal["id"])["status"] == "unknown"
+    assert store.get_task(task["id"])["status"] == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_preapproval_ledger_conflict_prevents_paper_write(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append(method)
+        return {"data": {"session": {"session_id": "paper:advance", "last_date": "2026-09-26"},
+                         "snapshot": {"as_of_date": "2026-09-25"}}}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert calls == ["GET"]
+    assert store.get_proposal(proposal["id"])["status"] == "stale"
+    assert "未执行" in store.get_task(task["id"])["result"]["content"]
