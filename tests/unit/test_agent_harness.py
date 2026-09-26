@@ -529,6 +529,125 @@ async def test_more_than_two_explicit_stocks_asks_to_narrow_scope(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_announcement_question_reads_dates_without_factor_snapshot(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    calls = []
+
+    async def announcements(ts_code, end_date=""):
+        calls.append((ts_code, end_date))
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-25", "start_date": "2026-06-27",
+                "end_date": "2026-09-25", "rows": [], "count": 0,
+                "warnings": ["零命中不代表没有风险公告"]}
+
+    harness.tools.register(LightweightTool(
+        name="get_mcp_risk_announcements", description="risk", parameters={},
+        handler=announcements,
+    ))
+
+    async def synthesize(*_args):
+        return "未返回风险关键词命中；不能据此判断没有风险公告。"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "查看 600519.SH 的风险公告")
+    await harness._active[task["id"]]
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert calls == [("600519.SH", "")]
+    assert [item["tool_name"] for item in detail["evidence"]] == ["get_mcp_risk_announcements"]
+    assert detail["result"]["content"].startswith("未返回风险关键词")
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_switch_announcement_symbol_or_cutoff(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+
+    async def proposed(*_args, **_kwargs):
+        return [{"tool": "get_mcp_risk_announcements",
+                 "args": {"ts_code": "000001.SZ", "end_date": "2025-01-01"}}]
+
+    harness._request_model_plan = proposed
+    plan, source = await harness._build_plan("查看 600519.SH 的立案公告", None, None)
+    assert source == "model"
+    assert [(step["tool"], step["args"]) for step in plan] == [
+        ("get_mcp_risk_announcements", {"ts_code": "600519.SH"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_paper_announcement_cutoff_is_bound_to_ledger_and_conflict_abstains(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "source": "StockManager ledger",
+                "as_of_date": "2026-09-25", "snapshot": {"equity": 100000}}
+
+    calls = []
+
+    async def announcements(ts_code, end_date=""):
+        calls.append((ts_code, end_date))
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-24", "rows": [{"ann_date": "2026-09-20"}], "count": 1}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_risk_announcements", description="risk", parameters={},
+        handler=announcements,
+    ))
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "模拟盘 600519.SH 的问询公告如何？")
+    await harness._active[task["id"]]
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert calls == [("600519.SH", "2026-09-25")]
+    assert detail["evidence"][1]["result"]["error"] == "风险公告查询截止日与模拟盘账本不一致"
+    assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_paper_announcement_skips_current_scan_without_ledger_date(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "source": "StockManager ledger",
+                "snapshot": {"equity": 100000}}
+
+    async def announcements(ts_code, end_date=""):
+        raise AssertionError("账本缺少日期时不得查询当前公告")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_risk_announcements", description="risk", parameters={},
+        handler=announcements,
+    ))
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "模拟盘 600519.SH 的问询公告如何？")
+    await harness._active[task["id"]]
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert "账本缺少有效基准日" in detail["evidence"][1]["result"]["error"]
+    assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_paper_factor_and_announcement_scope_requires_one_stock(tmp_path):
+    async def paper(session_id):
+        raise AssertionError("超出取证步数前不得读取账本")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "比较 600519.SH 与 000001.SZ 的估值和公告")
+    await harness._active[task["id"]]
+    result = store.get_task(task["id"])
+    assert result["status"] == "needs_input"
+    assert "缩小到一只股票" in result["result"]["content"]
+    assert store.list_evidence(task["id"]) == []
+
+
+@pytest.mark.asyncio
 async def test_failed_required_portfolio_source_stays_abstained_after_replan(tmp_path):
     async def paper(session_id):
         raise AssertionError("不应读取模拟盘")

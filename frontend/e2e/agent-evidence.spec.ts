@@ -62,3 +62,38 @@ test("each Agent answer opens its own evidence and shows trading facts", async (
   await expect(inspector.getByText("估算盈亏")).toBeVisible();
   await expect(inspector.getByText("250")).toBeVisible();
 });
+
+test("announcement evidence shows the query window and its limits", async ({ page }) => {
+  const now = "2026-09-25T08:00:00Z";
+  const conversation = { id: "risk-1", title: "风险公告", paper_session_id: null,
+    created_at: now, updated_at: now, latest_status: "completed" };
+  const evidence = { id: "e-risk", task_id: "t-risk", tool_name: "get_mcp_risk_announcements",
+    source: "StockManager MCP", as_of_date: "2026-09-25", retrieved_at: now,
+    summary: "600519.SH 风险关键词扫描", warnings: ["仅返回关键词命中日期，不含公告标题或原文"],
+    result: { ts_code: "600519.SH", start_date: "2026-06-27", end_date: "2026-09-25",
+      count: 1, rows: [{ ann_date: "2026-09-20", keyword: "matched" }] } };
+  const task = { id: "t-risk", conversation_id: conversation.id, goal: "查看 600519.SH 风险公告",
+    status: "completed", result: { content: "查到一个关键词命中日期。", citations: [{ id: evidence.id }] },
+    error: null, created_at: now, updated_at: now, events: [], evidence: [evidence], proposal: null };
+  const messages = [
+    { id: "m-risk-user", conversation_id: conversation.id, task_id: task.id, role: "user",
+      content: task.goal, created_at: now },
+    { id: "m-risk-answer", conversation_id: conversation.id, task_id: task.id, role: "assistant",
+      content: task.result.content, created_at: now },
+  ];
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path === "/api/v1/agent/conversations" ? [conversation]
+      : path === "/api/v1/agent/conversations/risk-1"
+        ? { ...conversation, tasks: [task], messages }
+        : path.endsWith("/health") ? { stockmanager_mcp: { connected: true } } : {};
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/chat");
+  const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
+  await expect(inspector.getByText("2026-06-27 至 2026-09-25")).toBeVisible();
+  await expect(inspector.getByText("1 个日期")).toBeVisible();
+  await expect(inspector.getByText("2026-09-20")).toBeVisible();
+  await expect(inspector.getByText("仅返回关键词命中日期，不含公告标题或原文")).toBeVisible();
+});

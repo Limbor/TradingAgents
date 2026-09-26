@@ -121,6 +121,13 @@ function evidenceFacts(item: AgentEvidence): Array<[string, string]> {
     const raw = asObject(row.raw_factors);
     facts.push(["标的", factText(result.ts_code)], ["价格", factText(row.latest_price)],
       ["市盈率", factText(raw.pe_ttm)], ["市净率", factText(raw.pb)]);
+  } else if (item.tool_name === "get_mcp_risk_announcements") {
+    const rows = Array.isArray(result.rows) ? result.rows.map(asObject) : [];
+    facts.push(["标的", factText(result.ts_code)],
+      ["查询区间", factText(result.start_date) && factText(result.end_date)
+        ? `${result.start_date} 至 ${result.end_date}` : null],
+      ["关键词命中", typeof result.count === "number" ? `${result.count} 个日期` : null],
+      ["最近命中", rows.length ? factText(rows.map((row) => row.ann_date).filter((value): value is string => typeof value === "string").sort().slice(-1)[0]) : null]);
   }
   return facts.filter((fact): fact is [string, string] => fact[1] !== null);
 }

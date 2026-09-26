@@ -10,8 +10,10 @@ These are registered with ToolRegistry during app startup (see app.py lifespan).
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +354,85 @@ def make_get_mcp_factor_snapshot(config: dict[str, Any]):
     return _handler
 
 
+def make_get_mcp_risk_announcements(config: dict[str, Any]):
+    """Read keyword-hit dates only; this MCP response is not an announcement feed."""
+    async def _handler(ts_code: str = "", end_date: str = "") -> dict[str, Any]:
+        code = ts_code.upper() if isinstance(ts_code, str) else ""
+        if not re.fullmatch(r"\d{6}\.(?:SH|SZ|BJ)", code):
+            return {"error": "有效的 A 股 ts_code 必填", "warnings": []}
+        if not end_date:
+            try:
+                from tradingagents.core.trading_time import get_temporal_context
+
+                context = get_temporal_context(config, market="cn_a")
+                end_date = context.market_asof_date or datetime.now(timezone.utc).date().isoformat()
+            except Exception:
+                end_date = datetime.now(timezone.utc).date().isoformat()
+        try:
+            end = date.fromisoformat(end_date)
+        except (TypeError, ValueError):
+            return {"error": "公告查询截止日期格式无效", "warnings": [], "ts_code": code}
+        if end > datetime.now(ZoneInfo("Asia/Shanghai")).date():
+            return {"error": "公告查询截止日期不能晚于当前日期", "warnings": [], "ts_code": code}
+        start = end - timedelta(days=90)
+
+        from tradingagents.core.mcp_client import get_mcp_client
+
+        client = await get_mcp_client(config)
+        if client is None:
+            return {"error": "StockManager MCP 未连接", "warnings": ["风险公告查询不可用"],
+                    "ts_code": code}
+        try:
+            payload = await client.get_risk_announcements(
+                code, start.strftime("%Y%m%d"), end.strftime("%Y%m%d"),
+                keywords=["立案", "问询", "违规", "处罚", "退市", "减持", "预亏"],
+            )
+        except Exception as exc:
+            return {"error": f"风险公告查询失败：{exc}", "warnings": [], "ts_code": code}
+        if not isinstance(payload, dict) or payload.get("status") == "error":
+            message = payload.get("message") if isinstance(payload, dict) else None
+            return {"error": str(message or "风险公告结果不可用")[:500],
+                    "warnings": [], "ts_code": code}
+        if payload.get("ts_code") and str(payload["ts_code"]).upper() != code:
+            return {"error": "风险公告返回标的与请求不一致", "warnings": [], "ts_code": code}
+        if not isinstance(payload.get("rows"), list):
+            return {"error": "风险公告结果缺少有效 rows", "warnings": [], "ts_code": code}
+        rows: list[dict[str, str]] = []
+        for row in payload["rows"]:
+            if not isinstance(row, dict):
+                return {"error": "风险公告行格式无效", "warnings": [], "ts_code": code}
+            if row.get("ts_code") and str(row["ts_code"]).upper() != code:
+                return {"error": "风险公告行标的与请求不一致", "warnings": [], "ts_code": code}
+            raw_date = str(row.get("ann_date") or "")
+            try:
+                observed = date.fromisoformat(
+                    f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                    if re.fullmatch(r"\d{8}", raw_date) else raw_date
+                )
+            except ValueError:
+                return {"error": "风险公告日期格式无效", "warnings": [], "ts_code": code}
+            if not start <= observed <= end:
+                return {"error": "风险公告日期超出查询区间", "warnings": [], "ts_code": code}
+            rows.append({"ann_date": observed.isoformat(),
+                         "keyword": str(row.get("keyword") or "matched")[:40]})
+        rows.sort(key=lambda row: row["ann_date"], reverse=True)
+        warnings = ([str(item)[:500] for item in payload["warnings"][:10]]
+                    if isinstance(payload.get("warnings"), list) else [])
+        if payload.get("status") == "partial":
+            warnings.append("风险公告数据覆盖不完整，不能将结果视为完整公告清单")
+        warnings.append("仅返回风险关键词命中日期，不含公告标题或原文，不能据此判断事件性质或严重程度")
+        if not rows:
+            warnings.append("查询区间内未返回关键词命中，不代表没有其他风险公告")
+        if len(rows) > 20:
+            warnings.append("命中日期较多，仅展示前 20 条；总数保留在证据中")
+        return {"ts_code": code, "start_date": start.isoformat(),
+                "end_date": end.isoformat(), "as_of_date": end.isoformat(),
+                "source": "StockManager MCP (get_risk_announcements)",
+                "rows": rows[:20], "count": len(rows), "warnings": warnings}
+
+    return _handler
+
+
 def make_get_strategy_lessons(db: Any):
     """Build handler: get_strategy_lessons — list active strategy lessons.
 
@@ -504,6 +585,25 @@ def build_all_tools(
                 "required": ["ts_code"],
             },
             "handler": make_get_mcp_factor_snapshot(config),
+            "display": "card",
+        },
+        {
+            "name": "get_mcp_risk_announcements",
+            "description": (
+                "Read risk-keyword announcement hit dates for an explicit A-share symbol "
+                "within a 90-day window via StockManager MCP. Returns dates, not titles, "
+                "full text, or severity. Use for questions about announcements, inquiries, "
+                "investigations, violations, or delisting risk."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ts_code": {"type": "string", "description": "Explicit A-share symbol code."},
+                    "end_date": {"type": "string", "description": "Query cutoff YYYY-MM-DD."},
+                },
+                "required": ["ts_code"],
+            },
+            "handler": make_get_mcp_risk_announcements(config),
             "display": "card",
         },
         {

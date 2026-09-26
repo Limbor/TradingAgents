@@ -257,6 +257,66 @@ class TestLightweightToolHandlers:
         assert result["snapshot"]["rows"][0]["factor_scores"]["flow"] == 50.0
 
     @pytest.mark.asyncio
+    async def test_risk_announcement_dates_are_bounded_and_explain_zero_hits(self, monkeypatch):
+        from tradingagents.core.lightweight_tools import make_get_mcp_risk_announcements
+
+        client = MagicMock()
+        client.get_risk_announcements = AsyncMock(return_value={
+            "ts_code": "600519.SH", "rows": [], "warnings": [],
+        })
+        monkeypatch.setattr("tradingagents.core.mcp_client.get_mcp_client",
+                            AsyncMock(return_value=client))
+        result = await make_get_mcp_risk_announcements({})(
+            ts_code="600519.sh", end_date="2026-09-25"
+        )
+        assert result["as_of_date"] == "2026-09-25"
+        assert result["count"] == 0
+        assert "不代表没有" in " ".join(result["warnings"])
+        client.get_risk_announcements.assert_awaited_once_with(
+            "600519.SH", "20260627", "20260925",
+            keywords=["立案", "问询", "违规", "处罚", "退市", "减持", "预亏"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_risk_announcement_limit_keeps_latest_dates(self, monkeypatch):
+        from tradingagents.core.lightweight_tools import make_get_mcp_risk_announcements
+
+        client = MagicMock()
+        client.get_risk_announcements = AsyncMock(return_value={
+            "ts_code": "600519.SH",
+            "rows": [{"ann_date": f"202609{day:02d}"} for day in range(1, 22)],
+        })
+        monkeypatch.setattr("tradingagents.core.mcp_client.get_mcp_client",
+                            AsyncMock(return_value=client))
+        result = await make_get_mcp_risk_announcements({})(
+            ts_code="600519.SH", end_date="2026-09-25"
+        )
+        assert result["count"] == 21
+        assert len(result["rows"]) == 20
+        assert result["rows"][0]["ann_date"] == "2026-09-21"
+        assert result["rows"][-1]["ann_date"] == "2026-09-02"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload, expected", [
+        ({"ts_code": "000001.SZ", "rows": []}, "标的与请求不一致"),
+        ({"rows": [{"ann_date": "20260926"}]}, "超出查询区间"),
+        ({"rows": [{"ann_date": "bad"}]}, "日期格式无效"),
+    ])
+    async def test_risk_announcement_rejects_conflicting_evidence(
+        self, monkeypatch, payload, expected,
+    ):
+        from tradingagents.core.lightweight_tools import make_get_mcp_risk_announcements
+
+        client = MagicMock()
+        client.get_risk_announcements = AsyncMock(return_value=payload)
+        monkeypatch.setattr("tradingagents.core.mcp_client.get_mcp_client",
+                            AsyncMock(return_value=client))
+        result = await make_get_mcp_risk_announcements({})(
+            ts_code="600519.SH", end_date="2026-09-25"
+        )
+        assert expected in result["error"]
+
+    @pytest.mark.asyncio
     async def test_get_strategy_lessons(self):
         from tradingagents.core.lightweight_tools import make_get_strategy_lessons
 
