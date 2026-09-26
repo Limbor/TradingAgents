@@ -38,3 +38,39 @@ test("old browser chat becomes a scoped, inert Agent archive", async ({ page }) 
   await expect(page.getByText("旧版回答仅供回看")).toBeVisible();
   expect(imports).toBe(1);
 });
+
+test("a page prompt starts a fresh task when the selected conversation is an archive", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.history.replaceState({ idx: 0, key: "archive-prompt", usr: {
+      prompt: "重新检查当前持仓", autoSend: true, nonce: "prompt-1",
+    } }, "");
+  });
+  const now = "2026-09-20T08:00:00Z";
+  const archive = { id: "archive", title: "旧版聊天记录", paper_session_id: null,
+    legacy_archive: true, created_at: now, updated_at: now, latest_status: null };
+  const fresh = { ...archive, id: "fresh", title: "新对话", legacy_archive: false };
+  let created = false;
+  let submittedTo = "";
+  await page.route("**/api/v1/agent/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/agent/conversations") {
+      if (route.request().method() === "POST") { created = true; body = fresh; }
+      else body = created ? [fresh, archive] : [archive];
+    } else if (path === "/api/v1/agent/conversations/archive") {
+      body = { ...archive, tasks: [], messages: [{ id: "old", conversation_id: "archive",
+        task_id: null, role: "assistant", content: "旧回答", created_at: now }] };
+    } else if (path === "/api/v1/agent/conversations/fresh") {
+      body = { ...fresh, tasks: [], messages: [] };
+    } else if (path.endsWith("/tasks") && route.request().method() === "POST") {
+      submittedTo = path;
+      expect(route.request().postDataJSON()).toMatchObject({ message: "重新检查当前持仓" });
+      body = { id: "new-task" };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/chat");
+  await expect.poll(() => submittedTo).toBe("/api/v1/agent/conversations/fresh/tasks");
+  expect(created).toBe(true);
+});

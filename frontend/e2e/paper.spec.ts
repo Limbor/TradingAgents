@@ -95,6 +95,9 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await expect.poll(() => submissions[0]?.paperSessionId).toBe(sessionId);
   await expect(page.getByText("已绑定 StockManager 模拟盘")).toBeVisible();
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toBeVisible();
+  await page.getByRole("button", { name: "收起任务档案" }).click();
   await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption(otherSessionId);
   await expect(page.getByText("当前由 wfo 子策略运行。")).toHaveCount(0);
   await page.getByRole("button", { name: "总结当前权益、持仓和近期成交" }).click();

@@ -8,7 +8,7 @@ import {
   approveAgentProposal, cancelAgentTask, createAgentConversation, getAgentConversation,
   importLegacyAgentConversation, listAgentConversations, submitAgentTask,
   reconcileAgentProposal, rejectAgentProposal,
-  type AgentConversation, type AgentTask,
+  type AgentConversation, type AgentEvidence, type AgentTask,
 } from "@/api/agent";
 import type { ChatNavState, IntentHint } from "@/lib/chatNav";
 import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyChatImport";
@@ -39,9 +39,10 @@ function taskSteps(task: AgentTask) {
   });
 }
 
-function TaskTimeline({ task, onRetry, retryDisabled }: {
+function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   task: AgentTask;
   onRetry: () => void;
+  onInspect: () => void;
   retryDisabled: boolean;
 }) {
   const steps = taskSteps(task);
@@ -49,7 +50,7 @@ function TaskTimeline({ task, onRetry, retryDisabled }: {
   return <div className="agent-card mt-3 overflow-hidden">
     <div className="flex items-center justify-between border-b border-ui-line px-4 py-3 text-xs">
       <span className="font-semibold text-ui-ink">执行过程{revised ? " · 已调整计划" : ""}</span>
-      <span className="text-ui-accent">{statusText[task.status] ?? task.status}</span>
+      <div className="flex items-center gap-3"><span className="text-ui-accent">{statusText[task.status] ?? task.status}</span>{task.evidence.length > 0 && <button onClick={onInspect} className="text-ui-muted underline-offset-2 hover:text-ui-accent hover:underline">查看证据</button>}</div>
     </div>
     <div className="space-y-2.5 px-4 py-3">
       {steps.length ? steps.map((step) => <div key={step.id} className="flex items-center gap-2.5 text-xs text-ui-body">
@@ -85,14 +86,61 @@ function ProposalCard({ task, busy, onApprove, onReject, onReconcile }: {
   </div>;
 }
 
-function Inspector({ task, paperId, onClose }: { task?: AgentTask; paperId?: string | null; onClose: () => void }) {
-  return <aside aria-label="任务证据与方案" className="fixed inset-y-0 right-0 z-50 flex w-[min(90vw,320px)] min-h-0 flex-col border-l border-ui-line bg-ui-panel shadow-xl lg:static lg:w-[284px] lg:shrink-0 lg:shadow-none">
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+}
+
+function factText(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function evidenceFacts(item: AgentEvidence): Array<[string, string]> {
+  const result = item.result;
+  if (result.error) return [];
+  const facts: Array<[string, string | null]> = [];
+  if (item.tool_name === "get_paper_session") {
+    const snapshot = asObject(result.snapshot);
+    const positions = asObject(snapshot.positions);
+    facts.push(["账户", factText(result.session_id)], ["权益", factText(snapshot.equity)],
+      ["现金", factText(snapshot.cash)], ["持仓", `${Object.keys(positions).length} 只`]);
+  } else if (item.tool_name === "get_portfolio_summary") {
+    const holdings = Array.isArray(result.holdings) ? result.holdings.map(asObject) : [];
+    const pnl = holdings.reduce((sum, holding) => sum + (typeof holding.pnl === "number" ? holding.pnl : 0), 0);
+    facts.push(["标的", factText(result.total_symbols)],
+      ["估算盈亏", holdings.some((holding) => typeof holding.pnl === "number") ? factText(pnl) : null]);
+  } else if (item.tool_name === "get_mcp_factor_snapshot") {
+    const snapshot = asObject(result.snapshot);
+    const rows = Array.isArray(snapshot.rows) ? snapshot.rows.map(asObject) : [];
+    const row = rows.find((candidate) => candidate.ts_code === result.ts_code) ?? {};
+    const raw = asObject(row.raw_factors);
+    facts.push(["标的", factText(result.ts_code)], ["价格", factText(row.latest_price)],
+      ["市盈率", factText(raw.pe_ttm)], ["市净率", factText(raw.pb)]);
+  }
+  return facts.filter((fact): fact is [string, string] => fact[1] !== null);
+}
+
+function EvidenceCard({ item }: { item: AgentEvidence }) {
+  const facts = evidenceFacts(item);
+  const failed = Boolean(item.result.error);
+  const retrieved = new Date(item.retrieved_at);
+  return <article className={`rounded-md border p-3 ${failed ? "border-ui-danger/40 bg-ui-danger/5" : "border-ui-line bg-ui-subtle"}`}>
+    <div className="flex items-start gap-2">{failed ? <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-danger" /> : <Database className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-accent" />}<p className="text-xs leading-5 text-ui-body">{item.summary}</p></div>
+    {facts.length > 0 && <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 pl-5">{facts.map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-[11px] text-ui-faint">{label}</dt><dd className="truncate text-xs font-medium text-ui-ink" title={value}>{value}</dd></div>)}</dl>}
+    <p className="mt-3 pl-5 text-[11px] leading-4 text-ui-muted">{item.source} · 基准日 {item.as_of_date || "未知"}{Number.isNaN(retrieved.getTime()) ? "" : ` · 获取于 ${retrieved.toLocaleString("zh-CN")}`}</p>
+    {item.warnings.map((warning, index) => <p key={index} className="mt-1 pl-5 text-xs leading-5 text-ui-warning">{warning}</p>)}
+  </article>;
+}
+
+function Inspector({ task, paperId, overlay, onClose }: { task?: AgentTask; paperId?: string | null; overlay?: boolean; onClose: () => void }) {
+  return <aside aria-label="任务证据与方案" className={`fixed inset-y-0 right-0 z-50 flex w-[min(90vw,320px)] min-h-0 flex-col border-l border-ui-line bg-ui-panel shadow-xl ${overlay ? "" : "lg:static lg:w-[284px] lg:shrink-0 lg:shadow-none"}`}>
     <div className="flex h-[54px] items-center justify-between border-b border-ui-line px-4"><div><strong className="text-sm font-semibold">任务档案</strong><span className="ml-2 text-xs text-ui-muted">{task ? statusText[task.status] ?? task.status : "待命"}</span></div><button aria-label="收起任务档案" onClick={onClose} className="rounded p-1 text-ui-muted hover:bg-ui-hover"><PanelRightClose className="h-4 w-4" /></button></div>
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 text-sm">
       <section><h3 className="agent-section-title">当前目标</h3><p className="mt-2 leading-6 text-ui-body">{task?.goal || "输入交易问题后，这里显示目标、证据和结果。"}</p></section>
       {paperId && <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">模拟盘范围</h3><p className="mt-2 break-all text-xs text-ui-body">{paperId}</p><Link to={`/paper?session=${encodeURIComponent(paperId)}`} className="mt-2 inline-flex items-center gap-1 text-xs text-ui-accent">查看账本 <ArrowRight className="h-3 w-3" /></Link></section>}
       <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">证据快照 <span className="font-normal text-ui-faint">{task?.evidence.length ?? 0} 项</span></h3>
-        {task?.evidence.length ? <div className="mt-3 space-y-2">{task.evidence.map((item) => <div key={item.id} className="rounded-md border border-ui-line bg-ui-subtle p-3"><div className="flex items-start gap-2"><Database className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-accent" /><p className="text-xs leading-5 text-ui-body">{item.summary}</p></div><p className="mt-2 pl-5 text-[11px] text-ui-muted">{item.source} · 基准日 {item.as_of_date || "未知"}</p>{item.warnings.map((warning, index) => <p key={index} className="mt-1 pl-5 text-xs text-ui-warning">{warning}</p>)}</div>)}</div> : <p className="mt-2 text-xs leading-5 text-ui-faint">等待工具返回可核对的数据来源。</p>}
+        {task?.evidence.length ? <div className="mt-3 space-y-2">{task.evidence.map((item) => <EvidenceCard key={item.id} item={item} />)}</div> : <p className="mt-2 text-xs leading-5 text-ui-faint">等待工具返回可核对的数据来源。</p>}
       </section>
       <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">操作权限</h3><p className="mt-2 text-xs leading-5 text-ui-muted">{task?.proposal ? `已准备推进至 ${task.proposal.args.target_date}，需要针对该提案确认。` : "当前不会修改持仓或模拟盘账本。模拟盘状态变更需另行确认。"}</p></section>
     </div>
@@ -110,6 +158,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showInspector, setShowInspector] = useState(() => !embedded && window.matchMedia("(min-width: 1024px)").matches);
+  const [inspectedTaskId, setInspectedTaskId] = useState<string | null>(null);
   const consumedPrompt = useRef<string | number | null>(null);
   const legacyImportAttempted = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -119,8 +168,10 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const currentId = selectedId && scoped.some((item) => item.id === selectedId) ? selectedId : scoped[0]?.id ?? null;
   const detail = useQuery({ queryKey: ["agent-conversation", currentId], queryFn: () => getAgentConversation(currentId!), enabled: Boolean(currentId), refetchInterval: 1200 });
   const latestTask = detail.data?.tasks[detail.data.tasks.length - 1];
+  const inspectedTask = detail.data?.tasks.find((task) => task.id === inspectedTaskId) ?? latestTask;
   const running = Boolean(latestTask && activeStatuses.has(latestTask.status));
-  const legacyArchive = Boolean(detail.data?.legacy_archive);
+  const listedCurrent = scoped.find((item) => item.id === currentId);
+  const legacyArchive = Boolean((detail.data?.id === currentId ? detail.data.legacy_archive : undefined) ?? listedCurrent?.legacy_archive);
   const messages = detail.data?.messages ?? [];
 
   useEffect(() => {
@@ -141,11 +192,11 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
 
   const send = useCallback(async (raw: string, intentHint?: IntentHint) => {
     const message = raw.trim();
-    if (!message || busy || running || legacyArchive) return;
+    if (!message || busy || running) return;
     setBusy(true);
     setError("");
     try {
-      let id = currentId;
+      let id = legacyArchive ? null : currentId;
       if (!id) {
         const created = await createAgentConversation(paperId);
         id = created.id;
@@ -166,24 +217,25 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   }, [busy, running, legacyArchive, currentId, paperId, queryClient]);
 
   useEffect(() => {
-    if (!promptRequest || !conversations.isSuccess || consumedPrompt.current === promptRequest.nonce) return;
+    if (!promptRequest || !conversations.isSuccess || (currentId && !detail.isSuccess) || consumedPrompt.current === promptRequest.nonce) return;
     consumedPrompt.current = promptRequest.nonce;
     void send(promptRequest.text);
-  }, [promptRequest, conversations.isSuccess, send]);
+  }, [promptRequest, conversations.isSuccess, currentId, detail.isSuccess, send]);
 
   useEffect(() => {
-    if (embedded || !conversations.isSuccess) return;
+    if (embedded || !conversations.isSuccess || (currentId && !detail.isSuccess)) return;
     const state = location.state as Partial<ChatNavState> | null;
     if (!state?.prompt || consumedPrompt.current === state.nonce) return;
     consumedPrompt.current = state.nonce || state.prompt;
     if (state.autoSend) void send(state.prompt, state.intentHint);
     else { setInput(state.prompt); setPendingHint(state.intentHint); }
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
-  }, [embedded, conversations.isSuccess, location.pathname, location.search, location.state, navigate, send]);
+  }, [embedded, conversations.isSuccess, currentId, detail.isSuccess, location.pathname, location.search, location.state, navigate, send]);
 
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages.length, latestTask?.status]);
 
   const submit = (event: FormEvent) => { event.preventDefault(); void send(input, pendingHint); };
+  const inspectTask = (taskId: string) => { setInspectedTaskId(taskId); setShowInspector(true); };
   const newConversation = async () => {
     setError("");
     try {
@@ -219,7 +271,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     </aside>}
 
     <section aria-label="交易 Agent 对话" className="flex min-w-0 flex-1 flex-col bg-ui-canvas">
-      <header className="flex h-[54px] shrink-0 items-center justify-between border-b border-ui-line bg-ui-panel px-4"><div className="min-w-0"><p className="truncate text-sm font-semibold">{detail.data?.title || (paperId ? `模拟盘 · ${paperId}` : "交易 Agent")}</p><p className="text-[11px] text-ui-faint">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? "已绑定 StockManager 模拟盘" : "分析 · 取证 · 风险核对"}</p></div><div className="flex items-center gap-2">{running && <span className="flex items-center gap-1 text-xs text-ui-accent">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!embedded && !showInspector && <button onClick={() => setShowInspector(true)} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}</div></header>
+      <header className="flex h-[54px] shrink-0 items-center justify-between border-b border-ui-line bg-ui-panel px-4"><div className="min-w-0"><p className="truncate text-sm font-semibold">{detail.data?.title || (paperId ? `模拟盘 · ${paperId}` : "交易 Agent")}</p><p className="text-[11px] text-ui-faint">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? "已绑定 StockManager 模拟盘" : "分析 · 取证 · 风险核对"}</p></div><div className="flex items-center gap-2">{running && <span className="flex items-center gap-1 text-xs text-ui-accent">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!showInspector && <button onClick={() => { setInspectedTaskId(null); setShowInspector(true); }} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}</div></header>
       {(embedded || scoped.length > 0) && <div className={`flex items-center gap-2 border-b border-ui-line bg-ui-panel px-3 py-2 ${embedded ? "" : "md:hidden"}`}><select aria-label="选择 Agent 对话" value={currentId ?? ""} onChange={(event) => setSelectedId(event.target.value)} className="min-w-0 flex-1 rounded border border-ui-line bg-ui-panel px-2 py-1.5 text-xs"><option value="">新对话</option>{scoped.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button onClick={() => void newConversation()} aria-label="新建对话" className="rounded border border-ui-line p-1.5 text-ui-accent"><MessageSquarePlus className="h-4 w-4" /></button></div>}
       {error && <div role="alert" className="flex items-center justify-between border-b border-ui-danger bg-ui-danger/10 px-4 py-2 text-xs text-ui-danger">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X className="h-3.5 w-3.5" /></button></div>}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-8"><div className="mx-auto max-w-[760px] space-y-5">
@@ -230,15 +282,15 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
             <div className={message.role === "user" ? "flex justify-end" : "flex justify-start"}>
               <div className={message.role === "user" ? "max-w-[85%] rounded-lg border border-ui-strong bg-ui-accentSoft px-3.5 py-2.5 text-sm leading-6" : "w-full max-w-[690px] text-sm leading-6"}>
                 {message.role === "user" ? <div className="whitespace-pre-wrap">{message.content}</div> : <div className="agent-prose prose prose-sm max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}
-                {message.role === "assistant" && task?.result.citations?.length ? <div className="mt-2 flex items-center gap-1 text-xs text-ui-muted"><Check className="h-3.5 w-3.5 text-ui-accent" />已关联 {task.evidence.length} 项证据 · 只读任务</div> : null}
+                {message.role === "assistant" && task?.result.citations?.length ? <button onClick={() => inspectTask(task.id)} className="mt-2 flex items-center gap-1 text-xs text-ui-muted hover:text-ui-accent"><Check className="h-3.5 w-3.5 text-ui-accent" />已关联 {task.evidence.length} 项证据 · 查看任务档案</button> : null}
               </div>
             </div>
-            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal)} retryDisabled={busy || running} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} /></div>}
+            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} /></div>}
           </div>;
         })}
       </div></div>
       {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[760px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[760px]"><div className="flex items-end gap-2 rounded-lg border border-ui-strong bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint" /><button type="submit" disabled={!input.trim() || running || busy} aria-label="发送" className="flex h-8 w-8 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><p className="mt-2 text-[11px] text-ui-faint">{paperId ? `账户 ${paperId} · ` : ""}{latestTask?.proposal ? "模拟盘动作会在确认后执行。" : "不会修改持仓或模拟盘账本。数据来源和基准日会记录在任务档案中。"}</p></div></form>}
     </section>
-    {!embedded && showInspector && <Inspector task={latestTask} paperId={paperId} onClose={() => setShowInspector(false)} />}
+    {showInspector && <Inspector task={inspectedTask} paperId={paperId} overlay={embedded} onClose={() => setShowInspector(false)} />}
   </div>;
 }
