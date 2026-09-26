@@ -138,4 +138,6 @@ Harness 是独立于 `ChatAgent` 的服务层。保留现有 `ChatAgent` 处理�
 
 本地验收可运行 `./scripts/dev.sh`：脚本先启动或复用 StockManager Web 与量化 MCP，再启动后端和前端。`./scripts/dev.sh status` 分别检查四个服务；量化 MCP 缺少必要数据源凭据时可启动，但相关量化能力会在服务健康信息中显示为不可用。浏览器从 `http://localhost:5173/chat` 进入 Agent 工作台。
 
+2026-09-26 的真实只读联调：四服务可联启，后端识别到 StockManager MCP 量化能力；在临时 SQLite 会话中经 Agent REST API 提交 `600519.SH` 问题，任务完成并保存 `get_mcp_factor_snapshot` 证据，基准日为 MCP 返回的 `2026-09-24`。此联调以固定回答替代模型合成，因此证明工具、事件与持久化路径，不证明真实模型回答质量。
+
 尚待实施：基于证据冲突和时效的进一步重规划、更丰富的交易工具、Skill 内部检查点续跑。逐笔模拟下单和实盘交易没有开放给 Agent。
