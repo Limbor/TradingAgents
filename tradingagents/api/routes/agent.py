@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+
+from tradingagents.core.lightweight_tools import paper_ledger_conflicts
+from tradingagents.core.stockmanager_paper import PaperServiceError, paper_request
 
 router = APIRouter(prefix="/agent")
 
@@ -39,10 +43,26 @@ def list_conversations(request: Request):
 
 
 @router.post("/conversations", status_code=201)
-def create_conversation(request: Request, body: NewConversation):
+async def create_conversation(request: Request, body: NewConversation):
+    session_id = body.paper_session_id
+    if session_id:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", session_id) or ".." in session_id:
+            raise HTTPException(422, "无效的模拟盘会话 ID")
+        config = {**request.app.state.config, "stockmanager_web_timeout": 10.0}
+        try:
+            response = await paper_request(config, "GET", f"/api/v2/paper/{session_id}/status")
+        except PaperServiceError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        status = response.get("data")
+        session = status.get("session") if isinstance(status, dict) else None
+        if not isinstance(session, dict) or session.get("session_id") != session_id:
+            raise HTTPException(502, "StockManager 未返回匹配的模拟盘会话")
+        conflicts = paper_ledger_conflicts(session_id, status)
+        if conflicts:
+            raise HTTPException(502, "；".join(conflicts))
     try:
         return request.app.state.agent_store.create_conversation(
-            body.title.strip() or "新对话", body.paper_session_id
+            body.title.strip() or "新对话", session_id
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

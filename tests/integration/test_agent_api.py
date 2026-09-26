@@ -2,9 +2,11 @@
 
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tradingagents.api.app import create_app
+from tradingagents.core.stockmanager_paper import PaperServiceError
 from tradingagents.default_config import DEFAULT_CONFIG
 
 
@@ -15,6 +17,13 @@ def test_agent_task_api_persists_evidence_and_scope(tmp_path, monkeypatch):
     monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
     app = create_app()
     with TestClient(app) as client:
+        async def paper_request(_config, method, path, payload=None):
+            assert method == "GET"
+            assert path == "/api/v2/paper/paper:api/status"
+            return {"data": {"session": {"session_id": "paper:api", "last_date": "2026-09-25"},
+                             "snapshot": {"as_of_date": "2026-09-25", "equity": 200000}}}
+
+        monkeypatch.setattr("tradingagents.api.routes.agent.paper_request", paper_request)
         async def paper_handler(session_id):
             assert session_id == "paper:api"
             return {"session_id": session_id, "source": "StockManager ledger",
@@ -48,6 +57,39 @@ def test_agent_task_api_persists_evidence_and_scope(tmp_path, monkeypatch):
         assert detail["messages"][-1]["role"] == "assistant"
         events = client.get(f"/api/v1/agent/tasks/{task_id}/events?after_seq=1").json()
         assert events[0]["event_type"] == "plan_created"
+
+
+@pytest.mark.parametrize("failure, status_code", [
+    ("missing", 404), ("disconnected", 503), ("wrong_account", 502),
+    ("conflicting_dates", 502),
+])
+def test_paper_conversation_requires_existing_consistent_session(
+    tmp_path, monkeypatch, failure, status_code,
+):
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "paper-scope.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+
+    async def paper_request(_config, method, path, payload=None):
+        assert method == "GET"
+        assert path == "/api/v2/paper/paper:missing/status"
+        if failure == "missing":
+            raise PaperServiceError("模拟盘不存在", 404)
+        if failure == "disconnected":
+            raise PaperServiceError("StockManager 未连接", 503)
+        session_id = "paper:other" if failure == "wrong_account" else "paper:missing"
+        date = "2026-09-24" if failure == "conflicting_dates" else "2026-09-25"
+        return {"data": {"session": {"session_id": session_id, "last_date": date},
+                         "snapshot": {"as_of_date": "2026-09-25", "equity": 100000}}}
+
+    monkeypatch.setattr("tradingagents.api.routes.agent.paper_request", paper_request)
+    with TestClient(create_app()) as client:
+        response = client.post("/api/v1/agent/conversations", json={
+            "paper_session_id": "paper:missing",
+        })
+        assert response.status_code == status_code
+        assert client.get("/api/v1/agent/conversations").json() == []
 
 
 def test_agent_api_rejects_invalid_scope_and_empty_message(tmp_path, monkeypatch):
@@ -112,11 +154,13 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
             return {"job_id": "job:api"}
         if path.endswith("/status"):
             as_of = "2026-09-28" if writes else "2026-09-25"
-            return {"data": {"snapshot": {"as_of_date": as_of, "equity": 101000}}}
+            return {"data": {"session": {"session_id": "paper:api", "last_date": as_of},
+                             "snapshot": {"as_of_date": as_of, "equity": 101000}}}
         return {"state": "success", "result": {"data": {
             "session_id": "paper:api", "last_date": "2026-09-28", "advanced_days": 1}}}
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    monkeypatch.setattr("tradingagents.api.routes.agent.paper_request", paper_request)
     app = create_app()
     with TestClient(app) as client:
         app.state.tool_registry.get("get_paper_session").handler = tool
