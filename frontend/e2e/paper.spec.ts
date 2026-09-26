@@ -63,6 +63,10 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
   await page.getByRole("button", { name: "推进模拟盘" }).click();
   await expect.poll(() => advanced).toBe(true);
   expect(advanceBody).toEqual({ target_date: "2026-01-05" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("link", { name: "在工作台继续" })).toBeVisible();
+  const agentHeader = page.getByRole("region", { name: "交易 Agent 对话" }).locator("header");
+  expect(await agentHeader.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 });
 
 test("composite decision is readable and Agent chat stays bound to its account", async ({ page }) => {
@@ -109,6 +113,12 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await page.getByRole("button", { name: "展开任务档案" }).click();
   await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toBeVisible();
   await page.getByRole("button", { name: "收起任务档案" }).click();
+  await page.getByRole("link", { name: "在工作台继续" }).click();
+  await expect(page).toHaveURL(/\/chat\?paper_session=paper%3Aallocator%3Ademo%3Afollow&conversation=conversation-1$/);
+  await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
+  await page.getByRole("link", { name: "查看账本" }).click();
+  await expect(page).toHaveURL(/\/paper\?session=paper%3Aallocator%3Ademo%3Afollow$/);
+  await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
   await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption(otherSessionId);
   await expect(page.getByText("当前由 wfo 子策略运行。")).toHaveCount(0);
   await page.getByRole("button", { name: "总结当前权益、持仓和近期成交" }).click();

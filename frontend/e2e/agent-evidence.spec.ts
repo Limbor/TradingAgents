@@ -1,5 +1,34 @@
 import { expect, test } from "@playwright/test";
 
+test("paper Agent deep link opens the requested conversation", async ({ page }) => {
+  const now = "2026-09-25T08:00:00Z";
+  const conversations = [
+    { id: "new-paper-chat", title: "新模拟盘对话", paper_session_id: "paper:mine",
+      created_at: now, updated_at: now, latest_status: "completed" },
+    { id: "old-paper-chat", title: "旧模拟盘对话", paper_session_id: "paper:mine",
+      created_at: now, updated_at: now, latest_status: "completed" },
+  ];
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const conversation = conversations.find((item) => path.endsWith(`/conversations/${item.id}`));
+    const body = path === "/api/v1/agent/conversations" ? conversations
+      : conversation ? { ...conversation, tasks: [], messages: [{
+        id: `message-${conversation.id}`, conversation_id: conversation.id,
+        task_id: null, role: "assistant", content: `回答：${conversation.title}`, created_at: now,
+      }] } : {};
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/chat?paper_session=paper%3Amine&conversation=old-paper-chat");
+  await expect(page.getByText("回答：旧模拟盘对话")).toBeVisible();
+  await expect(page.getByText("回答：新模拟盘对话")).toHaveCount(0);
+  await page.getByRole("button", { name: /新模拟盘对话/ }).click();
+  await expect(page.getByText("回答：新模拟盘对话")).toBeVisible();
+  await expect(page).toHaveURL(/conversation=new-paper-chat$/);
+  await page.reload();
+  await expect(page.getByText("回答：新模拟盘对话")).toBeVisible();
+});
+
 test("each Agent answer opens its own evidence and shows trading facts", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem("tradingagents.theme", "light"));
   const now = "2026-09-25T08:00:00Z";
