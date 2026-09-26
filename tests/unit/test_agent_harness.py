@@ -86,6 +86,35 @@ async def test_unavailable_paper_source_does_not_generate_trade_advice(tmp_path)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ledger, goal, expected", [
+    ({"session_id": "paper:mine", "snapshot": {"equity": 100000}},
+     "评估账户风险", "账本缺少基准日"),
+    ({"session_id": "paper:mine", "as_of_date": "2026-09-25",
+      "snapshot": {"equity": 100000}, "readiness": {"can_reference_plan": False}},
+     "解释下一交易日计划", "策略计划当前不可引用"),
+    ({"session_id": "paper:mine", "as_of_date": "2026-09-25",
+      "snapshot": {"equity": 100000}, "freshness": {"is_active_plan_current": False}},
+     "当前策略切换的依据是什么", "策略计划当前不可引用"),
+])
+async def test_unknown_or_stale_paper_plan_does_not_generate_judgment(
+    tmp_path, ledger, goal, expected,
+):
+    async def paper(session_id):
+        assert session_id == "paper:mine"
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], goal)
+    await harness._active[task["id"]]
+
+    result = store.get_task(task["id"])["result"]
+    assert expected in result["content"]
+    assert "没有生成交易判断" in result["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger, goal, expected", [
     ({"session_id": "paper:other", "as_of_date": "2026-09-25",
       "snapshot": {"equity": 100000}}, "评估模拟盘风险", "账户"),
     ({"session_id": "paper:mine", "as_of_date": "2026-09-25",

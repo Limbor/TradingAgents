@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _PAPER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _ARTIFACT_WORDS = ("以前", "历史", "之前", "报告", "分析", "回测", "复盘", "依据")
 _HOLDING_WORDS = ("持仓", "组合", "账户", "盈亏", "仓位", "股票")
+_PLAN_WORDS = ("计划", "下一交易日", "策略切换", "调仓", "加仓", "减仓", "买入", "卖出")
 _A_SHARE_TICKER = re.compile(r"(?<![A-Za-z0-9])\d{6}\.(?:SH|SZ|BJ)(?![A-Za-z0-9])", re.IGNORECASE)
 _MAX_EVIDENCE_CHARS = 60_000
 _MAX_PLAN_STEPS = 4
@@ -965,6 +966,19 @@ class TradingAgentHarness:
         if missing or not usable:
             reason = missing or evidence[0]
             return f"当前无法核对所需数据：{reason['summary']}。本轮没有生成交易判断，请检查数据源后重试。"
+        if conversation.get("paper_session_id"):
+            ledger = next((item for item in evidence if item["tool_name"] == "get_paper_session"), None)
+            if ledger and not ledger["as_of_date"]:
+                return ("模拟盘账本缺少基准日，无法判断账户证据的时效。"
+                        "本轮没有生成交易判断，请核对账本后重试。")
+            ledger_result = ledger["result"] if ledger else {}
+            readiness = ledger_result.get("readiness") or {}
+            freshness = ledger_result.get("freshness") or {}
+            if (any(word in goal for word in _PLAN_WORDS) and
+                    (readiness.get("can_reference_plan") is False or
+                     freshness.get("is_active_plan_current") is False)):
+                return ("模拟盘策略计划当前不可引用或不是最新版本。"
+                        "本轮没有生成交易判断，请在模拟盘核对计划状态后重试。")
         if conversation.get("paper_session_id") and self._goal_tickers(goal):
             ledger = next((item for item in evidence if item["tool_name"] == "get_paper_session"), None)
             ledger_date = ledger["as_of_date"] if ledger else None
