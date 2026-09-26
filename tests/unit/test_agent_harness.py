@@ -44,6 +44,26 @@ def test_trade_decision_detection_keeps_general_education_separate():
     assert not TradingAgentHarness._asks_trade_decision("帮我介绍买卖策略")
 
 
+def test_artifact_search_requires_an_existing_report_reference(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id}
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+    current = "当前模拟盘账本的权益和现金分别是多少？只报告账本事实。"
+    assert [step["tool"] for step in harness._plan(current, "paper:mine")] == [
+        "get_paper_session",
+    ]
+    assert [step["tool"] for step in harness._validate_model_steps(
+        [{"tool": "search_artifacts", "query": "所有报告"}], current, "paper:mine",
+    )] == ["get_paper_session"]
+    assert not harness._asks_artifacts("分析当前账户风险并说明依据")
+    assert harness._asks_artifacts("查看上次的策略报告")
+    assert harness._asks_artifacts("对比上次的回测")
+    assert [step["tool"] for step in harness._plan(
+        "查看上次的策略报告", "paper:mine",
+    )] == ["get_paper_session", "search_artifacts"]
+
+
 @pytest.mark.asyncio
 async def test_unscoped_trade_decision_asks_for_symbol_before_legacy_chat(tmp_path):
     class UnusedChat:
@@ -372,7 +392,6 @@ async def test_model_plan_cannot_change_bound_paper_account_or_run_write_skill(t
     assert source == "model"
     assert [(step["tool"], step["args"]) for step in plan] == [
         ("get_paper_session", {"session_id": "paper:mine"}),
-        ("search_artifacts", {"q": "策略报告", "limit": 5}),
     ]
 
 
@@ -861,7 +880,7 @@ async def test_stock_followup_without_unique_prior_symbol_requests_code(
 
 
 @pytest.mark.asyncio
-async def test_failed_required_portfolio_source_stays_abstained_after_replan(tmp_path):
+async def test_failed_required_portfolio_source_does_not_search_unrequested_archives(tmp_path):
     async def paper(session_id):
         raise AssertionError("不应读取模拟盘")
 
@@ -888,10 +907,8 @@ async def test_failed_required_portfolio_source_stays_abstained_after_replan(tmp
 
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
     assert detail["status"] == "completed"
-    assert [item["tool_name"] for item in detail["evidence"]] == [
-        "get_portfolio_summary", "search_artifacts",
-    ]
-    assert any(event["event_type"] == "plan_revised" for event in detail["events"])
+    assert [item["tool_name"] for item in detail["evidence"]] == ["get_portfolio_summary"]
+    assert not any(event["event_type"] == "plan_revised" for event in detail["events"])
     assert "没有生成交易判断" in detail["result"]["content"]
     assert len(requests) == 2
 

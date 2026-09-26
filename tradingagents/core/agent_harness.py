@@ -21,7 +21,15 @@ from tradingagents.core.persistence import Database
 
 logger = logging.getLogger(__name__)
 _PAPER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
-_ARTIFACT_WORDS = ("以前", "历史", "之前", "报告", "分析", "回测", "复盘", "依据")
+_ARTIFACT_REFERENCES = (
+    "历史报告", "旧报告", "已有报告", "研究报告", "策略报告", "分析报告",
+    "分析产物", "历史产物", "旧产物", "回测结果", "回测报告", "复盘记录",
+    "报告里", "报告中", "报告内容", "报告结论", "之前的分析", "以前的分析",
+    "上次的分析", "之前的报告", "以前的报告", "上次的报告",
+)
+_ARTIFACT_REQUEST = re.compile(
+    r"(?:查|找|看|读|打开|引用|检索|对比|比较).{0,8}(?:报告|产物|回测|复盘)"
+)
 _HOLDING_WORDS = ("持仓", "组合", "账户", "盈亏", "仓位", "我的股票", "我持有")
 _PLAN_WORDS = ("计划", "下一交易日", "策略切换", "调仓", "加仓", "减仓",
                "买入", "卖出", "买", "卖")
@@ -934,6 +942,12 @@ class TradingAgentHarness:
         return any(word in goal for word in _ANNOUNCEMENT_WORDS)
 
     @staticmethod
+    def _asks_artifacts(goal: str) -> bool:
+        """Open prior reports only when the user refers to existing artifacts."""
+        return (any(phrase in goal for phrase in _ARTIFACT_REFERENCES) or
+                bool(_ARTIFACT_REQUEST.search(goal)))
+
+    @staticmethod
     def _may_read_portfolio(goal: str) -> bool:
         return (any(word in goal for word in _HOLDING_WORDS) or
                 any(word in goal for word in ("买", "卖", "调仓", "加仓", "减仓")))
@@ -1020,8 +1034,7 @@ class TradingAgentHarness:
         key_env = get_api_key_env(provider)
         if key_env and not os.environ.get(key_env):
             return None
-        allow_artifacts = (not self._asks_announcements(goal) or
-                           any(word in goal for word in _ARTIFACT_WORDS))
+        allow_artifacts = self._asks_artifacts(goal)
         available = ["search_artifacts"] if allow_artifacts else []
         if paper_session_id:
             available.insert(0, "get_paper_session")
@@ -1113,9 +1126,7 @@ class TradingAgentHarness:
                 add("get_portfolio_summary", "读取当前手工持仓", {})
             elif tool in {"get_mcp_factor_snapshot", "get_mcp_risk_announcements"} and goal_tickers:
                 continue  # Explicit symbols were bound by the server above.
-            elif (tool == "search_artifacts" and
-                  (not self._asks_announcements(goal) or
-                   any(word in goal for word in _ARTIFACT_WORDS))):
+            elif tool == "search_artifacts" and self._asks_artifacts(goal):
                 raw_args = raw.get("args") if isinstance(raw.get("args"), dict) else {}
                 query = raw.get("query") or raw_args.get("q") or goal[:80]
                 if isinstance(query, str):
@@ -1170,7 +1181,7 @@ class TradingAgentHarness:
                                  "label": f"扫描 {ticker} 风险公告关键词",
                                  "tool": "get_mcp_risk_announcements", "args": {"ts_code": ticker}})
         if (not self._advance_target(goal, paper_session_id) and
-                len(plan) < _MAX_PLAN_STEPS and any(word in goal for word in _ARTIFACT_WORDS)):
+                len(plan) < _MAX_PLAN_STEPS and self._asks_artifacts(goal)):
             # Artifact search is advisory context. It is never a substitute
             # for the current paper ledger or a fresh account snapshot.
             query = paper_session_id or goal[:80]
