@@ -165,6 +165,50 @@ def test_agent_api_rejects_invalid_scope_and_empty_message(tmp_path, monkeypatch
         assert client.get("/api/v1/agent/conversations/missing").status_code == 404
 
 
+def test_agent_conversation_history_pages_are_scoped(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "agent-pages.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+    app = create_app()
+    with TestClient(app) as client:
+        store = app.state.agent_store
+        ordinary_ids = {store.create_conversation(f"普通 {index}", None)["id"]
+                        for index in range(125)}
+        paper_ids = {store.create_conversation(f"模拟盘 {index}", "paper:busy")["id"]
+                     for index in range(125)}
+        other_id = store.create_conversation("另一个模拟盘", "paper:other")["id"]
+
+        def pages(scope):
+            results = []
+            for offset in (0, 50, 100):
+                response = client.get("/api/v1/agent/conversations", params={
+                    "paper_session_id": scope, "limit": 50, "offset": offset,
+                })
+                assert response.status_code == 200
+                results.extend(response.json())
+            return results
+
+        ordinary = pages("")
+        paper = pages("paper:busy")
+        assert len(ordinary) == len({item["id"] for item in ordinary}) == 125
+        assert len(paper) == len({item["id"] for item in paper}) == 125
+        assert {item["id"] for item in ordinary} == ordinary_ids
+        assert {item["id"] for item in paper} == paper_ids
+        assert all(item["paper_session_id"] is None for item in ordinary)
+        assert all(item["paper_session_id"] == "paper:busy" for item in paper)
+        assert other_id not in paper_ids | ordinary_ids
+        assert client.get("/api/v1/agent/conversations", params={
+            "paper_session_id": "paper:other",
+        }).json()[0]["id"] == other_id
+        assert client.get(f"/api/v1/agent/conversations/{next(iter(ordinary_ids))}").status_code == 200
+        assert client.get("/api/v1/agent/conversations", params={
+            "paper_session_id": "../other",
+        }).status_code == 422
+        assert client.get("/api/v1/agent/conversations", params={"limit": 101}).status_code == 422
+        assert client.get("/api/v1/agent/conversations", params={"offset": -1}).status_code == 422
+
+
 def test_legacy_chat_import_is_inert_scoped_and_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "agent-import.db"))
     monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)

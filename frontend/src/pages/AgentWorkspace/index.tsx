@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -21,6 +21,7 @@ interface Props {
 
 const activeStatuses = new Set(["queued", "planning", "running", "reviewing", "awaiting_approval", "executing_action"]);
 const streamingStatuses = new Set(["queued", "planning", "running", "reviewing", "executing_action"]);
+const conversationPageSize = 50;
 const statusText: Record<string, string> = {
   queued: "排队中", planning: "制定计划", running: "执行中", reviewing: "核对证据",
   completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断",
@@ -180,12 +181,40 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const legacyImportAttempted = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const conversations = useQuery({ queryKey: ["agent-conversations"], queryFn: listAgentConversations, refetchInterval: 4000 });
-  const scoped = useMemo(() => (Array.isArray(conversations.data) ? conversations.data : []).filter((item) => (item.paper_session_id || null) === (paperId || null)), [conversations.data, paperId]);
   const requestedConversationId = new URLSearchParams(location.search).get("conversation");
+  const conversations = useInfiniteQuery({
+    queryKey: ["agent-conversations", paperId],
+    queryFn: ({ pageParam }) => listAgentConversations(paperId, pageParam, conversationPageSize),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, pages) => lastPage.length === conversationPageSize
+      ? pages.length * conversationPageSize : undefined,
+    refetchInterval: 10000,
+  });
+  const loaded = useMemo(() => {
+    const seen = new Set<string>();
+    return (conversations.data?.pages.flat() ?? []).filter((item) => {
+      if ((item.paper_session_id || null) !== (paperId || null) || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }, [conversations.data, paperId]);
+  const requestedDetail = useQuery({
+    queryKey: ["agent-conversation", requestedConversationId],
+    queryFn: () => getAgentConversation(requestedConversationId!),
+    enabled: Boolean(requestedConversationId && !loaded.some((item) => item.id === requestedConversationId)),
+  });
+  const scoped = useMemo(() => {
+    const requested = requestedDetail.data;
+    return requested && requested.id === requestedConversationId &&
+      (requested.paper_session_id || null) === (paperId || null) &&
+      !loaded.some((item) => item.id === requested.id)
+      ? [...loaded, requested] : loaded;
+  }, [loaded, paperId, requestedConversationId, requestedDetail.data]);
+  const loadingRequested = Boolean(requestedConversationId &&
+    !scoped.some((item) => item.id === requestedConversationId) && requestedDetail.isPending);
   const currentId = selectedId && scoped.some((item) => item.id === selectedId) ? selectedId
     : requestedConversationId && scoped.some((item) => item.id === requestedConversationId) ? requestedConversationId
-      : scoped[0]?.id ?? null;
+      : loadingRequested ? null : scoped[0]?.id ?? null;
   const detail = useQuery({ queryKey: ["agent-conversation", currentId], queryFn: () => getAgentConversation(currentId!), enabled: Boolean(currentId), refetchInterval: 4000 });
   const latestTask = detail.data?.tasks[detail.data.tasks.length - 1];
   const streamTaskId = latestTask && streamingStatuses.has(latestTask.status) ? latestTask.id : null;
@@ -203,11 +232,16 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   }, [location.pathname, location.search, navigate]);
 
   const selectCreatedConversation = useCallback((created: AgentConversation) => {
-    queryClient.setQueryData<AgentConversation[]>(["agent-conversations"], (items) => [
-      created, ...(items ?? []).filter((item) => item.id !== created.id),
-    ]);
+    queryClient.setQueryData<InfiniteData<AgentConversation[], number>>(
+      ["agent-conversations", paperId], (data) => ({
+        pages: data?.pages.map((page, index) => index === 0
+          ? [created, ...page.filter((item) => item.id !== created.id)]
+          : page.filter((item) => item.id !== created.id)) ?? [[created]],
+        pageParams: data?.pageParams ?? [0],
+      }),
+    );
     selectConversation(created.id);
-  }, [queryClient, selectConversation]);
+  }, [paperId, queryClient, selectConversation]);
 
   useEffect(() => {
     if (!streamTaskId || !currentId) return;
@@ -258,7 +292,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
 
   const send = useCallback(async (raw: string, intentHint?: IntentHint) => {
     const message = raw.trim();
-    if (!message || busy || running) return;
+    if (!message || busy || running || loadingRequested) return;
     setBusy(true);
     setError("");
     try {
@@ -280,7 +314,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     } finally {
       setBusy(false);
     }
-  }, [busy, running, legacyArchive, currentId, paperId, queryClient, selectCreatedConversation]);
+  }, [busy, running, loadingRequested, legacyArchive, currentId, paperId, queryClient, selectCreatedConversation]);
 
   useEffect(() => {
     if (!promptRequest || !conversations.isSuccess || (currentId && !detail.isSuccess) || consumedPrompt.current === promptRequest.nonce) return;
@@ -344,16 +378,16 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   return <div className={`agent-workspace flex min-h-0 w-full overflow-hidden border border-ui-line bg-ui-canvas text-ui-ink ${embedded ? "h-full rounded-lg" : "h-full rounded-lg"}`}>
     {!embedded && <aside aria-label="Agent 对话列表" className="hidden w-[190px] shrink-0 flex-col border-r border-ui-line bg-ui-subtle md:flex">
       <div className="flex h-[54px] items-center justify-between border-b border-ui-line px-3"><span className="text-xs font-semibold text-ui-muted">交易任务</span><button disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" className="rounded p-1.5 text-ui-accent hover:bg-ui-accentSoft disabled:opacity-50"><MessageSquarePlus className="h-4 w-4" /></button></div>
-      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">{scoped.map((item: AgentConversation) => <button key={item.id} onClick={() => selectConversation(item.id)} className={`w-full rounded-md px-2.5 py-2 text-left text-xs ${currentId === item.id ? "bg-ui-accentSoft text-ui-accent" : "text-ui-muted hover:bg-ui-hover"}`}><span className="block truncate font-medium">{item.title}</span><span className="mt-1 block text-xs opacity-75">{statusText[item.latest_status || ""] ?? "新对话"}</span></button>)}</div>
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">{scoped.map((item: AgentConversation) => <button key={item.id} onClick={() => selectConversation(item.id)} className={`w-full rounded-md px-2.5 py-2 text-left text-xs ${currentId === item.id ? "bg-ui-accentSoft text-ui-accent" : "text-ui-muted hover:bg-ui-hover"}`}><span className="block truncate font-medium">{item.title}</span><span className="mt-1 block text-xs opacity-75">{statusText[item.latest_status || ""] ?? "新对话"}</span></button>)}{conversations.hasNextPage && <button disabled={conversations.isFetchingNextPage} onClick={() => void conversations.fetchNextPage()} aria-label="加载更多对话" className="w-full rounded px-2 py-2 text-xs text-ui-accent hover:bg-ui-accentSoft disabled:opacity-50">{conversations.isFetchingNextPage ? "加载中…" : "加载更多对话"}</button>}</div>
       <div className="border-t border-ui-line px-3 py-3 text-xs text-ui-faint">任务与证据保存在本机</div>
     </aside>}
 
     <section aria-label="交易 Agent 对话" className="flex min-w-0 flex-1 flex-col bg-ui-canvas">
       <header className="flex h-[54px] shrink-0 items-center justify-between border-b border-ui-line bg-ui-panel px-4"><div className="min-w-0"><p className="truncate text-sm font-semibold">{detail.data?.title || (paperId ? `模拟盘 · ${paperId}` : "交易 Agent")}</p><p className="text-xs text-ui-faint">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? "已绑定 StockManager 模拟盘" : "分析 · 取证 · 风险核对"}</p></div><div className="flex items-center gap-2">{embedded && paperId && <Link to={`/chat?paper_session=${encodeURIComponent(paperId)}${currentId ? `&conversation=${encodeURIComponent(currentId)}` : ""}`} className="inline-flex items-center gap-1 rounded border border-ui-line px-2 py-1 text-xs text-ui-accent hover:bg-ui-accentSoft">在工作台继续 <ArrowRight className="h-3.5 w-3.5" /></Link>}{running && <span className="flex items-center gap-1 text-xs text-ui-accent">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!showInspector && <button onClick={() => { setInspectedTaskId(null); setShowInspector(true); }} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}</div></header>
-      {(embedded || scoped.length > 0) && <div className={`flex items-center gap-2 border-b border-ui-line bg-ui-panel px-3 py-2 ${embedded ? "" : "md:hidden"}`}><select aria-label="选择 Agent 对话" value={currentId ?? ""} onChange={(event) => { if (event.target.value) selectConversation(event.target.value); else void newConversation(); }} className="min-w-0 flex-1 rounded border border-ui-line bg-ui-panel px-2 py-1.5 text-xs"><option value="">新对话</option>{scoped.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" className="rounded border border-ui-line p-1.5 text-ui-accent disabled:opacity-50"><MessageSquarePlus className="h-4 w-4" /></button></div>}
+      {(embedded || scoped.length > 0) && <div className={`flex items-center gap-2 border-b border-ui-line bg-ui-panel px-3 py-2 ${embedded ? "" : "md:hidden"}`}><select aria-label="选择 Agent 对话" value={currentId ?? ""} onChange={(event) => { if (event.target.value) selectConversation(event.target.value); else void newConversation(); }} className="min-w-0 flex-1 rounded border border-ui-line bg-ui-panel px-2 py-1.5 text-xs"><option value="">新对话</option>{scoped.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>{conversations.hasNextPage && <button disabled={conversations.isFetchingNextPage} onClick={() => void conversations.fetchNextPage()} aria-label="加载更多对话" className="shrink-0 text-xs text-ui-accent disabled:opacity-50">更多</button>}<button disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" className="rounded border border-ui-line p-1.5 text-ui-accent disabled:opacity-50"><MessageSquarePlus className="h-4 w-4" /></button></div>}
       {error && <div role="alert" className="flex items-center justify-between border-b border-ui-danger bg-ui-danger/10 px-4 py-2 text-xs text-ui-danger">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X className="h-3.5 w-3.5" /></button></div>}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-8"><div className="mx-auto max-w-[760px] space-y-5">
-        {messages.length === 0 && <div className="mx-auto max-w-[590px] py-12 text-center"><div className="mx-auto mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-ui-accentSoft text-ui-accent"><Database className="h-5 w-5" /></div><h1 className="text-xl font-semibold">从交易目标开始</h1><p className="mt-3 text-sm leading-6 text-ui-muted">Agent 会制定步骤，读取当前数据，标出来源和时点，再给出有条件的结论。</p><div className="mt-6 flex flex-wrap justify-center gap-2">{(paperId ? ["总结当前权益、持仓和近期成交", "解释下一交易日计划", "当前策略切换的依据是什么"] : ["看看当前持仓风险", "分析我的组合", "查找近期的研究报告"]).map((prompt) => <button key={prompt} onClick={() => void send(prompt)} className="rounded-md border border-ui-line bg-ui-panel px-3 py-2 text-xs text-ui-body hover:border-ui-accent">{prompt}</button>)}</div></div>}
+        {loadingRequested ? <p role="status" className="py-12 text-center text-sm text-ui-muted">正在打开历史对话…</p> : messages.length === 0 && <div className="mx-auto max-w-[590px] py-12 text-center"><div className="mx-auto mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-ui-accentSoft text-ui-accent"><Database className="h-5 w-5" /></div><h1 className="text-xl font-semibold">从交易目标开始</h1><p className="mt-3 text-sm leading-6 text-ui-muted">Agent 会制定步骤，读取当前数据，标出来源和时点，再给出有条件的结论。</p><div className="mt-6 flex flex-wrap justify-center gap-2">{(paperId ? ["总结当前权益、持仓和近期成交", "解释下一交易日计划", "当前策略切换的依据是什么"] : ["看看当前持仓风险", "分析我的组合", "查找近期的研究报告"]).map((prompt) => <button key={prompt} onClick={() => void send(prompt)} className="rounded-md border border-ui-line bg-ui-panel px-3 py-2 text-xs text-ui-body hover:border-ui-accent">{prompt}</button>)}</div></div>}
         {messages.map((message) => {
           const task = detail.data?.tasks.find((item) => item.id === message.task_id);
           return <div key={message.id} className="space-y-3">
@@ -367,7 +401,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
           </div>;
         })}
       </div></div>
-      {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[760px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[760px]"><div className="flex items-end gap-2 rounded-lg border border-ui-strong bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint" /><button type="submit" disabled={!input.trim() || running || busy} aria-label="发送" className="flex h-8 w-8 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><p className="mt-2 text-xs text-ui-faint">{paperId ? `账户 ${paperId} · ` : ""}{latestTask?.proposal ? "模拟盘动作会在确认后执行。" : "不会修改持仓或模拟盘账本。数据来源和基准日会记录在任务档案中。"}</p></div></form>}
+      {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[760px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[760px]"><div className="flex items-end gap-2 rounded-lg border border-ui-strong bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} disabled={loadingRequested} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint disabled:opacity-50" /><button type="submit" disabled={!input.trim() || running || busy || loadingRequested} aria-label="发送" className="flex h-8 w-8 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><p className="mt-2 text-xs text-ui-faint">{paperId ? `账户 ${paperId} · ` : ""}{latestTask?.proposal ? "模拟盘动作会在确认后执行。" : "不会修改持仓或模拟盘账本。数据来源和基准日会记录在任务档案中。"}</p></div></form>}
     </section>
     {showInspector && <><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className={`fixed inset-0 z-40 bg-black/40 ${embedded ? "" : "lg:hidden"}`} /><Inspector task={inspectedTask} paperId={paperId} overlay={embedded} onClose={() => setShowInspector(false)} /></>}
   </div>;

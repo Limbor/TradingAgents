@@ -76,8 +76,12 @@ export interface LegacyArchiveMessage {
   created_at: string;
 }
 
-export const listAgentConversations = () =>
-  fetchJson<AgentConversation[]>(`${agentApiBase}/conversations`);
+export const listAgentConversations = (paperSessionId: string | null, offset = 0, limit = 50) => {
+  const params = new URLSearchParams({
+    paper_session_id: paperSessionId ?? "", offset: String(offset), limit: String(limit),
+  });
+  return fetchJson<AgentConversation[]>(`${agentApiBase}/conversations?${params}`);
+};
 
 export const createAgentConversation = (paperSessionId?: string | null) =>
   fetchJson<AgentConversation>(`${agentApiBase}/conversations`, {

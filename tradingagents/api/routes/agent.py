@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -40,8 +40,18 @@ class LegacyImport(BaseModel):
 
 
 @router.get("/conversations")
-def list_conversations(request: Request):
-    return request.app.state.agent_store.list_conversations()
+def list_conversations(request: Request,
+                       paper_session_id: str | None = Query(default=None, max_length=160),
+                       limit: int = Query(default=100, ge=1, le=100),
+                       offset: int = Query(default=0, ge=0)):
+    if paper_session_id and (
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", paper_session_id)
+        or ".." in paper_session_id
+    ):
+        raise HTTPException(422, "无效的模拟盘会话 ID")
+    return request.app.state.agent_store.list_conversations(
+        limit=limit, offset=offset, paper_session_id=paper_session_id
+    )
 
 
 @router.post("/conversations", status_code=201)

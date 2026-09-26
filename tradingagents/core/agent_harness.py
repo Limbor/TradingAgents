@@ -104,14 +104,23 @@ class AgentStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def list_conversations(self, limit: int = 100) -> list[dict]:
+    def list_conversations(self, limit: int = 100, offset: int = 0,
+                           paper_session_id: str | None = None) -> list[dict]:
+        scope = ""
+        params: list[Any] = []
+        if paper_session_id == "":
+            scope = "WHERE c.paper_session_id IS NULL"
+        elif paper_session_id is not None:
+            scope = "WHERE c.paper_session_id = ?"
+            params.append(paper_session_id)
         with self.db._conn() as conn:
             rows = conn.execute(
-                """SELECT c.*, EXISTS(SELECT 1 FROM agent_imports i WHERE i.conversation_id = c.id)
+                f"""SELECT c.*, EXISTS(SELECT 1 FROM agent_imports i WHERE i.conversation_id = c.id)
                     AS legacy_archive, (SELECT status FROM agent_tasks t WHERE
                     t.conversation_id = c.id ORDER BY t.created_at DESC LIMIT 1) AS latest_status
-                    FROM agent_conversations c ORDER BY c.updated_at DESC LIMIT ?""",
-                (min(max(limit, 1), 200),),
+                    FROM agent_conversations c {scope}
+                    ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?""",
+                (*params, min(max(limit, 1), 100), max(offset, 0)),
             ).fetchall()
         return [dict(row) for row in rows]
 
