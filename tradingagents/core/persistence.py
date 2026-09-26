@@ -339,6 +339,8 @@ CREATE TABLE IF NOT EXISTS agent_proposals (
     updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_proposals_task ON agent_proposals(task_id);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_session_status
+    ON agent_proposals(session_id, status);
 
 CREATE TABLE IF NOT EXISTS risk_events (
     id TEXT PRIMARY KEY,

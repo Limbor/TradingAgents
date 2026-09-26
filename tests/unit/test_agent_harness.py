@@ -461,6 +461,33 @@ async def _proposed_advance(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_unresolved_paper_advance_blocks_other_conversations_for_same_account(tmp_path):
+    harness, store, _task, first = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(first["id"])
+    store.set_proposal_status(first["id"], "unknown", {"job_id": "job:uncertain"})
+
+    other = store.create_conversation("另一个对话", "paper:advance")
+    blocked_task = harness.submit(other["id"], "推进模拟盘到 2026-09-29")
+    await harness._active[blocked_task["id"]]
+    blocked = store.conversation_detail(other["id"])["tasks"][0]
+    assert blocked["proposal"] is None
+    assert "先核对前一次执行结果" in blocked["result"]["content"]
+    assert any(event["event_type"] == "action_blocked" for event in blocked["events"])
+
+    pending_task = store.create_task(other["id"], "推进模拟盘到 2026-09-30")
+    store.set_status(pending_task["id"], "awaiting_approval")
+    second = store.create_proposal(pending_task["id"], "paper:advance",
+                                   "2026-09-30", {"as_of_date": "2026-09-25"})
+    assert not store.claim_proposal(second["id"])
+    with pytest.raises(ValueError, match="先核对前一次推进"):
+        harness.approve(second["id"])
+    assert store.get_proposal(second["id"])["status"] == "pending"
+
+    store.set_proposal_status(first["id"], "completed")
+    assert store.claim_proposal(second["id"])
+
+
+@pytest.mark.asyncio
 async def test_advance_requires_one_time_approval_and_reconciles_ledger(tmp_path, monkeypatch):
     harness, store, task, proposal = await _proposed_advance(tmp_path)
     calls = []

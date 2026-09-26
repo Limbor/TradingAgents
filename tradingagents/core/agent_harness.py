@@ -297,6 +297,17 @@ class AgentStore:
             row = conn.execute("SELECT * FROM agent_proposals WHERE task_id = ?", (task_id,)).fetchone()
         return self._decode_proposal(row) if row else None
 
+    def unresolved_paper_action(self, session_id: str,
+                                exclude_proposal_id: str | None = None) -> dict | None:
+        with self.db._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_proposals WHERE session_id = ? AND id != COALESCE(?, '') "
+                "AND status IN ('executing', 'submitted', 'reconciling', 'unknown') "
+                "ORDER BY created_at DESC LIMIT 1",
+                (session_id, exclude_proposal_id),
+            ).fetchone()
+        return self._decode_proposal(row) if row else None
+
     @staticmethod
     def _decode_proposal(row: Any) -> dict:
         result = dict(row)
@@ -310,7 +321,11 @@ class AgentStore:
         with self.db._conn() as conn:
             cursor = conn.execute(
                 "UPDATE agent_proposals SET status = 'executing', updated_at = ? "
-                "WHERE id = ? AND status = 'pending' AND expires_at > ?",
+                "WHERE id = ? AND status = 'pending' AND expires_at > ? "
+                "AND NOT EXISTS (SELECT 1 FROM agent_proposals AS other "
+                "WHERE other.session_id = agent_proposals.session_id "
+                "AND other.id != agent_proposals.id "
+                "AND other.status IN ('executing', 'submitted', 'reconciling', 'unknown'))",
                 (now, proposal_id, now),
             )
         return cursor.rowcount == 1
@@ -422,6 +437,9 @@ class TradingAgentHarness:
             raise ValueError("提案与当前模拟盘会话不匹配")
         if not self.store.claim_proposal(proposal_id):
             current = self.store.get_proposal(proposal_id) or proposal
+            blocker = self.store.unresolved_paper_action(proposal["session_id"], proposal_id)
+            if current["status"] == "pending" and blocker:
+                raise ValueError("同一模拟盘已有执行结果待核对，请先核对前一次推进")
             if current["status"] == "pending" and current["expires_at"] <= _now():
                 self.store.set_proposal_status(proposal_id, "expired")
                 content = "模拟盘推进提案已过期，账本未发生变更。请重新核对账户后提出请求。"
@@ -658,6 +676,17 @@ class TradingAgentHarness:
                         return
                     baseline = {"as_of_date": baseline_date,
                                 "equity": (evidence[0]["result"].get("snapshot") or {}).get("equity")}
+                    blocker = self.store.unresolved_paper_action(conversation["paper_session_id"])
+                    if blocker:
+                        content = ("同一模拟盘仍有推进操作执行中或结果待核对。"
+                                   "请先核对前一次执行结果，再提出新的推进请求。")
+                        self.store.add_message(conversation["id"], "assistant", content, task_id)
+                        self.store.set_status(task_id, "completed", result={"content": content,
+                                                                              "read_only": True})
+                        self.store.event(task_id, "action_blocked", {
+                            "blocking_proposal_id": blocker["id"],
+                        })
+                        return
                     proposal = self.store.create_proposal(
                         task_id, conversation["paper_session_id"], advance_target, baseline
                     )
