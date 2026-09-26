@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
@@ -116,6 +118,41 @@ def list_events(request: Request, task_id: str, after_seq: int = 0):
     if request.app.state.agent_store.get_task(task_id) is None:
         raise HTTPException(404, "任务不存在")
     return request.app.state.agent_store.list_events(task_id, after_seq)
+
+
+@router.get("/tasks/{task_id}/stream")
+async def stream_events(request: Request, task_id: str, after_seq: int = 0):
+    """Replay ordered task events, then follow the task until it pauses or ends."""
+    store = request.app.state.agent_store
+    if store.get_task(task_id) is None:
+        raise HTTPException(404, "任务不存在")
+    header_id = request.headers.get("last-event-id", "")
+    if len(header_id) <= 20 and header_id.isdecimal():
+        after_seq = max(after_seq, int(header_id))
+
+    async def events():
+        seq = max(after_seq, 0)
+        ticks = 0
+        while not await request.is_disconnected():
+            for event in store.list_events(task_id, seq):
+                seq = event["seq"]
+                yield f"id: {seq}\nevent: agent_event\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+            task = store.get_task(task_id)
+            if task is None or task["status"] in {
+                "completed", "failed", "cancelled", "interrupted", "needs_input",
+                "awaiting_approval", "needs_review",
+            }:
+                yield "event: done\ndata: {}\n\n"
+                return
+            ticks += 1
+            if ticks >= 30:
+                yield ": keepalive\n\n"
+                ticks = 0
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
 
 
 @router.post("/tasks/{task_id}/cancel")

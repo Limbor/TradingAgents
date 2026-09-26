@@ -7,8 +7,8 @@ import { ArrowRight, Check, CircleAlert, CircleCheck, Clock3, Database, LoaderCi
 import {
   approveAgentProposal, cancelAgentTask, createAgentConversation, getAgentConversation,
   importLegacyAgentConversation, listAgentConversations, submitAgentTask,
-  reconcileAgentProposal, rejectAgentProposal,
-  type AgentConversation, type AgentEvidence, type AgentTask,
+  readAgentTaskStream, reconcileAgentProposal, rejectAgentProposal,
+  type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask,
 } from "@/api/agent";
 import type { ChatNavState, IntentHint } from "@/lib/chatNav";
 import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyChatImport";
@@ -20,6 +20,7 @@ interface Props {
 }
 
 const activeStatuses = new Set(["queued", "planning", "running", "reviewing", "awaiting_approval", "executing_action"]);
+const streamingStatuses = new Set(["queued", "planning", "running", "reviewing", "executing_action"]);
 const statusText: Record<string, string> = {
   queued: "排队中", planning: "制定计划", running: "执行中", reviewing: "核对证据",
   completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断",
@@ -185,8 +186,9 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const currentId = selectedId && scoped.some((item) => item.id === selectedId) ? selectedId
     : requestedConversationId && scoped.some((item) => item.id === requestedConversationId) ? requestedConversationId
       : scoped[0]?.id ?? null;
-  const detail = useQuery({ queryKey: ["agent-conversation", currentId], queryFn: () => getAgentConversation(currentId!), enabled: Boolean(currentId), refetchInterval: 1200 });
+  const detail = useQuery({ queryKey: ["agent-conversation", currentId], queryFn: () => getAgentConversation(currentId!), enabled: Boolean(currentId), refetchInterval: 4000 });
   const latestTask = detail.data?.tasks[detail.data.tasks.length - 1];
+  const streamTaskId = latestTask && streamingStatuses.has(latestTask.status) ? latestTask.id : null;
   const inspectedTask = detail.data?.tasks.find((task) => task.id === inspectedTaskId) ?? latestTask;
   const running = Boolean(latestTask && activeStatuses.has(latestTask.status));
   const listedCurrent = scoped.find((item) => item.id === currentId);
@@ -206,6 +208,37 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     ]);
     selectConversation(created.id);
   }, [queryClient, selectConversation]);
+
+  useEffect(() => {
+    if (!streamTaskId || !currentId) return;
+    const controller = new AbortController();
+    const conversationId = currentId;
+    const snapshot = queryClient.getQueryData<AgentConversationDetail>(["agent-conversation", conversationId]);
+    const task = snapshot?.tasks.find((item) => item.id === streamTaskId);
+    let cursor = task?.events[task.events.length - 1]?.seq ?? 0;
+    void (async () => {
+      while (!controller.signal.aborted) {
+        try {
+          const result = await readAgentTaskStream(streamTaskId, cursor, controller.signal, (event) => {
+            cursor = event.seq;
+            void queryClient.invalidateQueries({ queryKey: ["agent-conversation", conversationId] });
+            void queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
+          });
+          cursor = result.lastSeq;
+          if (result.done) {
+            await queryClient.invalidateQueries({ queryKey: ["agent-conversation", conversationId] });
+            await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
+            return;
+          }
+        } catch {
+          if (controller.signal.aborted) return;
+          // The slower REST refresh remains available while the stream reconnects.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    })();
+    return () => controller.abort();
+  }, [currentId, queryClient, streamTaskId]);
 
   useEffect(() => {
     if (!conversations.isSuccess || legacyImportAttempted.current) return;

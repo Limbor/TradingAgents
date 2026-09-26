@@ -1,5 +1,6 @@
 """Trading Agent REST contract from conversation creation to persisted result."""
 
+import json
 import time
 
 import pytest
@@ -57,6 +58,18 @@ def test_agent_task_api_persists_evidence_and_scope(tmp_path, monkeypatch):
         assert detail["messages"][-1]["role"] == "assistant"
         events = client.get(f"/api/v1/agent/tasks/{task_id}/events?after_seq=1").json()
         assert events[0]["event_type"] == "plan_created"
+        stream = client.get(f"/api/v1/agent/tasks/{task_id}/stream?after_seq=1")
+        assert stream.status_code == 200
+        assert stream.headers["content-type"].startswith("text/event-stream")
+        streamed = [json.loads(line[6:]) for line in stream.text.splitlines()
+                    if line.startswith("data: ") and line != "data: {}"]
+        assert [item["seq"] for item in streamed] == [item["seq"] for item in events]
+        assert "event: done" in stream.text
+        resumed = client.get(f"/api/v1/agent/tasks/{task_id}/stream?after_seq=0",
+                             headers={"Last-Event-ID": str(events[-2]["seq"])})
+        assert [json.loads(line[6:])["seq"] for line in resumed.text.splitlines()
+                if line.startswith("data: ") and line != "data: {}"] == [events[-1]["seq"]]
+        assert client.get("/api/v1/agent/tasks/missing/stream").status_code == 404
 
 
 @pytest.mark.parametrize("failure, status_code", [
@@ -221,6 +234,9 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
             time.sleep(0.01)
         assert task["status"] == "awaiting_approval"
         assert writes == []
+        waiting_stream = client.get(f"/api/v1/agent/tasks/{tid}/stream")
+        assert "event: done" in waiting_stream.text
+        assert "proposal_created" in waiting_stream.text
         pid = task["proposal"]["id"]
         assert client.post(f"/api/v1/agent/proposals/{pid}/approve").status_code == 200
         assert client.post(f"/api/v1/agent/proposals/{pid}/approve").status_code == 200

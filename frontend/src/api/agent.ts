@@ -1,4 +1,5 @@
 import { agentApiBase, fetchJson } from "./client";
+import { authHeaders } from "./auth";
 import type { IntentHint } from "@/lib/chatNav";
 
 export interface AgentConversation {
@@ -94,6 +95,58 @@ export const importLegacyAgentConversation = (paperSessionId: string | null, mes
 
 export const getAgentConversation = (id: string) =>
   fetchJson<AgentConversationDetail>(`${agentApiBase}/conversations/${encodeURIComponent(id)}`);
+
+/** Follow a task with an authenticated fetch stream, keeping tokens out of URLs. */
+export async function readAgentTaskStream(
+  taskId: string,
+  afterSeq: number,
+  signal: AbortSignal,
+  onEvent: (event: AgentEvent) => void,
+): Promise<{ lastSeq: number; done: boolean }> {
+  const response = await fetch(
+    `${agentApiBase}/tasks/${encodeURIComponent(taskId)}/stream?after_seq=${afterSeq}`,
+    { headers: { ...authHeaders(), Accept: "text/event-stream" }, signal },
+  );
+  if (!response.ok || !response.body) throw new Error(`任务事件连接失败 (${response.status})`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let lastSeq = afterSeq;
+  let done = false;
+  try {
+    while (!done) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer = (buffer + decoder.decode(chunk.value, { stream: true })).replace(/\r\n/g, "\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const lines = frame.split("\n");
+        const kind = lines.find((line) => line.startsWith("event: "))?.slice(7);
+        if (kind === "done") {
+          done = true;
+          break;
+        }
+        if (kind === "agent_event") {
+          const data = lines.find((line) => line.startsWith("data: "))?.slice(6);
+          if (data) {
+            const event = JSON.parse(data) as AgentEvent;
+            if (event.task_id === taskId && Number.isInteger(event.seq) && event.seq > lastSeq) {
+              lastSeq = event.seq;
+              onEvent(event);
+            }
+          }
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return { lastSeq, done };
+}
 
 export const submitAgentTask = (id: string, message: string, intentHint?: IntentHint) =>
   fetchJson<AgentTask>(`${agentApiBase}/conversations/${encodeURIComponent(id)}/tasks`, {
