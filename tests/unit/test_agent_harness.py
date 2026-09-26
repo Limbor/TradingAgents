@@ -105,6 +105,24 @@ async def test_cancel_stops_task_and_rejects_concurrent_submission(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_shutdown_marks_read_task_interrupted_for_explicit_retry(tmp_path):
+    started = asyncio.Event()
+
+    async def slow_paper(session_id):
+        started.set()
+        await asyncio.sleep(60)
+        return {"session_id": session_id}
+
+    harness, store = _harness(tmp_path, paper_handler=slow_paper)
+    conversation = store.create_conversation("测试", "paper:shutdown")
+    task = harness.submit(conversation["id"], "评估当前模拟盘")
+    await asyncio.wait_for(started.wait(), timeout=2)
+    await harness.close()
+    assert store.get_task(task["id"])["status"] == "interrupted"
+    assert store.list_events(task["id"])[-1]["event_type"] == "task_interrupted"
+
+
+@pytest.mark.asyncio
 async def test_write_skill_is_not_dispatched(tmp_path):
     async def unused_paper(session_id):
         raise AssertionError("不应调用模拟盘")

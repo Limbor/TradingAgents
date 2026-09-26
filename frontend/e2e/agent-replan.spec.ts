@@ -31,3 +31,34 @@ test("Agent timeline shows steps added after a tool failure", async ({ page }) =
   await expect(page.getByText("查找关联分析产物")).toBeVisible();
   await expect(page.getByText("失败", { exact: true })).toBeVisible();
 });
+
+test("interrupted read task requires an explicit retry", async ({ page }) => {
+  const time = "2026-09-25T08:00:00Z";
+  const conversation = { id: "conversation-interrupted", title: "模拟盘风险", paper_session_id: "paper:one",
+    created_at: time, updated_at: time, latest_status: "interrupted" };
+  const goal = "评估当前模拟盘风险";
+  let submissions = 0;
+  const detail = { ...conversation,
+    messages: [{ id: "m1", conversation_id: conversation.id, task_id: "task-old",
+      role: "user", content: goal, created_at: time }],
+    tasks: [{ id: "task-old", conversation_id: conversation.id, goal, status: "interrupted",
+      result: {}, error: null, created_at: time, updated_at: time, events: [], evidence: [], proposal: null }],
+  };
+  await page.route("**/api/v1/agent/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = detail;
+    if (path === "/api/v1/agent/conversations") body = [conversation];
+    else if (path.endsWith("/tasks") && route.request().method() === "POST") {
+      const request = route.request().postDataJSON() as { message: string };
+      expect(request.message).toBe(goal);
+      submissions += 1;
+      body = { id: "task-new" };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/chat?paper_session=paper%3Aone");
+  await expect(page.getByRole("button", { name: "重新运行任务" })).toBeVisible();
+  expect(submissions).toBe(0);
+  await page.getByRole("button", { name: "重新运行任务" }).click();
+  await expect.poll(() => submissions).toBe(1);
+});

@@ -37,7 +37,11 @@ function taskSteps(task: AgentTask) {
   });
 }
 
-function TaskTimeline({ task }: { task: AgentTask }) {
+function TaskTimeline({ task, onRetry, retryDisabled }: {
+  task: AgentTask;
+  onRetry: () => void;
+  retryDisabled: boolean;
+}) {
   const steps = taskSteps(task);
   const revised = task.events.some((event) => event.event_type === "plan_revised");
   return <div className="agent-card mt-3 overflow-hidden">
@@ -55,7 +59,7 @@ function TaskTimeline({ task }: { task: AgentTask }) {
       </div>) : <p className="text-xs text-ui-muted">正在解析任务目标…</p>}
       {task.status === "reviewing" && <p className="pl-6 text-xs text-ui-muted">正在核对证据并形成回答…</p>}
       {task.status === "failed" && <p role="alert" className="text-xs text-ui-danger">{task.error || "任务执行失败"}</p>}
-      {task.status === "interrupted" && <p role="alert" className="text-xs text-ui-warning">服务重启中断了本次任务，可重新发送问题。</p>}
+      {task.status === "interrupted" && <div className="space-y-2"><p role="alert" className="text-xs text-ui-warning">服务重启中断了本次任务；原有记录仍保留。</p><button disabled={retryDisabled} onClick={onRetry} className="rounded-md border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body disabled:opacity-50">重新运行任务</button></div>}
       {task.status === "needs_review" && <p role="alert" className="text-xs text-ui-warning">外部执行状态不确定。请在模拟盘账本核对，系统不会自动重复提交。</p>}
     </div>
   </div>;
@@ -209,7 +213,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
                 {message.role === "assistant" && task?.result.citations?.length ? <div className="mt-2 flex items-center gap-1 text-xs text-ui-muted"><Check className="h-3.5 w-3.5 text-ui-accent" />已关联 {task.evidence.length} 项证据 · 只读任务</div> : null}
               </div>
             </div>
-            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} /></div>}
+            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal)} retryDisabled={busy || running} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} /></div>}
           </div>;
         })}
       </div></div>

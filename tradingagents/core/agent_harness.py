@@ -325,6 +325,7 @@ class TradingAgentHarness:
         self._active: dict[str, asyncio.Task] = {}
         self._slots = asyncio.Semaphore(3)
         self._reconcile_locks: dict[str, asyncio.Lock] = {}
+        self._shutting_down = False
 
     def submit(self, conversation_id: str, goal: str,
                intent_hint: dict | None = None) -> dict:
@@ -494,6 +495,7 @@ class TradingAgentHarness:
         self.store.event(task_id, "action_completed", result)
 
     async def close(self) -> None:
+        self._shutting_down = True
         for task in tuple(self._active.values()):
             task.cancel()
         if self._active:
@@ -615,8 +617,9 @@ class TradingAgentHarness:
                 self.store.set_status(task_id, "completed", result=result)
                 self.store.event(task_id, "task_completed", result)
         except asyncio.CancelledError:
-            self.store.set_status(task_id, "cancelled")
-            self.store.event(task_id, "task_cancelled", {})
+            status = "interrupted" if self._shutting_down else "cancelled"
+            self.store.set_status(task_id, status)
+            self.store.event(task_id, f"task_{status}", {})
         except Exception as exc:
             logger.exception("Trading agent task %s failed", task_id)
             self.store.set_status(task_id, "failed", error=str(exc))
