@@ -237,6 +237,26 @@ class TestLightweightToolHandlers:
         assert "覆盖不完整" in result["warnings"][-1]
 
     @pytest.mark.asyncio
+    async def test_factor_snapshot_warns_on_missing_dimension_even_with_success(self, monkeypatch):
+        from tradingagents.core.lightweight_tools import make_get_mcp_factor_snapshot
+
+        client = MagicMock()
+        client.get_factor_snapshot = AsyncMock(return_value={
+            "status": "success", "as_of_date": "2026-09-25", "warnings": [],
+            "rows": [{"ts_code": "600519.SH", "raw_factors": {"pe_ttm": 12.0},
+                      "data_coverage": {"valuation": "available", "flow": "missing"},
+                      "factor_scores": {"valuation": 50.0, "flow": 50.0}}],
+        })
+        monkeypatch.setattr("tradingagents.core.mcp_client.get_mcp_client",
+                            AsyncMock(return_value=client))
+        result = await make_get_mcp_factor_snapshot({})(
+            ts_code="600519.SH", trade_date="2026-09-25"
+        )
+        assert "flow" in result["warnings"][-1]
+        assert "占位值" in result["warnings"][-1]
+        assert result["snapshot"]["rows"][0]["factor_scores"]["flow"] == 50.0
+
+    @pytest.mark.asyncio
     async def test_get_strategy_lessons(self):
         from tradingagents.core.lightweight_tools import make_get_strategy_lessons
 

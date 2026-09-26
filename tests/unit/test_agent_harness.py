@@ -4,7 +4,11 @@ import asyncio
 
 import pytest
 
-from tradingagents.core.agent_harness import AgentStore, TradingAgentHarness
+from tradingagents.core.agent_harness import (
+    AgentStore,
+    TradingAgentHarness,
+    _answer_evidence_result,
+)
 from tradingagents.core.chat_agent import ChatResponse
 from tradingagents.core.persistence import Database
 from tradingagents.core.stockmanager_paper import PaperServiceError
@@ -22,6 +26,14 @@ class _Chat:
 class _Skills:
     def get(self, _name):
         raise AssertionError("写入型 Skill 不得启动")
+
+
+def test_missing_factor_score_is_masked_only_in_model_input():
+    result = {"snapshot": {"rows": [{"data_coverage": {"valuation": "available", "flow": "missing"},
+                                    "factor_scores": {"valuation": 52.0, "flow": 50.0}}]}}
+    safe = _answer_evidence_result({"tool_name": "get_mcp_factor_snapshot", "result": result})
+    assert safe["snapshot"]["rows"][0]["factor_scores"] == {"valuation": 52.0, "flow": None}
+    assert result["snapshot"]["rows"][0]["factor_scores"]["flow"] == 50.0
 
 
 def _harness(tmp_path, *, paper_handler, chat=None):

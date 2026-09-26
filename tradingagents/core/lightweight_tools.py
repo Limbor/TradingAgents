@@ -329,6 +329,14 @@ def make_get_mcp_factor_snapshot(config: dict[str, Any]):
                     "warnings": warnings, "ts_code": ts_code, "source": source}
         if result.get("status") == "partial":
             warnings = [*warnings, "因子快照覆盖不完整，缺失维度不能当作中性分"]
+        coverage = matching[0].get("data_coverage")
+        if isinstance(coverage, dict):
+            missing = sorted(str(name) for name, state in coverage.items()
+                             if state == "missing")
+            if missing:
+                warnings.append(
+                    f"因子维度缺失：{', '.join(missing)}；对应默认分数只是占位值，不能解释为中性或有效信号"
+                )
 
         rv: dict[str, Any] = {
             "ts_code": ts_code,
