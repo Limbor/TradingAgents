@@ -26,8 +26,10 @@ const statusText: Record<string, string> = {
 };
 
 function taskSteps(task: AgentTask) {
-  const plan = task.events.find((event) => event.event_type === "plan_created");
-  const steps = Array.isArray(plan?.payload.steps) ? plan.payload.steps as Array<{ id: string; label: string }> : [];
+  const steps = task.events
+    .filter((event) => event.event_type === "plan_created" || event.event_type === "plan_revised")
+    .flatMap((event) => Array.isArray(event.payload.steps)
+      ? event.payload.steps as Array<{ id: string; label: string }> : []);
   return steps.map((step) => {
     const started = task.events.some((event) => event.event_type === "step_started" && event.payload.id === step.id);
     const finished = task.events.find((event) => event.event_type === "step_completed" && event.payload.id === step.id);
@@ -37,9 +39,10 @@ function taskSteps(task: AgentTask) {
 
 function TaskTimeline({ task }: { task: AgentTask }) {
   const steps = taskSteps(task);
+  const revised = task.events.some((event) => event.event_type === "plan_revised");
   return <div className="agent-card mt-3 overflow-hidden">
     <div className="flex items-center justify-between border-b border-ui-line px-4 py-3 text-xs">
-      <span className="font-semibold text-ui-ink">执行过程</span>
+      <span className="font-semibold text-ui-ink">执行过程{revised ? " · 已调整计划" : ""}</span>
       <span className="text-ui-accent">{statusText[task.status] ?? task.status}</span>
     </div>
     <div className="space-y-2.5 px-4 py-3">

@@ -146,6 +146,111 @@ def test_intent_hint_only_selects_allowlisted_analysis_skill(tmp_path):
     assert all(step["tool"] != "skill" for step in blocked)
 
 
+@pytest.mark.asyncio
+async def test_model_plan_cannot_change_bound_paper_account_or_run_write_skill(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id}
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+
+    async def malicious_plan(*_args, **_kwargs):
+        return [
+            {"tool": "get_paper_session", "args": {"session_id": "paper:other"}},
+            {"tool": "get_portfolio_summary"},
+            {"tool": "skill", "skill_id": "portfolio_management", "args": {"action": "clear"}},
+            {"tool": "advance_paper_day", "args": {"target_date": "2026-09-28"}},
+            {"tool": "search_artifacts", "query": "策略报告"},
+        ]
+
+    harness._request_model_plan = malicious_plan
+    plan, source = await harness._build_plan("解释模拟盘", "paper:mine", None)
+    assert source == "model"
+    assert [(step["tool"], step["args"]) for step in plan] == [
+        ("get_paper_session", {"session_id": "paper:mine"}),
+        ("search_artifacts", {"q": "策略报告", "limit": 5}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_required_portfolio_source_stays_abstained_after_replan(tmp_path):
+    async def paper(session_id):
+        raise AssertionError("不应读取模拟盘")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.tools.register(LightweightTool(
+        name="get_portfolio_summary", description="portfolio", parameters={},
+        handler=lambda: asyncio.sleep(0, result={"error": "持仓库暂时不可用"}),
+    ))
+    harness.tools.register(LightweightTool(
+        name="search_artifacts", description="artifacts", parameters={},
+        handler=lambda **_kwargs: asyncio.sleep(0, result={"source": "历史产物", "total": 1}),
+    ))
+    requests = []
+
+    async def plans(*_args, **kwargs):
+        requests.append(kwargs.get("evidence"))
+        return ([{"tool": "get_portfolio_summary"}] if len(requests) == 1 else
+                [{"tool": "search_artifacts", "query": "风险报告"}])
+
+    harness._request_model_plan = plans
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "评估当前持仓风险")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "completed"
+    assert [item["tool_name"] for item in detail["evidence"]] == [
+        "get_portfolio_summary", "search_artifacts",
+    ]
+    assert any(event["event_type"] == "plan_revised" for event in detail["events"])
+    assert "没有生成交易判断" in detail["result"]["content"]
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_model_plan_rejects_unknown_tools_and_falls_back(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id}
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+
+    async def invalid_plan(*_args, **_kwargs):
+        return [{"tool": "execute_trade", "args": {"quantity": 100}}]
+
+    harness._request_model_plan = invalid_plan
+    plan, source = await harness._build_plan("你好", None, None)
+    assert source == "rules"
+    assert [step["tool"] for step in plan] == ["chat_agent"]
+
+
+@pytest.mark.asyncio
+async def test_model_plan_allows_one_registered_analysis_skill(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id}
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+
+    class SafeSkills:
+        def get(self, name):
+            return object() if name in {"stock_analysis", "market_scanner"} else None
+
+    harness.skills = SafeSkills()
+
+    async def proposed(*_args, **_kwargs):
+        return [
+            {"tool": "skill", "skill_id": "stock_analysis", "args": {"ticker": "600519.SH"}},
+            {"tool": "skill", "skill_id": "market_scanner", "args": {}},
+        ]
+
+    harness._request_model_plan = proposed
+    plan, source = await harness._build_plan("分析 600519.SH", None, None)
+    assert source == "model"
+    assert [(step["tool"], step.get("skill_id")) for step in plan] == [
+        ("skill", "stock_analysis"),
+    ]
+    assert plan[0]["args"] == {"ticker": "600519.SH"}
+
+
 async def _proposed_advance(tmp_path):
     async def paper(session_id):
         return {"session_id": session_id, "source": "StockManager ledger",
