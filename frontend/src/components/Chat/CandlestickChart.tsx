@@ -17,7 +17,7 @@ const VOLUME_BOTTOM = 330;
 export function CandlestickChart({ candles, plan = {}, days = 60, chipProfile }: CandlestickChartProps) {
   const rows = candles.slice(-days).filter((row) => row.high !== null && row.low !== null && row.close !== null);
   if (rows.length < 2) {
-    return <div className="flex h-48 items-center justify-center text-stone-500">K 线数据不足</div>;
+    return <div className="flex h-48 items-center justify-center text-ui-faint">K 线数据不足</div>;
   }
 
   const zone = numberArray(plan.action_zone ?? plan.entry_zone);

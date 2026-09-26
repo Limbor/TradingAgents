@@ -107,7 +107,7 @@ export default function Analysis() {
   if (!runId) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-stone-500">
+        <p className="text-ui-faint">
           Start an analysis from the Dashboard to see results here.
         </p>
       </div>
@@ -127,10 +127,10 @@ export default function Analysis() {
 
   return (
     <div className="mx-auto flex h-full max-w-7xl flex-col gap-4">
-      <div className="flex flex-col justify-between gap-3 border-b border-stone-800 pb-4 lg:flex-row lg:items-center">
+      <div className="flex flex-col justify-between gap-3 border-b border-ui-line pb-4 lg:flex-row lg:items-center">
         <div>
-          <p className="font-mono text-xs text-stone-500">Run {runId.slice(0, 8)}</p>
-          <h2 className="mt-1 text-xl font-semibold text-stone-50">Live agent analysis</h2>
+          <p className="font-mono text-xs text-ui-faint">Run {runId.slice(0, 8)}</p>
+          <h2 className="mt-1 text-xl font-semibold text-ui-ink">Live agent analysis</h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Kpi icon={Layers3} label="Agents" value={completedAgents} />
@@ -138,7 +138,7 @@ export default function Analysis() {
           <Kpi icon={RadioTower} label="Tools" value={toolCalls.length} />
           <Link
             to={`/library?run_id=${runId}`}
-            className="inline-flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-xs font-medium text-teal-200 transition hover:border-teal-400/60"
+            className="inline-flex items-center gap-2 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-2 text-xs font-medium text-ui-accent transition hover:border-ui-accent/60"
           >
             <ScrollText className="h-4 w-4" />
             Library
@@ -146,7 +146,7 @@ export default function Analysis() {
           <button
             onClick={handleCancel}
             disabled={status !== "running"}
-            className="inline-flex items-center gap-2 rounded-lg border border-stone-700 px-3 py-2 text-xs font-medium text-stone-300 transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-45"
+            className="inline-flex items-center gap-2 rounded-lg border border-ui-strong px-3 py-2 text-xs font-medium text-ui-body transition hover:bg-ui-hover disabled:cursor-not-allowed disabled:opacity-45"
           >
             <CircleSlash2 className="h-4 w-4" />
             Cancel
@@ -156,16 +156,16 @@ export default function Analysis() {
 
       <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <div className="flex min-h-0 flex-col gap-4">
-          <section className="min-h-0 flex-1 rounded-lg border border-stone-800 bg-stone-900 p-4">
-          <h3 className="mb-3 text-sm font-semibold text-stone-200">Execution Graph</h3>
+          <section className="min-h-0 flex-1 rounded-lg border border-ui-line bg-ui-panel p-4">
+          <h3 className="mb-3 text-sm font-semibold text-ui-body">Execution Graph</h3>
           <AgentGraph agentStatuses={agentStatuses} />
           </section>
-          <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+          <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
           <ProgressTracker status={status} error={error} />
           </section>
         </div>
 
-        <section className="min-h-0 rounded-lg border border-stone-800 bg-stone-900 p-4">
+        <section className="min-h-0 rounded-lg border border-ui-line bg-ui-panel p-4">
           <ReportPanel sections={reportSections} toolCalls={toolCalls} />
         </section>
       </div>
@@ -183,10 +183,10 @@ function Kpi({
   value: number;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-900 px-3 py-2 text-xs">
-      <Icon className="h-4 w-4 text-teal-300" />
-      <span className="text-stone-500">{label}</span>
-      <span className="font-mono font-semibold text-stone-100">{value}</span>
+    <div className="flex items-center gap-2 rounded-lg border border-ui-line bg-ui-panel px-3 py-2 text-xs">
+      <Icon className="h-4 w-4 text-ui-accent" />
+      <span className="text-ui-faint">{label}</span>
+      <span className="font-mono font-semibold text-ui-ink">{value}</span>
     </div>
   );
 }

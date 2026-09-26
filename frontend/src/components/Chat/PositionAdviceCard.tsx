@@ -4,10 +4,10 @@ import { useNavigate } from "react-router-dom";
 type Advice = Record<string, unknown>;
 
 const actionStyle: Record<string, string> = {
-  ADD: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-  HOLD: "border-sky-500/30 bg-sky-500/10 text-sky-300",
-  REDUCE: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-  EXIT: "border-red-500/30 bg-red-500/10 text-red-300",
+  ADD: "border-ui-success/30 bg-ui-success/10 text-ui-success",
+  HOLD: "border-ui-info/30 bg-ui-info/10 text-ui-info",
+  REDUCE: "border-ui-warning/30 bg-ui-warning/10 text-ui-warning",
+  EXIT: "border-ui-danger/30 bg-ui-danger/10 text-ui-danger",
 };
 
 export function PositionAdviceCard({ advice }: { advice: Advice }) {
@@ -23,11 +23,11 @@ export function PositionAdviceCard({ advice }: { advice: Advice }) {
   const Icon = action === "ADD" ? TrendingUp : action === "HOLD" ? CheckCircle2 : action === "REDUCE" ? MinusCircle : AlertTriangle;
 
   return (
-    <div className="rounded-lg border border-stone-700 bg-stone-900/80 p-4">
+    <div className="rounded-lg border border-ui-strong bg-ui-panel/80 p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="font-mono text-xs text-stone-500">{String(advice.symbol ?? "")}</div>
-          <div className="mt-1 text-sm text-stone-300">
+          <div className="font-mono text-xs text-ui-faint">{String(advice.symbol ?? "")}</div>
+          <div className="mt-1 text-sm text-ui-body">
             浮盈亏 {number(metrics.pnl_pct).toFixed(2)}% · 仓位 {number(metrics.position_pct).toFixed(2)}%
           </div>
         </div>
@@ -41,9 +41,9 @@ export function PositionAdviceCard({ advice }: { advice: Advice }) {
         <Metric label="建议变化" value={`${signed(number(execution.quantity_change))} 股`} />
         <Metric label="目标仓位" value={`${number(execution.target_position_pct).toFixed(2)}%`} />
       </div>
-      {reasons.length > 0 && <ul className="mt-3 space-y-1 text-xs text-stone-300">{reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul>}
-      {warnings.length > 0 && <div className="mt-3 rounded border border-amber-500/20 bg-amber-500/5 p-2 text-xs text-amber-200">{warnings.join("；")}</div>}
-      {Boolean(execution.requires_user_confirmation) && <p className="mt-3 text-xs text-stone-500">该建议不会自动修改持仓，执行前需要用户确认。</p>}
+      {reasons.length > 0 && <ul className="mt-3 space-y-1 text-xs text-ui-body">{reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul>}
+      {warnings.length > 0 && <div className="mt-3 rounded border border-ui-warning/20 bg-ui-warning/5 p-2 text-xs text-ui-warning">{warnings.join("；")}</div>}
+      {Boolean(execution.requires_user_confirmation) && <p className="mt-3 text-xs text-ui-faint">该建议不会自动修改持仓，执行前需要用户确认。</p>}
       {canAdjust && (
         <button
           type="button"
@@ -69,7 +69,7 @@ export function PositionAdviceCard({ advice }: { advice: Advice }) {
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="rounded border border-stone-800 bg-stone-950 p-2"><div className="text-stone-500">{label}</div><div className="mt-1 font-mono text-stone-200">{value}</div></div>;
+  return <div className="rounded border border-ui-line bg-ui-subtle p-2"><div className="text-ui-faint">{label}</div><div className="mt-1 font-mono text-ui-body">{value}</div></div>;
 }
 
 function objectOf(value: unknown): Record<string, unknown> {

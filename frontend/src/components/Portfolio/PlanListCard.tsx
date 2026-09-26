@@ -58,16 +58,16 @@ function triggeredTimeLabel(plan: Plan): string {
 type PriceTone = "blue" | "red" | "green" | "slate";
 
 const PRICE_TONES: Record<PriceTone, string> = {
-  blue: "border-blue-500/30 bg-blue-500/5 text-blue-200",
-  red: "border-red-500/30 bg-red-500/5 text-red-200",
-  green: "border-emerald-500/30 bg-emerald-500/5 text-emerald-200",
-  slate: "border-stone-600/40 bg-stone-800/30 text-stone-200",
+  blue: "border-ui-info/30 bg-ui-info/5 text-ui-info",
+  red: "border-ui-danger/30 bg-ui-danger/5 text-ui-danger",
+  green: "border-ui-success/30 bg-ui-success/5 text-ui-success",
+  slate: "border-ui-strong/40 bg-ui-hover/30 text-ui-body",
 };
 
 function PriceBlock({ label, value, tone }: { label: string; value: string; tone: PriceTone }) {
   return (
     <div className={"rounded border px-2 py-1 " + PRICE_TONES[tone]}>
-      <div className="text-[10px] text-stone-500">{label}</div>
+      <div className="text-[10px] text-ui-faint">{label}</div>
       <div className="font-mono text-xs">{value}</div>
     </div>
   );
@@ -100,19 +100,19 @@ export function PlanListCard() {
   const visible = [...triggered, ...active];
 
   return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-stone-100">
-          <Shield className="h-4 w-4 text-emerald-300" />
+        <div className="flex items-center gap-2 text-ui-ink">
+          <Shield className="h-4 w-4 text-ui-success" />
           <h3 className="text-sm font-semibold">交易计划</h3>
         </div>
-        <span className="text-xs text-stone-500">
+        <span className="text-xs text-ui-faint">
           {active.length} 个监控中 · {triggered.length} 个已触发
         </span>
       </div>
 
       {visible.length === 0 ? (
-        <p className="text-xs text-stone-500">
+        <p className="text-xs text-ui-faint">
           暂无监控中的计划。在单股分析卡片点"纳入计划"即可加入监控--收盘后会自动评估价格触及/金叉死叉/现金流等条件并在此提醒。
         </p>
       ) : (
@@ -140,39 +140,39 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
     <div
       className={
         "rounded-lg border p-3 text-xs transition-colors " +
-        (isTriggered ? "border-amber-500/50 bg-amber-500/5" : "border-stone-700 bg-stone-950")
+        (isTriggered ? "border-ui-warning/50 bg-ui-warning/5" : "border-ui-strong bg-ui-subtle")
       }
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {isTriggered ? (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ui-warning/15 px-2 py-0.5 text-[10px] font-medium text-ui-warning">
               <Bell className="h-3 w-3" /> 已触发
             </span>
           ) : (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ui-success/15 px-2 py-0.5 text-[10px] font-medium text-ui-success">
               <Activity className="h-3 w-3" /> 监控中
             </span>
           )}
-          <span className="truncate font-medium text-stone-100">{displayName}</span>
+          <span className="truncate font-medium text-ui-ink">{displayName}</span>
           {plan.name && plan.name !== plan.symbol && (
-            <span className="shrink-0 font-mono text-[11px] text-stone-500">{plan.symbol}</span>
+            <span className="shrink-0 font-mono text-[11px] text-ui-faint">{plan.symbol}</span>
           )}
           {lifecycleLabel && (
-            <span className="shrink-0 rounded bg-teal-500/10 px-1.5 py-0.5 text-[10px] text-teal-300">{lifecycleLabel}</span>
+            <span className="shrink-0 rounded bg-ui-accent/10 px-1.5 py-0.5 text-[10px] text-ui-accent">{lifecycleLabel}</span>
           )}
         </div>
         {plan.rating && (
-          <span className="shrink-0 rounded bg-stone-800 px-1.5 py-0.5 font-mono text-[10px] text-stone-300">
+          <span className="shrink-0 rounded bg-ui-hover px-1.5 py-0.5 font-mono text-[10px] text-ui-body">
             {plan.rating}
           </span>
         )}
       </div>
 
       {isTriggered && plan.trigger_reason && (
-        <div className="mt-2 rounded bg-amber-500/10 px-2 py-1 text-amber-200">
+        <div className="mt-2 rounded bg-ui-warning/10 px-2 py-1 text-ui-warning">
           <span className="font-medium">触发</span>: {plan.trigger_reason}
-          {triggeredTimeLabel(plan) && <span className="ml-2 text-amber-300/60">· {triggeredTimeLabel(plan)}</span>}
+          {triggeredTimeLabel(plan) && <span className="ml-2 text-ui-warning/60">· {triggeredTimeLabel(plan)}</span>}
         </div>
       )}
 
@@ -188,7 +188,7 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
       </div>
 
       {(plan.reliability_score !== null || plan.expires_at) && (
-        <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-stone-500">
+        <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-ui-faint">
           {plan.reliability_score !== null && <span>推荐可靠性 {Math.round(plan.reliability_score)}/100</span>}
           {plan.expires_at && <span>有效至 {plan.expires_at}</span>}
         </div>
@@ -199,7 +199,7 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
           {plan.conditions.map((c, i) => (
             <span
               key={i}
-              className="rounded border border-stone-700 bg-stone-800/50 px-1.5 py-0.5 text-[10px] text-stone-300"
+              className="rounded border border-ui-strong bg-ui-hover/50 px-1.5 py-0.5 text-[10px] text-ui-body"
               title={c.description}
             >
               {conditionLabel(c.kind, direction, c.trigger_action)} · {c.description}
@@ -208,20 +208,20 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
         </div>
       )}
 
-      <div className="mt-2.5 flex items-center justify-between border-t border-stone-800 pt-2">
-        <span className="text-[10px] text-stone-500" title={plan.last_checked_at ?? undefined}>
+      <div className="mt-2.5 flex items-center justify-between border-t border-ui-line pt-2">
+        <span className="text-[10px] text-ui-faint" title={plan.last_checked_at ?? undefined}>
           上次检查: {lastCheckLabel(plan)}
         </span>
         <div className="flex gap-1.5">
           <button
             onClick={onClose}
-            className="inline-flex items-center gap-1 rounded border border-stone-600 px-2 py-0.5 text-stone-400 hover:bg-stone-800"
+            className="inline-flex items-center gap-1 rounded border border-ui-strong px-2 py-0.5 text-ui-muted hover:bg-ui-hover"
           >
             <X className="h-3 w-3" /> 关闭
           </button>
           <button
             onClick={onRemove}
-            className="inline-flex items-center gap-1 rounded border border-stone-700 px-2 py-0.5 text-stone-500 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-300"
+            className="inline-flex items-center gap-1 rounded border border-ui-strong px-2 py-0.5 text-ui-faint hover:border-ui-danger/40 hover:bg-ui-danger/10 hover:text-ui-danger"
           >
             <Trash2 className="h-3 w-3" /> 删除
           </button>

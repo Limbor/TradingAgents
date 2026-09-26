@@ -156,18 +156,18 @@ export default function Market() {
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-5">
       {/* Header */}
-      <div className="flex flex-col justify-between gap-4 border-b border-stone-800 pb-5 lg:flex-row lg:items-end">
+      <div className="flex flex-col justify-between gap-4 border-b border-ui-line pb-5 lg:flex-row lg:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-300">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ui-accent">
             Market panorama
           </p>
-          <h2 className="mt-2 text-2xl font-semibold text-stone-50">市场全景</h2>
-          <p className="mt-1 max-w-2xl text-sm text-stone-400">
+          <h2 className="mt-2 text-2xl font-semibold text-ui-ink">市场全景</h2>
+          <p className="mt-1 max-w-2xl text-sm text-ui-muted">
             大盘体制 · 机构行业与热点主题 · 要闻解读 · 大事日历
           </p>
         </div>
         {refreshError && (
-          <span className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-300">
+          <span className="rounded border border-ui-danger/30 bg-ui-danger/10 px-2 py-1 text-xs text-ui-danger">
             {refreshError}
           </span>
         )}
@@ -175,20 +175,20 @@ export default function Market() {
 
       {overviewQuery.isLoading ? (
         <div className="flex items-center justify-center py-24">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-teal-300 border-t-transparent" />
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-ui-accent border-t-transparent" />
         </div>
       ) : !data?.available || !payload ? (
         /* Empty state: never generated yet */
-        <div className="rounded-lg border border-dashed border-stone-700 bg-stone-900 px-4 py-16 text-center">
-          <Globe className="mx-auto h-10 w-10 text-stone-600" />
-          <p className="mt-4 text-sm font-medium text-stone-300">还没有市场全景数据</p>
-          <p className="mt-1 text-xs text-stone-500">
+        <div className="rounded-lg border border-dashed border-ui-strong bg-ui-panel px-4 py-16 text-center">
+          <Globe className="mx-auto h-10 w-10 text-ui-faint" />
+          <p className="mt-4 text-sm font-medium text-ui-body">还没有市场全景数据</p>
+          <p className="mt-1 text-xs text-ui-faint">
             生成一次约需 1-2 分钟（串行抓取市场数据 + AI 汇总），之后每个交易日收盘后自动更新
           </p>
           <button
             onClick={refresh}
             disabled={refreshing}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg border border-teal-500/40 bg-teal-500/10 px-4 py-2 text-sm font-semibold text-teal-100 transition hover:bg-teal-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-4 inline-flex items-center gap-2 rounded-lg border border-ui-accent/40 bg-ui-accent/10 px-4 py-2 text-sm font-semibold text-ui-accent transition hover:bg-ui-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Sparkles className="h-4 w-4" />
             {refreshing ? "生成中，请稍候" : "立即生成"}

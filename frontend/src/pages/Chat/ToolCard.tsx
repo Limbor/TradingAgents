@@ -38,37 +38,37 @@ export function ToolCard({ message, bare = false }: ToolCardProps) {
     <div
       className={
         bare
-          ? "px-3 py-2 text-sm leading-6 text-stone-200"
-          : "ml-11 max-w-[85%] rounded-lg border border-stone-800 bg-stone-950/60 px-3 py-2 text-sm leading-6 text-stone-200"
+          ? "px-3 py-2 text-sm leading-6 text-ui-body"
+          : "ml-11 max-w-[85%] rounded-lg border border-ui-line bg-ui-subtle/60 px-3 py-2 text-sm leading-6 text-ui-body"
       }
     >
       <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
         <Wrench className="h-3.5 w-3.5 shrink-0 text-indigo-300/80" />
-        <span className="text-xs font-medium text-stone-300">{toolLabel(tool)}</span>
+        <span className="text-xs font-medium text-ui-body">{toolLabel(tool)}</span>
         {headerChips.map(([k, v]) => (
           <span
             key={k}
-            className="rounded border border-stone-800 bg-stone-900/60 px-1.5 py-0.5 text-[11px] text-stone-400"
+            className="rounded border border-ui-line bg-ui-panel/60 px-1.5 py-0.5 text-[11px] text-ui-muted"
           >
-            <span className="text-stone-500">{k}:</span> <span className="text-stone-300">{formatArg(v)}</span>
+            <span className="text-ui-faint">{k}:</span> <span className="text-ui-body">{formatArg(v)}</span>
           </span>
         ))}
         {overflow > 0 && (
-          <span className="rounded border border-stone-800 bg-stone-900/60 px-1.5 py-0.5 text-[11px] text-stone-500">
+          <span className="rounded border border-ui-line bg-ui-panel/60 px-1.5 py-0.5 text-[11px] text-ui-faint">
             +{overflow}
           </span>
         )}
       </div>
       <ToolResult display={display} result={result} />
       {hasCallDetails && (
-        <details className="mt-2 border-t border-stone-800 pt-1.5">
-          <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">调用详情</summary>
+        <details className="mt-2 border-t border-ui-line pt-1.5">
+          <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">调用详情</summary>
           <div className="mt-1.5 space-y-1.5">
             {argEntries.length > 0 && (
-              <div className="flex flex-wrap gap-1 text-[11px] text-stone-400">
+              <div className="flex flex-wrap gap-1 text-[11px] text-ui-muted">
                 {argEntries.map(([k, v]) => (
-                  <span key={k} className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5">
-                    <span className="text-stone-500">{k}:</span> <span className="text-stone-300">{formatArg(v)}</span>
+                  <span key={k} className="rounded border border-ui-strong bg-ui-panel/60 px-1.5 py-0.5">
+                    <span className="text-ui-faint">{k}:</span> <span className="text-ui-body">{formatArg(v)}</span>
                   </span>
                 ))}
               </div>
@@ -97,7 +97,7 @@ function ToolResult({ display, result }: { display: string; result: unknown }) {
   }
   if (resultIsObject(result)) return <ToolTable result={result} />;
   return (
-    <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs text-stone-300">
+    <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs text-ui-body">
       {formatResult(result)}
     </pre>
   );
@@ -135,7 +135,7 @@ function ToolTable({ result }: { result: Record<string, unknown> }) {
   if (listKey) {
     const rows = result[listKey] as Record<string, unknown>[];
     if (rows.length === 0) {
-      return <p className="text-stone-400 italic">{String(result.message ?? "No data")}</p>;
+      return <p className="text-ui-muted italic">{String(result.message ?? "No data")}</p>;
     }
     const columns = Object.keys(rows[0] ?? {}).filter(
       (k) => k !== "warnings" && k !== "errors"
@@ -157,9 +157,9 @@ function ToolTable({ result }: { result: Record<string, unknown> }) {
           </thead>
           <tbody>
             {rows.map((row, i) => (
-              <tr key={i} className="border-b border-stone-700/30">
+              <tr key={i} className="border-b border-ui-strong/30">
                 {columns.map((col) => (
-                  <td key={col} className="px-2 py-1 text-stone-300">
+                  <td key={col} className="px-2 py-1 text-ui-body">
                     {formatCell(row[col])}
                   </td>
                 ))}
@@ -180,7 +180,7 @@ function ToolTable({ result }: { result: Record<string, unknown> }) {
         .map(([key, val]) => (
           <div key={key} className="flex gap-2 text-xs">
             <span className="font-medium text-indigo-300/70">{key}:</span>
-            <span className="text-stone-300">{formatCell(val)}</span>
+            <span className="text-ui-body">{formatCell(val)}</span>
           </div>
         ))}
       {renderWarnings(result)}
@@ -202,7 +202,7 @@ function ToolCardBody({ result }: { result: Record<string, unknown> }) {
         .map(([key, val]) => (
           <div key={key} className="flex gap-2 text-xs">
             <span className="font-medium text-indigo-300/70 shrink-0">{key}:</span>
-            <span className="text-stone-300 truncate">{formatCell(val)}</span>
+            <span className="text-ui-body truncate">{formatCell(val)}</span>
           </div>
         ))}
       {renderWarnings(result)}
@@ -223,8 +223,8 @@ function Citations({
   }>;
 }) {
   return (
-    <div className="mt-2 pt-2 border-t border-stone-800 space-y-1">
-      <div className="text-xs text-stone-400">
+    <div className="mt-2 pt-2 border-t border-ui-line space-y-1">
+      <div className="text-xs text-ui-muted">
         数据来源：
         {citations.map((c, i) => (
           <span key={i} className="ml-1 text-indigo-400/70">
@@ -236,7 +236,7 @@ function Citations({
         ))}
       </div>
       {citations.some((c) => c.warnings && c.warnings.length > 0) && (
-        <div className="text-xs text-amber-300/80">
+        <div className="text-xs text-ui-warning/80">
           {citations
             .flatMap((c) => c.warnings || [])
             .map((w, i) => (
@@ -253,7 +253,7 @@ function renderWarnings(result: Record<string, unknown> | null | undefined) {
   const warnings: unknown = result.warnings;
   if (!Array.isArray(warnings) || warnings.length === 0) return null;
   return (
-    <div className="mt-2 text-xs text-amber-400/80">
+    <div className="mt-2 text-xs text-ui-warning/80">
       {warnings.map((w: unknown, i: number) => (
         <div key={i}>⚠ {String(w)}</div>
       ))}

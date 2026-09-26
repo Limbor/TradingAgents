@@ -101,13 +101,13 @@ export function MessageList({ messages, sendReady, onAnalyze, onSendPrompt, onPr
             return (
               <div
                 key={group.id}
-                className="ml-11 max-w-[85%] rounded-lg border border-stone-800 bg-stone-950/60"
+                className="ml-11 max-w-[85%] rounded-lg border border-ui-line bg-ui-subtle/60"
               >
-                <div className="flex items-center gap-1.5 border-b border-stone-800 px-3 py-1.5 text-xs text-stone-400">
+                <div className="flex items-center gap-1.5 border-b border-ui-line px-3 py-1.5 text-xs text-ui-muted">
                   <Wrench className="h-3.5 w-3.5 text-indigo-300/80" />
                   <span>工具调用 ×{group.messages.length}</span>
                 </div>
-                <div className="divide-y divide-stone-800">
+                <div className="divide-y divide-ui-line">
                   {group.messages.map((message) => (
                     <ToolCard key={message.id} message={message} bare />
                   ))}
@@ -132,28 +132,28 @@ export function MessageList({ messages, sendReady, onAnalyze, onSendPrompt, onPr
               className={`flex gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}
             >
               {message.role !== "user" && (
-                <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-teal-500/30 bg-teal-500/10">
+                <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-ui-accent/30 bg-ui-accent/10">
                   {message.role === "system" ? (
-                    <RadioTower className="h-4 w-4 text-amber-300" />
+                    <RadioTower className="h-4 w-4 text-ui-warning" />
                   ) : (
-                    <Bot className="h-4 w-4 text-teal-300" />
+                    <Bot className="h-4 w-4 text-ui-accent" />
                   )}
                 </div>
               )}
               <div
                 className={`max-w-[80%] rounded-lg border px-3 py-2 text-sm leading-6 ${
                   message.role === "user"
-                    ? "border-teal-500/30 bg-teal-500/15 text-stone-50"
+                    ? "border-ui-accent/30 bg-ui-accent/15 text-ui-ink"
                     : message.role === "system"
-                      ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
-                      : "border-stone-800 bg-stone-950 text-stone-200"
+                      ? "border-ui-warning/20 bg-ui-warning/10 text-ui-warning"
+                      : "border-ui-line bg-ui-subtle text-ui-body"
                 }`}
               >
                 <AssistantContent message={message} sendReady={sendReady} onSendPrompt={onSendPrompt} />
               </div>
               {message.role === "user" && (
-                <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-stone-700 bg-stone-950">
-                  <UserRound className="h-4 w-4 text-stone-300" />
+                <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-ui-strong bg-ui-subtle">
+                  <UserRound className="h-4 w-4 text-ui-body" />
                 </div>
               )}
             </div>
@@ -194,7 +194,7 @@ function AssistantContent({
               key={i}
               type="button"
               onClick={() => onSendPrompt(opt)}
-              className={`inline-block rounded-full border border-teal-500/30 bg-teal-500/10 px-2.5 py-0.5 text-xs text-teal-300 transition-colors hover:bg-teal-500/25 hover:border-teal-500/50 ${
+              className={`inline-block rounded-full border border-ui-accent/30 bg-ui-accent/10 px-2.5 py-0.5 text-xs text-ui-accent transition-colors hover:bg-ui-accent/25 hover:border-ui-accent/50 ${
                 sendReady ? "" : "opacity-50"
               }`}
             >
@@ -204,11 +204,11 @@ function AssistantContent({
         </div>
       )}
       {citations && citations.length > 0 && (
-        <div className="mt-2 pt-2 border-t border-stone-700 space-y-1">
-          <div className="text-xs text-stone-400">
+        <div className="mt-2 pt-2 border-t border-ui-strong space-y-1">
+          <div className="text-xs text-ui-muted">
             数据来源：
             {citations.map((c, i) => (
-              <span key={i} className="ml-1 text-teal-400/70">
+              <span key={i} className="ml-1 text-ui-accent/70">
                 {c.source || c.tool}
                 {c.as_of_date ? ` · 基准日 ${c.as_of_date}` : ""}
                 {c.summary ? ` (${c.summary})` : ""}
@@ -217,7 +217,7 @@ function AssistantContent({
             ))}
           </div>
           {citations.some((c) => c.warnings && c.warnings.length > 0) && (
-            <div className="text-xs text-amber-300/80">
+            <div className="text-xs text-ui-warning/80">
               {citations
                 .flatMap((c) => c.warnings || [])
                 .map((w, i) => (

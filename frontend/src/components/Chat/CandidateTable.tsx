@@ -71,19 +71,19 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
   const queryClient = useQueryClient();
   if (candidates.length === 0) {
     return (
-      <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-200 space-y-2">
+      <div className="rounded-lg border border-ui-warning/20 bg-ui-warning/5 p-4 text-sm text-ui-warning space-y-2">
         <div className="flex items-center gap-2">
-          <AlertCircle className="h-4 w-4 shrink-0 text-amber-300" />
+          <AlertCircle className="h-4 w-4 shrink-0 text-ui-warning" />
           <span className="font-medium">没有找到候选标的</span>
         </div>
         {warnings && warnings.length > 0 && (
-          <ul className="ml-6 list-disc space-y-1 text-xs text-amber-300/80">
+          <ul className="ml-6 list-disc space-y-1 text-xs text-ui-warning/80">
             {warnings.map((w, i) => (
               <li key={i}>{w}</li>
             ))}
           </ul>
         )}
-        <p className="text-xs text-stone-500 mt-1">
+        <p className="text-xs text-ui-faint mt-1">
           可能原因：非交易日、MCP 数据未更新、板块过滤过严或指数成分股缺失
         </p>
       </div>
@@ -91,49 +91,49 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
   }
 
   const decisionColor = (decision?: string) => {
-    if (!decision) return "text-stone-400";
+    if (!decision) return "text-ui-muted";
     const d = decision.toLowerCase();
-    if (d.includes("buy") || d.includes("strong")) return "text-emerald-300";
-    if (d.includes("sell") || d.includes("avoid")) return "text-red-300";
-    if (d.includes("hold") || d.includes("neutral")) return "text-amber-300";
-    return "text-stone-300";
+    if (d.includes("buy") || d.includes("strong")) return "text-ui-success";
+    if (d.includes("sell") || d.includes("avoid")) return "text-ui-danger";
+    if (d.includes("hold") || d.includes("neutral")) return "text-ui-warning";
+    return "text-ui-body";
   };
 
   return (
     <div className="space-y-3">
       {dataWindowNote && (
-        <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-2.5 text-xs text-sky-200">
+        <div className="rounded-lg border border-ui-info/20 bg-ui-info/5 p-2.5 text-xs text-ui-info">
           <div className="flex items-start gap-2">
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-300" />
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-info" />
             <div className="min-w-0 flex-1">
               <span className="font-medium">数据窗口</span>
               {sessionState && (
-                <span className="ml-2 rounded bg-sky-500/20 px-1.5 py-0.5 font-mono text-[10px] text-sky-100">
+                <span className="ml-2 rounded bg-ui-info/20 px-1.5 py-0.5 font-mono text-[10px] text-ui-info">
                   {sessionLabel(sessionState)}
                 </span>
               )}
-              <span className="ml-2 text-sky-100/90">{dataWindowNote}</span>
-              {asOfDate && <span className="ml-2 font-mono text-sky-300/70">as-of {asOfDate}</span>}
+              <span className="ml-2 text-ui-info/90">{dataWindowNote}</span>
+              {asOfDate && <span className="ml-2 font-mono text-ui-info/70">as-of {asOfDate}</span>}
             </div>
           </div>
         </div>
       )}
       {warnings && warnings.length > 0 && candidates.length > 0 && (
-        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 text-xs text-amber-200">
+        <div className="rounded-lg border border-ui-warning/20 bg-ui-warning/5 p-2.5 text-xs text-ui-warning">
           <div className="flex items-center gap-2 font-medium">
-            <AlertCircle className="h-3.5 w-3.5 text-amber-300" />
+            <AlertCircle className="h-3.5 w-3.5 text-ui-warning" />
             提示
           </div>
-          <ul className="ml-5 mt-1 list-disc space-y-0.5 text-amber-300/80">
+          <ul className="ml-5 mt-1 list-disc space-y-0.5 text-ui-warning/80">
             {warnings.map((w, i) => (
               <li key={i}>{w}</li>
             ))}
           </ul>
         </div>
       )}
-      <div className="overflow-x-auto rounded-lg border border-stone-800">
+      <div className="overflow-x-auto rounded-lg border border-ui-line">
         <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="bg-stone-900 text-xs uppercase text-stone-500">
+          <thead className="bg-ui-panel text-xs uppercase text-ui-faint">
             <tr>
               <th className="px-3 py-2 w-8">#</th>
               <th className="px-3 py-2">标的</th>
@@ -149,11 +149,11 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
           <tbody>
             {candidates.map((row) => (
               <Fragment key={row.symbol}>
-              <tr className="border-t border-stone-800 hover:bg-stone-900/50">
-                <td className="px-3 py-2 text-stone-500">
+              <tr className="border-t border-ui-line hover:bg-ui-panel/50">
+                <td className="px-3 py-2 text-ui-faint">
                   <button
                     onClick={() => setExpanded(expanded === row.symbol ? null : row.symbol)}
-                    className="inline-flex items-center gap-1 text-stone-500 hover:text-stone-200"
+                    className="inline-flex items-center gap-1 text-ui-faint hover:text-ui-body"
                     title="展开候选解释"
                   >
                     {expanded === row.symbol ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -161,9 +161,9 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                   </button>
                 </td>
                 <td className="px-3 py-2">
-                  <span className="font-mono text-stone-100">{row.symbol}</span>
-                  {row.name && <span className="ml-2 text-stone-400">{row.name}</span>}
-                  <div className="mt-1 flex flex-wrap gap-1 text-xs text-stone-500">
+                  <span className="font-mono text-ui-ink">{row.symbol}</span>
+                  {row.name && <span className="ml-2 text-ui-muted">{row.name}</span>}
+                  <div className="mt-1 flex flex-wrap gap-1 text-xs text-ui-faint">
                     {row.board && <span>{row.board}</span>}
                     {row.industry && (
                       <span>
@@ -172,51 +172,51 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                       </span>
                     )}
                     {row.gate_reasons?.slice(0, 2).map((reason) => (
-                      <span key={reason} className="rounded bg-stone-800 px-1.5 py-0.5" title={explainGateReason(reason)}>{reason}</span>
+                      <span key={reason} className="rounded bg-ui-hover px-1.5 py-0.5" title={explainGateReason(reason)}>{reason}</span>
                     ))}
                     {row.dataCoverageWarnings?.map((warning) => (
-                      <span key={warning} className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">{warning}</span>
+                      <span key={warning} className="rounded bg-ui-warning/10 px-1.5 py-0.5 text-ui-warning">{warning}</span>
                     ))}
                   </div>
                 </td>
                 <td className={`px-3 py-2 text-center font-medium ${decisionColor(row.decision)}`}>
                   <span title={explainFinalDecision(row.decision)}>{row.decision ?? "-"}</span>
                 </td>
-                <td className="px-3 py-2 text-center text-stone-300">
+                <td className="px-3 py-2 text-center text-ui-body">
                   <span title="量化层门控结论，只代表候选资格，不等同最终买入">{row.quantDecision ?? "-"}</span>
                 </td>
-                <td className="px-3 py-2 text-center text-stone-300">
+                <td className="px-3 py-2 text-center text-ui-body">
                   <div title="LLM 对量化信号是否仍成立的离散判断">{row.llmView ?? "-"}</div>
                   {row.catalystStrength && (
-                    <div className="text-xs text-stone-500" title="催化剂强度：confirmed/likely/speculative/none">{row.catalystStrength}</div>
+                    <div className="text-xs text-ui-faint" title="催化剂强度：confirmed/likely/speculative/none">{row.catalystStrength}</div>
                   )}
                 </td>
-                <td className="px-3 py-2 text-center text-stone-300">
+                <td className="px-3 py-2 text-center text-ui-body">
                   <span title="LLM 风险评估：low/moderate/high/critical">{row.riskAssessment ?? "-"}</span>
                 </td>
-                <td className="px-3 py-2 text-right font-mono text-stone-300">
+                <td className="px-3 py-2 text-right font-mono text-ui-body">
                   {row.latestPrice !== undefined ? (
                     <>
                       <div>{formatPrice(row.latestPrice)}</div>
-                      {row.targets?.length ? <div className="text-xs text-emerald-300">T {row.targets.map(formatPrice).join("/")}</div> : null}
-                      {row.stopLoss !== undefined ? <div className="text-xs text-red-300">S {formatPrice(row.stopLoss)}</div> : null}
+                      {row.targets?.length ? <div className="text-xs text-ui-success">T {row.targets.map(formatPrice).join("/")}</div> : null}
+                      {row.stopLoss !== undefined ? <div className="text-xs text-ui-danger">S {formatPrice(row.stopLoss)}</div> : null}
                     </>
                   ) : (
-                    <span className="text-xs text-stone-600" title="MCP 未返回收盘价，且日线补价不可用">缺收盘价</span>
+                    <span className="text-xs text-ui-faint" title="MCP 未返回收盘价，且日线补价不可用">缺收盘价</span>
                   )}
                 </td>
-                <td className="px-3 py-2 text-right font-mono text-stone-200">
+                <td className="px-3 py-2 text-right font-mono text-ui-body">
                   {row.score !== undefined ? row.score : "-"}
                   {row.quantScore !== undefined && (
-                    <div className="text-xs text-stone-500">Q {row.quantScore}</div>
+                    <div className="text-xs text-ui-faint">Q {row.quantScore}</div>
                   )}
                   {row.strategyScores && (
                     <div
-                      className="mt-0.5 whitespace-nowrap text-[10px] text-stone-500"
+                      className="mt-0.5 whitespace-nowrap text-[10px] text-ui-faint"
                       title={`当前采用${strategySleeveLabel(row.activeSleeve)}评分；括号内为因子覆盖率`}
                     >
                       进 {formatStrategyScore(row.strategyScores.attackScore, row.strategyScores.attackCoverage)}
-                      <span className="mx-1 text-stone-700">/</span>
+                      <span className="mx-1 text-ui-faint">/</span>
                       稳 {formatStrategyScore(row.strategyScores.defensiveScore, row.strategyScores.defensiveCoverage)}
                     </div>
                   )}
@@ -226,7 +226,7 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                   {onAnalyze && (
                     <button
                       onClick={() => onAnalyze(row.symbol, { selection_context: rowSelectionContext(row) })}
-                      className="inline-flex items-center gap-1 rounded border border-teal-500/30 px-2 py-1 text-xs text-teal-300 transition hover:bg-teal-500/10"
+                      className="inline-flex items-center gap-1 rounded border border-ui-accent/30 px-2 py-1 text-xs text-ui-accent transition hover:bg-ui-accent/10"
                     >
                       <TrendingUp className="h-3 w-3" />
                       分析
@@ -236,7 +236,7 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                 </td>
               </tr>
               {expanded === row.symbol && (
-                <tr className="border-t border-stone-800 bg-stone-950/80">
+                <tr className="border-t border-ui-line bg-ui-subtle/80">
                   <td />
                   <td colSpan={8} className="px-3 py-3">
                     <CandidateExpanded
@@ -274,14 +274,14 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
         <div className="flex gap-2">
           <button
             onClick={() => onAnalyze?.(candidates[0]!.symbol, { selection_context: rowSelectionContext(candidates[0]!) })}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-1.5 text-xs font-medium text-teal-300 transition hover:bg-teal-500/20"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-1.5 text-xs font-medium text-ui-accent transition hover:bg-ui-accent/20"
           >
             <ArrowRight className="h-3.5 w-3.5" />
             深度分析第1名
           </button>
           <button
             onClick={() => onAddWatchlist(candidates.map((c) => c.symbol))}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-stone-700 px-3 py-1.5 text-xs font-medium text-stone-300 transition hover:bg-stone-800"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body transition hover:bg-ui-hover"
           >
             <Plus className="h-3.5 w-3.5" />
             全部加入关注
@@ -328,7 +328,7 @@ function CandidateExpanded({
   const gateStatus = review?.pretrade_gate.status;
   const planAction = gateStatus === "actionable" ? "adopt" : "wait_trigger";
   return (
-    <div className="grid gap-3 text-xs text-stone-400 lg:grid-cols-2">
+    <div className="grid gap-3 text-xs text-ui-muted lg:grid-cols-2">
       <div className="space-y-2">
         <InfoBlock title="LLM 分析结论" empty="暂无 LLM reasoning">
           {row.reasoning}
@@ -364,22 +364,22 @@ function CandidateExpanded({
           <button
             disabled={!review || review.degraded || gateStatus === "reject" || reviewQuery.isFetching}
             onClick={() => onAction(planAction, review)}
-            className="rounded border border-emerald-500/30 px-2 py-1 text-emerald-300 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:border-stone-700 disabled:text-stone-600"
+            className="rounded border border-ui-success/30 px-2 py-1 text-ui-success hover:bg-ui-success/10 disabled:cursor-not-allowed disabled:border-ui-strong disabled:text-ui-faint"
             title={gateStatus === "reject" ? "硬门控未通过，不能加入交易计划" : undefined}
           >
             {reviewQuery.isLoading ? "交易前复核中…" : review?.degraded ? "MCP 不可用，不能加入计划" : gateStatus === "actionable" ? "加入可执行计划" : gateStatus === "wait" ? "加入等待触发" : "不建议加入"}
           </button>
-          <button onClick={() => onAction("watch")} className="rounded border border-teal-500/30 px-2 py-1 text-teal-300 hover:bg-teal-500/10">
+          <button onClick={() => onAction("watch")} className="rounded border border-ui-accent/30 px-2 py-1 text-ui-accent hover:bg-ui-accent/10">
             仅观察
           </button>
-          <button onClick={() => onAction("private")} className="rounded border border-stone-600 px-2 py-1 text-stone-300 hover:bg-stone-800">
+          <button onClick={() => onAction("private")} className="rounded border border-ui-strong px-2 py-1 text-ui-body hover:bg-ui-hover">
             私人复盘
           </button>
-          <button onClick={() => onAction("ignore")} className="rounded border border-stone-700 px-2 py-1 text-stone-500 hover:bg-stone-800">
+          <button onClick={() => onAction("ignore")} className="rounded border border-ui-strong px-2 py-1 text-ui-faint hover:bg-ui-hover">
             忽略
           </button>
         </div>
-        {feedback && <div className="rounded border border-stone-700 bg-stone-900 p-2 text-stone-300">{feedback}</div>}
+        {feedback && <div className="rounded border border-ui-strong bg-ui-panel p-2 text-ui-body">{feedback}</div>}
       </div>
     </div>
   );
@@ -403,11 +403,11 @@ function TradeReviewPanel({
   onRefresh: () => void;
 }) {
   if (loading) {
-    return <div className="rounded border border-stone-800 bg-stone-900 p-4 text-center text-stone-500">正在加载时点 K 线并执行交易前复核…</div>;
+    return <div className="rounded border border-ui-line bg-ui-panel p-4 text-center text-ui-faint">正在加载时点 K 线并执行交易前复核…</div>;
   }
   if (error || !review) {
     return (
-      <div className="rounded border border-red-500/20 bg-red-500/5 p-3 text-red-300">
+      <div className="rounded border border-ui-danger/20 bg-ui-danger/5 p-3 text-ui-danger">
         交易前复核加载失败，当前禁止直接加入执行计划。
         <button onClick={onRefresh} className="ml-2 underline">重试</button>
       </div>
@@ -417,25 +417,25 @@ function TradeReviewPanel({
   const reliability = review.recommendation_reliability;
   const statusLabel = review.degraded ? "无法复核" : gate.status === "actionable" ? "可以执行" : gate.status === "wait" ? "等待触发" : "取消计划";
   const statusClass = review.degraded
-    ? "border-stone-600 bg-stone-800 text-stone-300"
+    ? "border-ui-strong bg-ui-hover text-ui-body"
     : gate.status === "actionable"
-    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+    ? "border-ui-success/30 bg-ui-success/10 text-ui-success"
     : gate.status === "wait"
-      ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-      : "border-red-500/30 bg-red-500/10 text-red-300";
+      ? "border-ui-warning/30 bg-ui-warning/10 text-ui-warning"
+      : "border-ui-danger/30 bg-ui-danger/10 text-ui-danger";
   return (
-    <div className="rounded border border-stone-800 bg-stone-900 p-2">
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-teal-300" />
-          <span className="font-medium text-stone-200">近期 K 线与交易前复核</span>
+          <ShieldCheck className="h-4 w-4 text-ui-accent" />
+          <span className="font-medium text-ui-body">近期 K 线与交易前复核</span>
           <span className={`rounded border px-2 py-0.5 font-medium ${statusClass}`}>{statusLabel}</span>
         </div>
         <div className="flex items-center gap-1">
           {[30, 60, 120].map((value) => (
-            <button key={value} onClick={() => onDaysChange(value)} className={`rounded px-1.5 py-0.5 ${days === value ? "bg-stone-700 text-stone-100" : "text-stone-500 hover:text-stone-300"}`}>{value}日</button>
+            <button key={value} onClick={() => onDaysChange(value)} className={`rounded px-1.5 py-0.5 ${days === value ? "bg-ui-hover text-ui-ink" : "text-ui-faint hover:text-ui-body"}`}>{value}日</button>
           ))}
-          <button onClick={onRefresh} disabled={refreshing} title="重新拉取并复核" className="ml-1 rounded p-1 text-stone-500 hover:bg-stone-800 hover:text-stone-200 disabled:opacity-50">
+          <button onClick={onRefresh} disabled={refreshing} title="重新拉取并复核" className="ml-1 rounded p-1 text-ui-faint hover:bg-ui-hover hover:text-ui-body disabled:opacity-50">
             <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
           </button>
         </div>
@@ -446,21 +446,21 @@ function TradeReviewPanel({
         <MiniMetric label="技术门控可信度" value={review.degraded ? "不可用" : `${gate.reliability_score}/100`} />
       </div>
       <ChipProfileSummary profile={review.chip_profile} />
-      <div className="mt-2 text-stone-500">
+      <div className="mt-2 text-ui-faint">
         截止 {review.effective_trade_date ?? review.as_of_date} · {review.gate_authority === "stockmanager_mcp" ? "MCP 确定性门控" : "本地降级，仅供看图"}。{reliability.note}
       </div>
       <div className="mt-2 space-y-1">
         {gate.checks.map((check) => (
-          <div key={check.code} className="flex items-start gap-2 rounded bg-stone-950 px-2 py-1">
-            <span className={check.passed === true ? "text-emerald-300" : check.passed === false ? "text-red-300" : "text-stone-500"}>
+          <div key={check.code} className="flex items-start gap-2 rounded bg-ui-subtle px-2 py-1">
+            <span className={check.passed === true ? "text-ui-success" : check.passed === false ? "text-ui-danger" : "text-ui-faint"}>
               {check.passed === true ? "通过" : check.passed === false ? "未过" : "未知"}
             </span>
-            <span className="font-mono text-stone-300">{check.code}</span>
-            <span className="min-w-0 flex-1 text-stone-500">{check.detail}</span>
+            <span className="font-mono text-ui-body">{check.code}</span>
+            <span className="min-w-0 flex-1 text-ui-faint">{check.detail}</span>
           </div>
         ))}
       </div>
-      {review.warnings.length > 0 && <div className="mt-2 text-amber-300">{review.warnings.join("；")}</div>}
+      {review.warnings.length > 0 && <div className="mt-2 text-ui-warning">{review.warnings.join("；")}</div>}
     </div>
   );
 }
@@ -468,7 +468,7 @@ function TradeReviewPanel({
 function ChipProfileSummary({ profile }: { profile?: ChipProfile }) {
   if (!profile || profile.status !== "available" || !profile.current || !profile.trend) {
     return (
-      <div className="mt-2 rounded border border-stone-800 bg-stone-950 px-2 py-1.5 text-stone-500">
+      <div className="mt-2 rounded border border-ui-line bg-ui-subtle px-2 py-1.5 text-ui-faint">
         筹码趋势：暂不可用（{profile?.reason ?? "数据源尚未返回筹码分布"}）
       </div>
     );
@@ -482,25 +482,25 @@ function ChipProfileSummary({ profile }: { profile?: ChipProfile }) {
     crowded: "获利拥挤",
   };
   const tone = trend.state === "bullish_confirmed" || trend.state === "improving"
-    ? "text-emerald-300"
+    ? "text-ui-success"
     : trend.state === "weakening" || trend.state === "crowded"
-      ? "text-amber-300"
-      : "text-stone-300";
+      ? "text-ui-warning"
+      : "text-ui-body";
   return (
-    <div className="mt-2 rounded border border-teal-500/20 bg-teal-500/5 p-2">
+    <div className="mt-2 rounded border border-ui-accent/20 bg-ui-accent/5 p-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-medium text-stone-200">筹码成本辅助判断</span>
+        <span className="font-medium text-ui-body">筹码成本辅助判断</span>
         <span className={tone}>{labels[trend.state] ?? trend.state} · {trend.confirmation_score}/100</span>
       </div>
-      <div className="mt-1 grid grid-cols-2 gap-1 font-mono text-stone-400 sm:grid-cols-4">
+      <div className="mt-1 grid grid-cols-2 gap-1 font-mono text-ui-muted sm:grid-cols-4">
         <span>成本 {current.avg_cost.toFixed(2)}</span>
         <span>获利盘 {(current.profit_ratio * 100).toFixed(1)}%</span>
         <span>70%区间 {current.cost_70_low.toFixed(2)}–{current.cost_70_high.toFixed(2)}</span>
         <span>成本偏离 {trend.price_vs_avg_cost_pct >= 0 ? "+" : ""}{trend.price_vs_avg_cost_pct.toFixed(1)}%</span>
       </div>
-      {trend.reasons.length > 0 && <div className="mt-1 text-emerald-300/80">确认：{trend.reasons.join("；")}</div>}
-      {trend.risks.length > 0 && <div className="mt-1 text-amber-300">风险：{trend.risks.join("；")}</div>}
-      <div className="mt-1 text-stone-600">概率估算，仅作趋势确认，不会单独改变交易门控。</div>
+      {trend.reasons.length > 0 && <div className="mt-1 text-ui-success/80">确认：{trend.reasons.join("；")}</div>}
+      {trend.risks.length > 0 && <div className="mt-1 text-ui-warning">风险：{trend.risks.join("；")}</div>}
+      <div className="mt-1 text-ui-faint">概率估算，仅作趋势确认，不会单独改变交易门控。</div>
     </div>
   );
 }
@@ -517,20 +517,20 @@ function candidateReviewPlan(row: CandidateRow): Record<string, unknown> {
 function QuantGateBlock({ row }: { row: CandidateRow }) {
   const gates = row.quantGateReasons ?? [];
   return (
-    <div className="rounded border border-stone-800 bg-stone-900 p-2">
-      <div className="mb-1 font-medium text-stone-200">量化门控</div>
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">量化门控</div>
       {gates.length === 0 ? (
-        <div className="text-stone-500">暂无 MCP 量化门控明细</div>
+        <div className="text-ui-faint">暂无 MCP 量化门控明细</div>
       ) : (
         <div className="space-y-1">
           {gates.map((item, index) => (
-            <div key={`${item.gate}-${index}`} className="flex items-start gap-2 rounded bg-stone-950 px-2 py-1">
-              <span className={item.passed === false ? "text-red-300" : "text-emerald-300"}>
+            <div key={`${item.gate}-${index}`} className="flex items-start gap-2 rounded bg-ui-subtle px-2 py-1">
+              <span className={item.passed === false ? "text-ui-danger" : "text-ui-success"}>
                 {item.passed === false ? "未过" : "通过"}
               </span>
               <div className="min-w-0">
-                <div className="font-mono text-stone-200">{item.gate}</div>
-                {item.detail && <div className="text-stone-500">{item.detail}</div>}
+                <div className="font-mono text-ui-body">{item.gate}</div>
+                {item.detail && <div className="text-ui-faint">{item.detail}</div>}
               </div>
             </div>
           ))}
@@ -544,16 +544,16 @@ function DataCoverageBlock({ row }: { row: CandidateRow }) {
   const warnings = row.dataCoverageWarnings ?? [];
   const metrics = row.keyMetrics ?? {};
   return (
-    <div className="rounded border border-stone-800 bg-stone-900 p-2">
-      <div className="mb-1 font-medium text-stone-200">数据覆盖</div>
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">数据覆盖</div>
       {warnings.length === 0 ? (
-        <div className="text-emerald-300">MCP 未标记关键数据缺失。</div>
+        <div className="text-ui-success">MCP 未标记关键数据缺失。</div>
       ) : (
         <div className="space-y-1">
           {warnings.map((warning) => (
-            <div key={warning} className="text-amber-300">• {warning}</div>
+            <div key={warning} className="text-ui-warning">• {warning}</div>
           ))}
-          <div className="text-stone-500">
+          <div className="text-ui-faint">
             这些字段来自 MCP 的 data_coverage。若显示 missing，说明当前数据源没有返回该类因子，前端没有进行默认补值。
           </div>
         </div>
@@ -561,7 +561,7 @@ function DataCoverageBlock({ row }: { row: CandidateRow }) {
       {Object.keys(metrics).length > 0 && (
         <div className="mt-2 grid gap-1 sm:grid-cols-2">
           {Object.entries(metrics).slice(0, 8).map(([key, value]) => (
-            <div key={key} className="rounded bg-stone-950 px-2 py-1 font-mono text-stone-400">
+            <div key={key} className="rounded bg-ui-subtle px-2 py-1 font-mono text-ui-muted">
               {key}: {String(value)}
             </div>
           ))}
@@ -574,8 +574,8 @@ function DataCoverageBlock({ row }: { row: CandidateRow }) {
 function TradePlanBlock({ row }: { row: CandidateRow }) {
   const entryCondition = row.actionPlan?.entry_condition;
   return (
-    <div className="rounded border border-stone-800 bg-stone-900 p-2">
-      <div className="mb-1 font-medium text-stone-200">价格与交易计划</div>
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">价格与交易计划</div>
       <div className="grid gap-2 sm:grid-cols-2">
         <MiniMetric label="收盘价" value={row.latestPrice !== undefined ? `${formatPrice(row.latestPrice)}${row.priceTradeDate ? ` · ${row.priceTradeDate}` : ""}` : "数据源缺失"} />
         <MiniMetric label="入场区间" value={row.entryZone?.length ? row.entryZone.map(formatPrice).join(" - ") : "未生成"} />
@@ -583,9 +583,9 @@ function TradePlanBlock({ row }: { row: CandidateRow }) {
         <MiniMetric label="目标价" value={row.targets?.length ? row.targets.map(formatPrice).join(" / ") : "未生成"} />
       </div>
       {Boolean(entryCondition) && (
-        <div className="mt-2 text-stone-400">{String(entryCondition)}</div>
+        <div className="mt-2 text-ui-muted">{String(entryCondition)}</div>
       )}
-      <div className="mt-2 text-stone-600">
+      <div className="mt-2 text-ui-faint">
         目标价来自融合层：优先按 ATR 倍数生成；无 ATR 时使用收盘价的固定比例作为展示参考。
       </div>
     </div>
@@ -594,30 +594,30 @@ function TradePlanBlock({ row }: { row: CandidateRow }) {
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded border border-stone-800 bg-stone-950 px-2 py-1.5">
-      <div className="text-stone-500">{label}</div>
-      <div className="mt-0.5 font-mono text-stone-200">{value}</div>
+    <div className="rounded border border-ui-line bg-ui-subtle px-2 py-1.5">
+      <div className="text-ui-faint">{label}</div>
+      <div className="mt-0.5 font-mono text-ui-body">{value}</div>
     </div>
   );
 }
 
 function InfoBlock({ title, children, empty }: { title: string; children?: string; empty: string }) {
   return (
-    <div className="rounded border border-stone-800 bg-stone-900 p-2">
-      <div className="mb-1 font-medium text-stone-200">{title}</div>
-      <div className="leading-5 text-stone-400">{children || empty}</div>
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">{title}</div>
+      <div className="leading-5 text-ui-muted">{children || empty}</div>
     </div>
   );
 }
 
 function ListBlock({ title, items, empty, tone }: { title: string; items?: string[]; empty: string; tone: "emerald" | "amber" | "purple" }) {
-  const color = tone === "emerald" ? "text-emerald-300" : tone === "amber" ? "text-amber-300" : "text-purple-300";
+  const color = tone === "emerald" ? "text-ui-success" : tone === "amber" ? "text-ui-warning" : "text-purple-300";
   const values = (items ?? []).filter(Boolean);
   return (
-    <div className="rounded border border-stone-800 bg-stone-900 p-2">
-      <div className="mb-1 font-medium text-stone-200">{title}</div>
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">{title}</div>
       {values.length === 0 ? (
-        <div className="text-stone-500">{empty}</div>
+        <div className="text-ui-faint">{empty}</div>
       ) : (
         <ul className="space-y-1">
           {values.map((item, index) => (

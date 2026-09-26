@@ -13,21 +13,21 @@ export function EventCalendarStrip({ macro, unlocks, holdings }: EventCalendarSt
   const holdingCodes = new Set(holdings.map((h) => holdingCode(h.symbol)).filter(Boolean));
 
   return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center gap-2">
-        <CalendarDays className="h-4 w-4 text-teal-300" />
-        <h3 className="text-sm font-semibold text-stone-100">大事日历</h3>
+        <CalendarDays className="h-4 w-4 text-ui-accent" />
+        <h3 className="text-sm font-semibold text-ui-ink">大事日历</h3>
       </div>
       <div className="flex flex-wrap gap-2">
         {macro.map((item) => (
           <span
             key={item.name}
-            className="inline-flex items-center gap-1.5 rounded border border-stone-700 bg-stone-950 px-2 py-1 text-xs text-stone-300"
+            className="inline-flex items-center gap-1.5 rounded border border-ui-strong bg-ui-subtle px-2 py-1 text-xs text-ui-body"
             title={item.date}
           >
-            <span className="text-stone-500">{item.name}</span>
+            <span className="text-ui-faint">{item.name}</span>
             <span className="font-mono">{item.value ?? "--"}</span>
-            {item.date && <span className="text-[10px] text-stone-600">{item.date}</span>}
+            {item.date && <span className="text-[10px] text-ui-faint">{item.date}</span>}
           </span>
         ))}
         {unlocks.map((event) => {
@@ -37,8 +37,8 @@ export function EventCalendarStrip({ macro, unlocks, holdings }: EventCalendarSt
               key={`${event.symbol}-${event.date}`}
               className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs ${
                 held
-                  ? "border-red-500/40 bg-red-500/10 text-red-300"
-                  : "border-stone-700 bg-stone-950 text-stone-400"
+                  ? "border-ui-danger/40 bg-ui-danger/10 text-ui-danger"
+                  : "border-ui-strong bg-ui-subtle text-ui-muted"
               }`}
               title={event.market_value !== null ? `解禁市值 ${(event.market_value / 1e8).toFixed(1)} 亿` : undefined}
             >

@@ -68,20 +68,20 @@ interface AnalysisSummaryCardProps {
 }
 
 function ratingColor(rating?: string) {
-  if (!rating) return "text-stone-400";
+  if (!rating) return "text-ui-muted";
   const r = rating.toLowerCase();
-  if (r.includes("buy") || r.includes("strong buy") || r.includes("overweight")) return "text-emerald-300";
-  if (r.includes("sell") || r.includes("underweight")) return "text-red-300";
-  if (r.includes("hold") || r.includes("neutral")) return "text-amber-300";
-  return "text-stone-300";
+  if (r.includes("buy") || r.includes("strong buy") || r.includes("overweight")) return "text-ui-success";
+  if (r.includes("sell") || r.includes("underweight")) return "text-ui-danger";
+  if (r.includes("hold") || r.includes("neutral")) return "text-ui-warning";
+  return "text-ui-body";
 }
 
 function RatingIcon({ rating }: { rating?: string }) {
   if (!rating) return null;
   const r = rating.toLowerCase();
-  if (r.includes("buy") || r.includes("overweight")) return <TrendingUp className="h-5 w-5 text-emerald-300" />;
-  if (r.includes("sell") || r.includes("underweight")) return <TrendingDown className="h-5 w-5 text-red-300" />;
-  return <Target className="h-5 w-5 text-amber-300" />;
+  if (r.includes("buy") || r.includes("overweight")) return <TrendingUp className="h-5 w-5 text-ui-success" />;
+  if (r.includes("sell") || r.includes("underweight")) return <TrendingDown className="h-5 w-5 text-ui-danger" />;
+  return <Target className="h-5 w-5 text-ui-warning" />;
 }
 
 function formatPriceNum(value: unknown): string {
@@ -140,23 +140,23 @@ function toPlan(raw: unknown): TradePlanShape | undefined {
 
 function conditionStyle(kind: string | undefined, direction: PlanDirection, triggerAction?: string): { label: string; icon: typeof GitBranch; color: string } {
   const action = String(triggerAction || "").toUpperCase();
-  if (action === "ENTER") return { label: "建仓", icon: GitBranch, color: "text-teal-300" };
-  if (action === "ADD") return { label: "加仓", icon: TrendingUp, color: "text-emerald-300" };
-  if (action === "REDUCE") return { label: "减仓", icon: TrendingDown, color: "text-amber-300" };
-  if (action === "EXIT") return { label: "清仓", icon: TrendingDown, color: "text-red-300" };
-  if (action === "HOLD") return { label: "观望", icon: Shield, color: "text-stone-300" };
+  if (action === "ENTER") return { label: "建仓", icon: GitBranch, color: "text-ui-accent" };
+  if (action === "ADD") return { label: "加仓", icon: TrendingUp, color: "text-ui-success" };
+  if (action === "REDUCE") return { label: "减仓", icon: TrendingDown, color: "text-ui-warning" };
+  if (action === "EXIT") return { label: "清仓", icon: TrendingDown, color: "text-ui-danger" };
+  if (action === "HOLD") return { label: "观望", icon: Shield, color: "text-ui-body" };
   const k = String(kind || "").toLowerCase();
   if (direction === "exit") {
-    if (k === "entry") return { label: "减仓", icon: TrendingDown, color: "text-teal-300" };
-    if (k === "full") return { label: "清仓", icon: TrendingDown, color: "text-red-300" };
-    if (k === "stop") return { label: "看空失效", icon: Shield, color: "text-amber-300" };
-    if (k === "take_profit") return { label: "下行止盈", icon: Target, color: "text-amber-300" };
+    if (k === "entry") return { label: "减仓", icon: TrendingDown, color: "text-ui-accent" };
+    if (k === "full") return { label: "清仓", icon: TrendingDown, color: "text-ui-danger" };
+    if (k === "stop") return { label: "看空失效", icon: Shield, color: "text-ui-warning" };
+    if (k === "take_profit") return { label: "下行止盈", icon: Target, color: "text-ui-warning" };
   }
-  if (k === "entry") return { label: "建仓", icon: GitBranch, color: "text-teal-300" };
-  if (k === "full") return { label: "满仓", icon: TrendingUp, color: "text-emerald-300" };
-  if (k === "stop") return { label: "止损", icon: Shield, color: "text-red-300" };
-  if (k === "take_profit") return { label: "止盈", icon: Target, color: "text-amber-300" };
-  return { label: kind || "条件", icon: AlertTriangle, color: "text-stone-300" };
+  if (k === "entry") return { label: "建仓", icon: GitBranch, color: "text-ui-accent" };
+  if (k === "full") return { label: "满仓", icon: TrendingUp, color: "text-ui-success" };
+  if (k === "stop") return { label: "止损", icon: Shield, color: "text-ui-danger" };
+  if (k === "take_profit") return { label: "止盈", icon: Target, color: "text-ui-warning" };
+  return { label: kind || "条件", icon: AlertTriangle, color: "text-ui-body" };
 }
 
 type PlanDirection = "long" | "exit";
@@ -182,16 +182,16 @@ function PlanCard({ plan, title, tone, direction = "long" }: { plan: TradePlanSh
   const hasLevels = actionZone?.length || invalidationLevel !== undefined || objectiveLevels?.length || plan.position_pct !== undefined || plan.order_quantity !== undefined || plan.target_quantity !== undefined;
   const hasConditions = plan.conditions && plan.conditions.length > 0;
   if (!hasLevels && !hasConditions) return null;
-  const toneClass = tone === "selection" ? "border-sky-500/20 bg-sky-500/5" : "border-teal-500/20 bg-teal-500/5";
+  const toneClass = tone === "selection" ? "border-ui-info/20 bg-ui-info/5" : "border-ui-accent/20 bg-ui-accent/5";
   const isExit = direction === "exit";
   return (
     <div className={`rounded-lg border p-3 ${toneClass}`}>
-      <div className="mb-2 text-xs font-medium text-stone-300">{title}</div>
+      <div className="mb-2 text-xs font-medium text-ui-body">{title}</div>
       {plan.execution_validation?.status && plan.execution_validation.status !== "valid" && (
-        <div className="mb-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+        <div className="mb-2 rounded border border-ui-warning/30 bg-ui-warning/10 px-2 py-1.5 text-xs text-ui-warning">
           <div className="font-medium">A 股交易单位校验已拦截不可执行数量</div>
           {(plan.execution_validation.warnings ?? []).map((warning, index) => (
-            <div key={index} className="mt-0.5 text-amber-100/80">{warning}</div>
+            <div key={index} className="mt-0.5 text-ui-warning/80">{warning}</div>
           ))}
         </div>
       )}
@@ -206,7 +206,7 @@ function PlanCard({ plan, title, tone, direction = "long" }: { plan: TradePlanSh
         </div>
       )}
       {isExit && hasLevels && (
-        <p className="mt-2 text-[11px] text-stone-500">
+        <p className="mt-2 text-[11px] text-ui-faint">
           评级偏空：上方区间用于减仓/卖出，下方目标价用于继续减持、清仓或重新评估，不代表加仓。
         </p>
       )}
@@ -219,8 +219,8 @@ function PlanCard({ plan, title, tone, direction = "long" }: { plan: TradePlanSh
               <div key={i} className="flex items-start gap-1.5 text-xs">
                 <Icon className={`mt-0.5 h-3 w-3 shrink-0 ${st.color}`} />
                 <span className={`shrink-0 font-mono ${st.color}`}>[{st.label}]</span>
-                <span className="text-stone-300">{c.description}</span>
-                {c.source && <span className="text-stone-500">· {c.source}</span>}
+                <span className="text-ui-body">{c.description}</span>
+                {c.source && <span className="text-ui-faint">· {c.source}</span>}
               </div>
             );
           })}
@@ -232,9 +232,9 @@ function PlanCard({ plan, title, tone, direction = "long" }: { plan: TradePlanSh
 
 function PlanMetric({ label, value }: { label: string; value?: string }) {
   return (
-    <div className="rounded border border-stone-800 bg-stone-950 px-2 py-1.5">
-      <div className="text-stone-500">{label}</div>
-      <div className="mt-0.5 font-mono text-stone-200">{value ?? "—"}</div>
+    <div className="rounded border border-ui-line bg-ui-subtle px-2 py-1.5">
+      <div className="text-ui-faint">{label}</div>
+      <div className="mt-0.5 font-mono text-ui-body">{value ?? "—"}</div>
     </div>
   );
 }
@@ -303,16 +303,16 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
     && plan.execution_validation.status !== "valid";
 
   return (
-    <div className="space-y-3 rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <div className="space-y-3 rounded-lg border border-ui-line bg-ui-panel p-4">
       {/* Header: Rating + Target + Confidence */}
       <div className="flex items-center gap-4">
         <RatingIcon rating={rating} />
         <div className="flex-1">
           {(name || symbol) && (
             <div className="mb-0.5">
-              {name && <span className="text-sm font-semibold text-stone-100">{name}</span>}
+              {name && <span className="text-sm font-semibold text-ui-ink">{name}</span>}
               {symbol && (
-                <span className={`ml-1 font-mono text-xs ${name ? "text-stone-500" : "text-stone-100 font-semibold"}`}>
+                <span className={`ml-1 font-mono text-xs ${name ? "text-ui-faint" : "text-ui-ink font-semibold"}`}>
                   {symbol}
                 </span>
               )}
@@ -321,13 +321,13 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
           <div className="flex items-baseline gap-3">
             <span className={`text-lg font-bold ${ratingColor(rating)}`}>{rating ?? "N/A"}</span>
             {target_price && (
-              <span className="text-sm text-stone-400">
-                目标价: <span className="font-mono text-stone-200">{target_price}</span>
+              <span className="text-sm text-ui-muted">
+                目标价: <span className="font-mono text-ui-body">{target_price}</span>
               </span>
             )}
             {confidence !== undefined && (
-              <span className="text-sm text-stone-400">
-                信心: <span className="font-mono text-stone-200">{confidence}%</span>
+              <span className="text-sm text-ui-muted">
+                信心: <span className="font-mono text-ui-body">{confidence}%</span>
               </span>
             )}
           </div>
@@ -335,7 +335,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
       </div>
 
       {alignment?.selection_decision && (
-        <div className={`rounded-lg border p-3 text-xs ${alignment.requires_review ? "border-amber-500/30 bg-amber-500/10 text-amber-200" : "border-emerald-500/20 bg-emerald-500/5 text-emerald-200"}`}>
+        <div className={`rounded-lg border p-3 text-xs ${alignment.requires_review ? "border-ui-warning/30 bg-ui-warning/10 text-ui-warning" : "border-ui-success/20 bg-ui-success/5 text-ui-success"}`}>
           <div className="flex items-start gap-2">
             {alignment.requires_review ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> : <Shield className="mt-0.5 h-4 w-4 shrink-0" />}
             <div>
@@ -343,12 +343,12 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
                 选股 {alignment.selection_decision} → 个股分析 {alignment.analysis_rating ?? rating ?? "N/A"}
                 {alignment.requires_review ? " · 需要复核" : " · 结论可兼容"}
               </div>
-              {alignment.explanation && <p className="mt-1 text-stone-300">{alignment.explanation}</p>}
+              {alignment.explanation && <p className="mt-1 text-ui-body">{alignment.explanation}</p>}
               {alignment.requires_review && !alignment.explicit_explanation && (
-                <p className="mt-1 text-amber-300">本次反转缺少明确的新证据说明，不能直接转为交易动作。</p>
+                <p className="mt-1 text-ui-warning">本次反转缺少明确的新证据说明，不能直接转为交易动作。</p>
               )}
               {alignment.plan_consistency?.status === "conflict" && (
-                <p className="mt-1 text-red-300">评级与交易计划动作冲突，请检查 ENTER/REDUCE/EXIT 方向。</p>
+                <p className="mt-1 text-ui-danger">评级与交易计划动作冲突，请检查 ENTER/REDUCE/EXIT 方向。</p>
               )}
             </div>
           </div>
@@ -361,7 +361,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
       )}
       {plan && <PlanCard plan={plan} title="分析计划（本次单股分析）" tone="analysis" direction={planDirection(rating, plan)} />}
       {selectionPlanShape && plan && (
-        <p className="text-xs text-stone-500">
+        <p className="text-xs text-ui-faint">
           对比上方两份计划：若操作区间、风控位、目标价或评级不一致，说明选股与深度分析存在分歧，请重点复核。
         </p>
       )}
@@ -369,21 +369,21 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
       {/* Key Reasons */}
       {reasons && reasons.length > 0 && (
         <div className="space-y-1.5">
-          <p className="text-xs font-medium text-stone-500">关键论据</p>
+          <p className="text-xs font-medium text-ui-faint">关键论据</p>
           <ol className="space-y-1 pl-4">
             {reasons.map((reason, i) => (
-              <li key={i} className="text-sm text-stone-300 list-decimal">{reason}</li>
+              <li key={i} className="text-sm text-ui-body list-decimal">{reason}</li>
             ))}
           </ol>
         </div>
       )}
 
       {/* Action Buttons */}
-      <div className="flex flex-wrap items-center gap-2 border-t border-stone-800 pt-3">
+      <div className="flex flex-wrap items-center gap-2 border-t border-ui-line pt-3">
         {runId && (
           <Link
             to={`/library?run_id=${runId}`}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-1.5 text-xs font-medium text-teal-300 transition hover:bg-teal-500/20"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-1.5 text-xs font-medium text-ui-accent transition hover:bg-ui-accent/20"
           >
             <ExternalLink className="h-3.5 w-3.5" />
             查看完整报告
@@ -392,7 +392,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
         {symbol && onAddHolding && canAddHolding && (
           <button
             onClick={() => onAddHolding(symbol)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-stone-700 px-3 py-1.5 text-xs font-medium text-stone-300 transition hover:bg-stone-800"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body transition hover:bg-ui-hover"
           >
             <Plus className="h-3.5 w-3.5" />
             加入持仓
@@ -401,7 +401,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
         {symbol && onAnalyzeMore && (
           <button
             onClick={() => onAnalyzeMore(symbol)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-stone-700 px-3 py-1.5 text-xs font-medium text-stone-300 transition hover:bg-stone-800"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body transition hover:bg-ui-hover"
           >
             <TrendingUp className="h-3.5 w-3.5" />
             对比同行业
@@ -410,7 +410,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
         {symbol && planHasLevels && !planExecutionBlocked && (
           <button
             onClick={handleAdoptPlan}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-success/30 bg-ui-success/10 px-3 py-1.5 text-xs font-medium text-ui-success transition hover:bg-ui-success/20"
           >
             <Shield className="h-3.5 w-3.5" />
             纳入计划
@@ -426,7 +426,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
           </button>
         )}
         {feedback && (
-          <span className="text-xs text-stone-400">{feedback}</span>
+          <span className="text-xs text-ui-muted">{feedback}</span>
         )}
       </div>
     </div>

@@ -131,22 +131,22 @@ export default function Chat({ paperSessionId, embedded = false, promptRequest }
     <div className={`mx-auto flex min-h-0 w-full flex-col ${embedded ? "h-full" : "h-full max-w-[1600px]"}`}>
       {!embedded && <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-teal-300">Trading agent</p>
-          <h2 className="mt-1 text-2xl font-semibold text-stone-50">交易 Agent</h2>
-          <p className="mt-1 text-sm text-stone-400">提出交易目标，跟踪执行步骤、证据来源和判断结果。</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ui-accent">Trading agent</p>
+          <h2 className="mt-1 text-2xl font-semibold text-ui-ink">交易 Agent</h2>
+          <p className="mt-1 text-sm text-ui-muted">提出交易目标，跟踪执行步骤、证据来源和判断结果。</p>
         </div>
-        {boundPaperId && <Link className="rounded-xl border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-xs text-teal-300" to={`/paper?session=${encodeURIComponent(boundPaperId)}`}>返回模拟盘 · {boundPaperId}</Link>}
+        {boundPaperId && <Link className="rounded-xl border border-ui-accent/30 bg-ui-accent/10 px-3 py-2 text-xs text-ui-accent" to={`/paper?session=${encodeURIComponent(boundPaperId)}`}>返回模拟盘 · {boundPaperId}</Link>}
       </div>}
       <div className={`grid min-h-0 flex-1 gap-4 ${embedded ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px]"}`}>
-      <section aria-label="交易 Agent 对话" className="flex min-h-[520px] min-w-0 flex-col rounded-2xl border border-stone-800 bg-stone-900/70">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-800 px-4 py-3">
-          <div><h3 className="text-sm font-semibold text-stone-100">{embedded ? "交易 Agent" : "当前对话"}</h3><p className="mt-0.5 text-xs text-stone-500">{boundPaperId ? `已绑定策略模拟盘 ${boundPaperId}` : "分析 · 取证 · 风险核对"}</p></div>
-          <div className="flex items-center gap-2 rounded-full border border-stone-800 bg-stone-950 px-3 py-1.5 text-xs">
-          <span className={`h-2 w-2 rounded-full ${connected ? "bg-teal-300" : "bg-red-300"}`} />
+      <section aria-label="交易 Agent 对话" className="flex min-h-[520px] min-w-0 flex-col rounded-2xl border border-ui-line bg-ui-panel/70">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ui-line px-4 py-3">
+          <div><h3 className="text-sm font-semibold text-ui-ink">{embedded ? "交易 Agent" : "当前对话"}</h3><p className="mt-0.5 text-xs text-ui-faint">{boundPaperId ? `已绑定策略模拟盘 ${boundPaperId}` : "分析 · 取证 · 风险核对"}</p></div>
+          <div className="flex items-center gap-2 rounded-full border border-ui-line bg-ui-subtle px-3 py-1.5 text-xs">
+          <span className={`h-2 w-2 rounded-full ${connected ? "bg-ui-accent" : "bg-ui-danger"}`} />
           {connected ? "已连接" : "连接中..."}
           </div>
         </div>
-      {boundPaperId && visibleMessages.length === 0 ? <div className="flex min-h-0 flex-1 flex-col justify-center gap-5 overflow-y-auto p-5"><div className="rounded-2xl border border-teal-500/20 bg-teal-500/5 p-4"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-300">Current session</p><h4 className="mt-2 text-base font-semibold text-stone-100">从这个模拟盘开始提问</h4><p className="mt-2 text-sm leading-6 text-stone-400">Agent 会读取当前会话的策略决策、持仓、成交和下一日计划，并在回答中标出数据时点和来源。</p></div><div className="space-y-2">{["总结当前权益、持仓和近期成交", "解释下一交易日计划", "当前策略切换的依据是什么"].map((prompt) => <button key={prompt} onClick={() => sendPrompt(prompt)} className="block w-full rounded-xl border border-stone-800 bg-stone-950/50 px-3 py-2.5 text-left text-sm text-stone-300 transition hover:border-teal-500/40 hover:text-teal-200">{prompt} →</button>)}</div></div> : <MessageList
+      {boundPaperId && visibleMessages.length === 0 ? <div className="flex min-h-0 flex-1 flex-col justify-center gap-5 overflow-y-auto p-5"><div className="rounded-2xl border border-ui-accent/20 bg-ui-accent/5 p-4"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-ui-accent">Current session</p><h4 className="mt-2 text-base font-semibold text-ui-ink">从这个模拟盘开始提问</h4><p className="mt-2 text-sm leading-6 text-ui-muted">Agent 会读取当前会话的策略决策、持仓、成交和下一日计划，并在回答中标出数据时点和来源。</p></div><div className="space-y-2">{["总结当前权益、持仓和近期成交", "解释下一交易日计划", "当前策略切换的依据是什么"].map((prompt) => <button key={prompt} onClick={() => sendPrompt(prompt)} className="block w-full rounded-xl border border-ui-line bg-ui-subtle/50 px-3 py-2.5 text-left text-sm text-ui-body transition hover:border-ui-accent/40 hover:text-ui-accent">{prompt} →</button>)}</div></div> : <MessageList
         messages={visibleMessages}
         sendReady={sendReady}
         onAnalyze={handleAnalyzeSymbol}

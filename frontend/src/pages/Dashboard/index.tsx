@@ -202,29 +202,29 @@ export default function Dashboard() {
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-5">
       {/* Header */}
-      <div className="flex flex-col justify-between gap-4 border-b border-stone-800 pb-5 lg:flex-row lg:items-end">
+      <div className="flex flex-col justify-between gap-4 border-b border-ui-line pb-5 lg:flex-row lg:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-300">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ui-accent">
             Today's desk
           </p>
-          <h2 className="mt-2 text-2xl font-semibold text-stone-50">决策工作台</h2>
-          <p className="mt-1 max-w-2xl text-sm text-stone-400">
+          <h2 className="mt-2 text-2xl font-semibold text-ui-ink">决策工作台</h2>
+          <p className="mt-1 max-w-2xl text-sm text-ui-muted">
             从量化候选到 Agent 判断，再到验证与模拟盘跟踪。
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-900 px-3 py-2 text-xs">
-          <ShieldCheck className={`h-3.5 w-3.5 ${mcpStatus?.connected ? "text-emerald-300" : "text-stone-500"}`} />
-          <span className="text-stone-300">MCP: {mcpStatus?.connected ? "Online" : "Offline"}</span>
+        <div className="flex items-center gap-2 rounded-lg border border-ui-line bg-ui-panel px-3 py-2 text-xs">
+          <ShieldCheck className={`h-3.5 w-3.5 ${mcpStatus?.connected ? "text-ui-success" : "text-ui-faint"}`} />
+          <span className="text-ui-body">MCP: {mcpStatus?.connected ? "Online" : "Offline"}</span>
         </div>
       </div>
 
-      <nav aria-label="交易决策流程" className="grid gap-2 rounded-2xl border border-stone-800 bg-stone-900/70 p-3 sm:grid-cols-4">
+      <nav aria-label="交易决策流程" className="grid gap-2 rounded-2xl border border-ui-line bg-ui-panel/70 p-3 sm:grid-cols-4">
         {[
           { step: "01", title: "量化筛选", detail: "发现候选", target: "/market" },
           { step: "02", title: "Agent 审查", detail: "核对证据与风险", target: "/chat" },
           { step: "03", title: "回测验证", detail: "检验历史表现", target: "/research" },
           { step: "04", title: "模拟盘观察", detail: "跟踪策略账本", target: "/paper" },
-        ].map((step) => <button key={step.step} onClick={() => navigate(step.target)} className="flex items-center gap-3 rounded-xl border border-stone-800 bg-stone-950/50 p-3 text-left transition hover:border-teal-500/40 hover:bg-teal-500/5"><span className="text-sm font-semibold text-teal-300">{step.step}</span><span><strong className="block text-sm text-stone-100">{step.title}</strong><small className="text-xs text-stone-500">{step.detail}</small></span></button>)}
+        ].map((step) => <button key={step.step} onClick={() => navigate(step.target)} className="flex items-center gap-3 rounded-xl border border-ui-line bg-ui-subtle/50 p-3 text-left transition hover:border-ui-accent/40 hover:bg-ui-accent/5"><span className="text-sm font-semibold text-ui-accent">{step.step}</span><span><strong className="block text-sm text-ui-ink">{step.title}</strong><small className="text-xs text-ui-faint">{step.detail}</small></span></button>)}
       </nav>
 
       <DecisionCandidatesPanel artifacts={signalArtifacts} onOpen={(item) => navigate(`/library?run_id=${item.run_id}`)} onAsk={(item, candidate) => goChat({
@@ -245,24 +245,24 @@ export default function Dashboard() {
         <KPICard icon={ShieldAlert} label="公告风险" value={riskKpi.value} sub={riskKpi.sub} tone={riskKpi.tone} />
       </section>
 
-      <section className="rounded-lg border border-teal-500/20 bg-teal-500/5 p-4">
+      <section className="rounded-lg border border-ui-accent/20 bg-ui-accent/5 p-4">
         <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
           <div>
             <div className="flex items-center gap-2">
-              <Brain className="h-4 w-4 text-teal-300" />
-              <h3 className="text-sm font-semibold text-stone-100">收盘复盘工作流</h3>
-              <span className={`rounded border px-2 py-0.5 text-xs ${dailyReviewDone ? "border-emerald-500/30 text-emerald-300" : dailyReviewRunning ? "border-amber-500/30 text-amber-300" : "border-stone-700 text-stone-400"}`}>
+              <Brain className="h-4 w-4 text-ui-accent" />
+              <h3 className="text-sm font-semibold text-ui-ink">收盘复盘工作流</h3>
+              <span className={`rounded border px-2 py-0.5 text-xs ${dailyReviewDone ? "border-ui-success/30 text-ui-success" : dailyReviewRunning ? "border-ui-warning/30 text-ui-warning" : "border-ui-strong text-ui-muted"}`}>
                 {dailyReviewDone ? "今日已完成" : dailyReviewRunning ? "运行中" : "待执行"}
               </span>
             </div>
-            <p className="mt-1 text-xs text-stone-400">
+            <p className="mt-1 text-xs text-ui-muted">
               刷新持仓收盘价 → 扫描持仓风险 → 因果反思 → 每日选股 → 生成次日计划
             </p>
           </div>
           <button
             onClick={startDailyReview}
             disabled={dailyReviewRunning}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-teal-500/40 bg-teal-500/10 px-4 py-2 text-sm font-semibold text-teal-100 transition hover:bg-teal-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-ui-accent/40 bg-ui-accent/10 px-4 py-2 text-sm font-semibold text-ui-accent transition hover:bg-ui-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Play className="h-4 w-4" />
             {dailyReviewRunning ? "复盘运行中" : "开始收盘复盘"}
@@ -271,32 +271,32 @@ export default function Dashboard() {
       </section>
 
       {/* Holdings */}
-      <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+      <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-2">
-            <WalletCards className="h-4 w-4 text-teal-300" />
+            <WalletCards className="h-4 w-4 text-ui-accent" />
             <div>
-              <h3 className="text-sm font-semibold text-stone-100">持仓明细</h3>
-              <p className="mt-1 text-xs text-stone-500">按市值排序，刷新后自动重算市值、盈亏和集中度</p>
+              <h3 className="text-sm font-semibold text-ui-ink">持仓明细</h3>
+              <p className="mt-1 text-xs text-ui-faint">按市值排序，刷新后自动重算市值、盈亏和集中度</p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {refreshFeedback && (
-              <span className="rounded border border-stone-700 bg-stone-950 px-2 py-1 text-xs text-stone-400">
+              <span className="rounded border border-ui-strong bg-ui-subtle px-2 py-1 text-xs text-ui-muted">
                 {refreshFeedback}
               </span>
             )}
             <button
               onClick={refreshPrices}
               disabled={holdings.length === 0 || refreshingPrices}
-              className="inline-flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-sm font-medium text-teal-200 transition hover:border-teal-400/60 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-2 text-sm font-medium text-ui-accent transition hover:border-ui-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${refreshingPrices ? "animate-spin" : ""}`} />
               {refreshingPrices ? "刷新中" : "进入下一交易日"}
             </button>
             <button
               onClick={() => navigate("/portfolio")}
-              className="rounded-lg border border-stone-700 px-3 py-2 text-sm text-stone-300 transition hover:border-teal-500/50 hover:text-stone-100"
+              className="rounded-lg border border-ui-strong px-3 py-2 text-sm text-ui-body transition hover:border-ui-accent/50 hover:text-ui-ink"
             >
               管理持仓
             </button>
@@ -304,10 +304,10 @@ export default function Dashboard() {
         </div>
 
         {holdings.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-stone-700 bg-stone-950 px-4 py-10 text-center">
-            <WalletCards className="mx-auto h-8 w-8 text-stone-600" />
-            <p className="mt-3 text-sm text-stone-400">暂无持仓记录</p>
-            <button onClick={() => navigate("/portfolio")} className="mt-2 text-sm text-teal-300 hover:text-teal-200">
+          <div className="rounded-lg border border-dashed border-ui-strong bg-ui-subtle px-4 py-10 text-center">
+            <WalletCards className="mx-auto h-8 w-8 text-ui-faint" />
+            <p className="mt-3 text-sm text-ui-muted">暂无持仓记录</p>
+            <button onClick={() => navigate("/portfolio")} className="mt-2 text-sm text-ui-accent hover:text-ui-accent">
               添加第一笔持仓
             </button>
           </div>
@@ -330,14 +330,14 @@ export default function Dashboard() {
 
       {/* Lower widgets: balanced masonry columns so no single column runs empty */}
       <div className="gap-x-5 sm:columns-2 xl:columns-3 [&>*]:mb-5 [&>*]:break-inside-avoid">
-        <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+        <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
           <div className="mb-4 flex items-center gap-2">
-            <Clock className="h-4 w-4 text-teal-300" />
-            <h3 className="text-sm font-semibold text-stone-100">今日动态</h3>
-            <span className="text-xs text-stone-500">({todayRuns.length} 条)</span>
+            <Clock className="h-4 w-4 text-ui-accent" />
+            <h3 className="text-sm font-semibold text-ui-ink">今日动态</h3>
+            <span className="text-xs text-ui-faint">({todayRuns.length} 条)</span>
           </div>
           {todayRuns.length === 0 ? (
-            <div className="py-8 text-center text-sm text-stone-500">
+            <div className="py-8 text-center text-sm text-ui-faint">
               <p>今日还没有任务记录</p>
               <p className="mt-1 text-xs">使用右侧快捷操作或前往 Chat 开始</p>
             </div>
@@ -351,32 +351,32 @@ export default function Dashboard() {
         </section>
 
         {/* Quick Actions */}
-          <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+          <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
             <div className="mb-3 flex items-center gap-2">
-              <Rocket className="h-4 w-4 text-teal-300" />
-              <h3 className="text-sm font-semibold text-stone-100">快捷操作</h3>
+              <Rocket className="h-4 w-4 text-ui-accent" />
+              <h3 className="text-sm font-semibold text-ui-ink">快捷操作</h3>
             </div>
             <div className="space-y-2">
               {/* 每日选股 + 过滤器 */}
-              <div className="rounded-lg border border-stone-800 bg-stone-950">
+              <div className="rounded-lg border border-ui-line bg-ui-subtle">
                 <div className="flex items-center gap-2 p-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-teal-500/30 bg-teal-500/10">
-                    <Sparkles className="h-4 w-4 text-teal-300" />
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-ui-accent/30 bg-ui-accent/10">
+                    <Sparkles className="h-4 w-4 text-ui-accent" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-stone-100">每日选股</div>
-                    <div className="text-xs text-stone-500">DailyPipeline Top 5</div>
+                    <div className="text-sm font-medium text-ui-ink">每日选股</div>
+                    <div className="text-xs text-ui-faint">DailyPipeline Top 5</div>
                   </div>
                   <button
                     onClick={() => setShowFilters(true)}
-                    className="flex items-center gap-1 rounded border border-stone-700 px-2 py-1 text-xs text-stone-500 transition hover:border-stone-600 hover:text-stone-300"
+                    className="flex items-center gap-1 rounded border border-ui-strong px-2 py-1 text-xs text-ui-faint transition hover:border-ui-strong hover:text-ui-body"
                   >
                     <Filter className="h-3 w-3" />
                     过滤
                   </button>
                   <button
                     onClick={() => goChat({ prompt: "每日选股 top 5", autoSend: true, intentHint: dailyPipelineHint(5) })}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-teal-500/30 bg-teal-500/10 text-teal-300 transition hover:bg-teal-500/20"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-ui-accent/30 bg-ui-accent/10 text-ui-accent transition hover:bg-ui-accent/20"
                   >
                     <Play className="h-4 w-4" />
                   </button>
@@ -429,13 +429,13 @@ export default function Dashboard() {
       {/* Filter Modal */}
       {showFilters && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowFilters(false)}>
-          <div className="relative mx-4 w-full max-w-3xl rounded-xl border border-stone-700 bg-stone-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between border-b border-stone-800 px-6 py-4">
+          <div className="relative mx-4 w-full max-w-3xl rounded-xl border border-ui-strong bg-ui-panel shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-ui-line px-6 py-4">
               <div>
-                <h3 className="text-lg font-semibold text-stone-50">选股过滤器</h3>
-                <p className="mt-0.5 text-xs text-stone-500">选择预设方案或自定义过滤条件</p>
+                <h3 className="text-lg font-semibold text-ui-ink">选股过滤器</h3>
+                <p className="mt-0.5 text-xs text-ui-faint">选择预设方案或自定义过滤条件</p>
               </div>
-              <button onClick={() => setShowFilters(false)} className="rounded-lg p-1.5 text-stone-500 transition hover:bg-stone-800 hover:text-stone-300">
+              <button onClick={() => setShowFilters(false)} className="rounded-lg p-1.5 text-ui-faint transition hover:bg-ui-hover hover:text-ui-body">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -459,11 +459,11 @@ export default function Dashboard() {
 /* ─── Sub-components (Dashboard-specific) ─── */
 
 const PULSE_BAND_STYLES: Record<string, { label: string; badge: string }> = {
-  "Strong Bullish": { label: "强多", badge: "border-red-500/40 bg-red-500/15 text-red-300" },
+  "Strong Bullish": { label: "强多", badge: "border-ui-danger/40 bg-ui-danger/15 text-ui-danger" },
   "Mildly Bullish": { label: "偏多", badge: "border-orange-500/40 bg-orange-500/15 text-orange-300" },
-  Sideways: { label: "震荡", badge: "border-stone-600 bg-stone-800 text-stone-300" },
-  "Mildly Bearish": { label: "偏空", badge: "border-teal-500/40 bg-teal-500/15 text-teal-300" },
-  "Strong Bearish": { label: "强空", badge: "border-emerald-500/40 bg-emerald-500/15 text-emerald-300" },
+  Sideways: { label: "震荡", badge: "border-ui-strong bg-ui-hover text-ui-body" },
+  "Mildly Bearish": { label: "偏空", badge: "border-ui-accent/40 bg-ui-accent/15 text-ui-accent" },
+  "Strong Bearish": { label: "强空", badge: "border-ui-success/40 bg-ui-success/15 text-ui-success" },
 };
 
 function MarketPulseStrip({ data, onOpen }: { data: MarketOverviewResponse | undefined; onOpen: () => void }) {
@@ -475,28 +475,28 @@ function MarketPulseStrip({ data, onOpen }: { data: MarketOverviewResponse | und
   return (
     <button
       onClick={onOpen}
-      className="flex w-full flex-wrap items-center gap-3 rounded-lg border border-stone-800 bg-stone-900 px-4 py-2.5 text-left transition hover:border-teal-500/40"
+      className="flex w-full flex-wrap items-center gap-3 rounded-lg border border-ui-line bg-ui-panel px-4 py-2.5 text-left transition hover:border-ui-accent/40"
     >
-      <Globe className="h-4 w-4 shrink-0 text-teal-300" />
-      <span className="text-xs font-semibold text-stone-100">市场温度</span>
+      <Globe className="h-4 w-4 shrink-0 text-ui-accent" />
+      <span className="text-xs font-semibold text-ui-ink">市场温度</span>
       {band && regime ? (
         <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${band.badge}`}>{band.label}</span>
       ) : (
-        <span className="rounded border border-stone-700 px-2 py-0.5 text-xs text-stone-400">AI 汇总暂缺</span>
+        <span className="rounded border border-ui-strong px-2 py-0.5 text-xs text-ui-muted">AI 汇总暂缺</span>
       )}
       {breadth && (
-        <span className="font-mono text-xs text-stone-300">
-          <span className="text-red-300">↑{breadth.up ?? "-"}</span>
-          <span className="mx-1 text-stone-600">/</span>
-          <span className="text-emerald-300">↓{breadth.down ?? "-"}</span>
-          {breadth.limit_up != null && <span className="ml-2 text-red-300">涨停 {breadth.limit_up}</span>}
-          {breadth.limit_down != null && <span className="ml-1.5 text-emerald-300">跌停 {breadth.limit_down}</span>}
+        <span className="font-mono text-xs text-ui-body">
+          <span className="text-ui-danger">↑{breadth.up ?? "-"}</span>
+          <span className="mx-1 text-ui-faint">/</span>
+          <span className="text-ui-success">↓{breadth.down ?? "-"}</span>
+          {breadth.limit_up != null && <span className="ml-2 text-ui-danger">涨停 {breadth.limit_up}</span>}
+          {breadth.limit_down != null && <span className="ml-1.5 text-ui-success">跌停 {breadth.limit_down}</span>}
         </span>
       )}
       {regime?.core_logic && (
-        <span className="hidden min-w-0 flex-1 truncate text-xs text-stone-500 lg:inline">{regime.core_logic}</span>
+        <span className="hidden min-w-0 flex-1 truncate text-xs text-ui-faint lg:inline">{regime.core_logic}</span>
       )}
-      <span className="ml-auto shrink-0 text-xs text-teal-300">
+      <span className="ml-auto shrink-0 text-xs text-ui-accent">
         {payload.market_asof_date} · 查看全景 →
       </span>
     </button>
@@ -517,16 +517,16 @@ function QuickActionBtn({
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-lg border border-stone-800 bg-stone-950 p-3 text-left transition hover:border-teal-500/50 hover:bg-stone-900"
+      className="flex w-full items-center gap-3 rounded-lg border border-ui-line bg-ui-subtle p-3 text-left transition hover:border-ui-accent/50 hover:bg-ui-panel"
     >
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-teal-500/30 bg-teal-500/10">
-        <Icon className="h-4 w-4 text-teal-300" />
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-ui-accent/30 bg-ui-accent/10">
+        <Icon className="h-4 w-4 text-ui-accent" />
       </div>
       <div className="min-w-0">
-        <div className="text-sm font-medium text-stone-100">{label}</div>
-        <div className="text-xs text-stone-500">{desc}</div>
+        <div className="text-sm font-medium text-ui-ink">{label}</div>
+        <div className="text-xs text-ui-faint">{desc}</div>
       </div>
-      <Play className="h-4 w-4 shrink-0 text-stone-600" />
+      <Play className="h-4 w-4 shrink-0 text-ui-faint" />
     </button>
   );
 }
@@ -555,29 +555,29 @@ function RiskEventCard({
   onAdvice: (event: RiskEvent) => void;
 }) {
   return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center gap-2">
-        <ShieldAlert className="h-4 w-4 text-amber-300" />
-        <h3 className="text-sm font-semibold text-stone-100">结构化风险事件</h3>
-        <span className="ml-auto rounded border border-stone-700 px-2 py-0.5 text-xs text-stone-400">{events.length} open</span>
+        <ShieldAlert className="h-4 w-4 text-ui-warning" />
+        <h3 className="text-sm font-semibold text-ui-ink">结构化风险事件</h3>
+        <span className="ml-auto rounded border border-ui-strong px-2 py-0.5 text-xs text-ui-muted">{events.length} open</span>
       </div>
       {events.length === 0 ? (
-        <p className="text-xs text-stone-500">暂无开放风险事件。</p>
+        <p className="text-xs text-ui-faint">暂无开放风险事件。</p>
       ) : (
         <div className="space-y-2">
           {events.slice(0, 5).map((event) => (
-            <div key={event.id} className="rounded border border-stone-800 bg-stone-950 p-3">
+            <div key={event.id} className="rounded border border-ui-line bg-ui-subtle p-3">
               <div className="flex items-start gap-2">
-                <span className={`mt-0.5 rounded px-1.5 py-0.5 text-[11px] ${["red", "critical", "high"].includes(event.level) ? "bg-red-500/10 text-red-300" : "bg-amber-500/10 text-amber-300"}`}>{event.level}</span>
+                <span className={`mt-0.5 rounded px-1.5 py-0.5 text-[11px] ${["red", "critical", "high"].includes(event.level) ? "bg-ui-danger/10 text-ui-danger" : "bg-ui-warning/10 text-ui-warning"}`}>{event.level}</span>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-medium text-stone-200">{event.symbol} · {event.title}</div>
-                  <div className="mt-1 text-[11px] text-stone-500">{event.event_date || event.last_seen_at.slice(0, 10)} · {event.source || "unknown"}</div>
+                  <div className="truncate text-xs font-medium text-ui-body">{event.symbol} · {event.title}</div>
+                  <div className="mt-1 text-[11px] text-ui-faint">{event.event_date || event.last_seen_at.slice(0, 10)} · {event.source || "unknown"}</div>
                 </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <button onClick={() => onAdvice(event)} className="rounded border border-indigo-500/30 px-2 py-1 text-[11px] text-indigo-200">持仓建议</button>
-                <button onClick={() => onMonitor(event.id)} className="rounded border border-stone-700 px-2 py-1 text-[11px] text-stone-300">持续关注</button>
-                <button onClick={() => onResolve(event.id)} className="rounded border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-300">标记解除</button>
+                <button onClick={() => onMonitor(event.id)} className="rounded border border-ui-strong px-2 py-1 text-[11px] text-ui-body">持续关注</button>
+                <button onClick={() => onResolve(event.id)} className="rounded border border-ui-success/30 px-2 py-1 text-[11px] text-ui-success">标记解除</button>
               </div>
             </div>
           ))}
@@ -589,23 +589,23 @@ function RiskEventCard({
 
 function RiskTodoCard({ artifacts, onOpen }: { artifacts: ArtifactInfo[]; onOpen: (item: ArtifactInfo) => void }) {
   return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center gap-2">
-        <ShieldAlert className="h-4 w-4 text-amber-300" />
-        <h3 className="text-sm font-semibold text-stone-100">风险待办</h3>
+        <ShieldAlert className="h-4 w-4 text-ui-warning" />
+        <h3 className="text-sm font-semibold text-ui-ink">风险待办</h3>
       </div>
       {artifacts.length === 0 ? (
-        <p className="text-xs text-stone-500">暂无持仓风险报告。</p>
+        <p className="text-xs text-ui-faint">暂无持仓风险报告。</p>
       ) : (
         <div className="space-y-2">
           {artifacts.map((item) => (
             <button
               key={item.id}
               onClick={() => onOpen(item)}
-              className="w-full rounded border border-stone-800 bg-stone-950 p-2 text-left transition hover:border-amber-500/40"
+              className="w-full rounded border border-ui-line bg-ui-subtle p-2 text-left transition hover:border-ui-warning/40"
             >
-              <div className="truncate text-xs font-medium text-stone-200">{item.title}</div>
-              <div className="mt-1 line-clamp-2 text-xs text-stone-500">{item.summary || "查看风险报告"}</div>
+              <div className="truncate text-xs font-medium text-ui-body">{item.title}</div>
+              <div className="mt-1 line-clamp-2 text-xs text-ui-faint">{item.summary || "查看风险报告"}</div>
             </button>
           ))}
         </div>
@@ -616,19 +616,19 @@ function RiskTodoCard({ artifacts, onOpen }: { artifacts: ArtifactInfo[]; onOpen
 
 function StrategyLessonsCard({ lessons }: { lessons: Array<{ id: string; finding: string; confidence: string; suggested_adjustment?: string }> }) {
   return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center gap-2">
         <Brain className="h-4 w-4 text-purple-300" />
-        <h3 className="text-sm font-semibold text-stone-100">策略经验</h3>
+        <h3 className="text-sm font-semibold text-ui-ink">策略经验</h3>
       </div>
       {lessons.length === 0 ? (
-        <p className="text-xs text-stone-500">暂无可回流的策略经验。系统只会沉淀可归因的信号时点误判。</p>
+        <p className="text-xs text-ui-faint">暂无可回流的策略经验。系统只会沉淀可归因的信号时点误判。</p>
       ) : (
         <div className="space-y-2">
           {lessons.map((lesson) => (
             <div key={lesson.id} className="rounded border border-purple-500/20 bg-purple-500/5 p-2">
               <div className="mb-1 text-xs text-purple-300">{lesson.confidence}</div>
-              <div className="line-clamp-3 text-xs text-stone-300">{lesson.finding}</div>
+              <div className="line-clamp-3 text-xs text-ui-body">{lesson.finding}</div>
             </div>
           ))}
         </div>
@@ -647,32 +647,32 @@ function ReflectionSummaryCard({ data }: { data: { total: number; correct: numbe
   };
 
   return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center gap-2">
         <Brain className="h-4 w-4 text-purple-300" />
-        <h3 className="text-sm font-semibold text-stone-100">反思摘要</h3>
+        <h3 className="text-sm font-semibold text-ui-ink">反思摘要</h3>
       </div>
       {data && data.total > 0 ? (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-400">30天正确率</span>
-            <span className={`font-mono text-sm font-semibold ${data.accuracy >= 0.6 ? "text-emerald-300" : data.accuracy >= 0.4 ? "text-amber-300" : "text-red-300"}`}>
+            <span className="text-xs text-ui-muted">30天正确率</span>
+            <span className={`font-mono text-sm font-semibold ${data.accuracy >= 0.6 ? "text-ui-success" : data.accuracy >= 0.4 ? "text-ui-warning" : "text-ui-danger"}`}>
               {(data.accuracy * 100).toFixed(1)}%
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-400">已反思决策</span>
-            <span className="font-mono text-sm text-stone-200">{data.total}</span>
+            <span className="text-xs text-ui-muted">已反思决策</span>
+            <span className="font-mono text-sm text-ui-body">{data.total}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-400">正确/错误</span>
-            <span className="font-mono text-xs text-stone-300">
-              <span className="text-emerald-300">{data.correct}</span> / <span className="text-red-300">{data.total - data.correct}</span>
+            <span className="text-xs text-ui-muted">正确/错误</span>
+            <span className="font-mono text-xs text-ui-body">
+              <span className="text-ui-success">{data.correct}</span> / <span className="text-ui-danger">{data.total - data.correct}</span>
             </span>
           </div>
         </div>
       ) : (
-        <p className="text-xs text-stone-500">暂无反思数据。完成选股后系统将自动回顾决策准确性。</p>
+        <p className="text-xs text-ui-faint">暂无反思数据。完成选股后系统将自动回顾决策准确性。</p>
       )}
       <button
         onClick={triggerReflection}

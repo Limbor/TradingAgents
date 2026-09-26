@@ -16,9 +16,9 @@ const skillLabels: Record<string, string> = {
 };
 
 const statusColors: Record<string, string> = {
-  completed: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-  running: "border-teal-500/30 bg-teal-500/10 text-teal-300",
-  failed: "border-red-500/30 bg-red-500/10 text-red-300",
+  completed: "border-ui-success/30 bg-ui-success/10 text-ui-success",
+  running: "border-ui-accent/30 bg-ui-accent/10 text-ui-accent",
+  failed: "border-ui-danger/30 bg-ui-danger/10 text-ui-danger",
 };
 
 export function TimelineItem({ run, onClick }: TimelineItemProps) {
@@ -33,19 +33,19 @@ export function TimelineItem({ run, onClick }: TimelineItemProps) {
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-lg border border-stone-800 bg-stone-950 px-3 py-2.5 text-left transition hover:border-teal-500/40"
+      className="flex w-full items-center gap-3 rounded-lg border border-ui-line bg-ui-subtle px-3 py-2.5 text-left transition hover:border-ui-accent/40"
     >
-      <span className="w-11 shrink-0 text-xs font-mono text-stone-500">{time}</span>
+      <span className="w-11 shrink-0 text-xs font-mono text-ui-faint">{time}</span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-sm text-stone-100 truncate">
+          <span className="text-sm text-ui-ink truncate">
             {skillLabels[run.skill_id] ?? run.skill_id}
             {tickerStr && (
-              <span className="ml-1 text-teal-300">
+              <span className="ml-1 text-ui-accent">
                 {tickerName && tickerName !== tickerStr ? (
                   <>
                     {tickerName}
-                    <span className="ml-1 font-mono text-xs text-teal-300/60">{tickerStr}</span>
+                    <span className="ml-1 font-mono text-xs text-ui-accent/60">{tickerStr}</span>
                   </>
                 ) : (
                   <span className="font-mono">{tickerStr}</span>
@@ -53,12 +53,12 @@ export function TimelineItem({ run, onClick }: TimelineItemProps) {
               </span>
             )}
           </span>
-          <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${statusColors[run.status] ?? "text-stone-400"}`}>
+          <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${statusColors[run.status] ?? "text-ui-muted"}`}>
             {run.status}
           </span>
         </div>
       </div>
-      <ArrowRight className="h-3.5 w-3.5 shrink-0 text-stone-600" />
+      <ArrowRight className="h-3.5 w-3.5 shrink-0 text-ui-faint" />
     </button>
   );
 }

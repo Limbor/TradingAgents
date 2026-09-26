@@ -2,11 +2,11 @@ import { RefreshCw, TrendingDown, TrendingUp, Minus, AlertTriangle } from "lucid
 import type { MarketRegime } from "../../api/client";
 
 const BAND_STYLES: Record<string, { label: string; badge: string; bar: string }> = {
-  "Strong Bullish": { label: "强多", badge: "border-red-500/40 bg-red-500/15 text-red-300", bar: "bg-red-400" },
+  "Strong Bullish": { label: "强多", badge: "border-ui-danger/40 bg-ui-danger/15 text-ui-danger", bar: "bg-ui-danger" },
   "Mildly Bullish": { label: "偏多", badge: "border-orange-500/40 bg-orange-500/15 text-orange-300", bar: "bg-orange-400" },
-  Sideways: { label: "震荡", badge: "border-stone-600 bg-stone-800 text-stone-300", bar: "bg-stone-400" },
-  "Mildly Bearish": { label: "偏空", badge: "border-teal-500/40 bg-teal-500/15 text-teal-300", bar: "bg-teal-400" },
-  "Strong Bearish": { label: "强空", badge: "border-emerald-500/40 bg-emerald-500/15 text-emerald-300", bar: "bg-emerald-400" },
+  Sideways: { label: "震荡", badge: "border-ui-strong bg-ui-hover text-ui-body", bar: "bg-ui-faint" },
+  "Mildly Bearish": { label: "偏空", badge: "border-ui-accent/40 bg-ui-accent/15 text-ui-accent", bar: "bg-ui-accent" },
+  "Strong Bearish": { label: "强空", badge: "border-ui-success/40 bg-ui-success/15 text-ui-success", bar: "bg-ui-success" },
 };
 
 const BAND_ORDER = ["Strong Bearish", "Mildly Bearish", "Sideways", "Mildly Bullish", "Strong Bullish"];
@@ -28,7 +28,7 @@ export function RegimeBanner({ regime, asofDate, generatedAt, isStale, refreshin
   const bandIndex = regime ? BAND_ORDER.indexOf(regime.trend_band) : -1;
 
   return (
-    <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
           {regime && band ? (
@@ -42,23 +42,23 @@ export function RegimeBanner({ regime, asofDate, generatedAt, isStale, refreshin
                   {BAND_ORDER.map((name, i) => (
                     <span
                       key={name}
-                      className={`h-1.5 w-6 rounded-sm ${i === bandIndex ? BAND_STYLES[name]?.bar ?? "bg-stone-400" : "bg-stone-800"}`}
+                      className={`h-1.5 w-6 rounded-sm ${i === bandIndex ? BAND_STYLES[name]?.bar ?? "bg-ui-faint" : "bg-ui-hover"}`}
                     />
                   ))}
                 </div>
                 <span
-                  className="cursor-help text-xs text-stone-500"
+                  className="cursor-help text-xs text-ui-faint"
                   title="AI 汇总时的自评字段：数据缺块或信号互相矛盾时为低，信号一致且数据完整时为高，介于两者为中"
                 >
                   置信度 {CONFIDENCE_CN[regime.confidence] ?? regime.confidence}
                 </span>
               </div>
-              <p className="mt-2 text-sm text-stone-200">{regime.core_logic}</p>
+              <p className="mt-2 text-sm text-ui-body">{regime.core_logic}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                <span className="rounded border border-teal-500/30 bg-teal-500/10 px-2 py-0.5 text-teal-200">
+                <span className="rounded border border-ui-accent/30 bg-ui-accent/10 px-2 py-0.5 text-ui-accent">
                   建议仓位 {regime.suggested_position_range}
                 </span>
-                <span className="rounded border border-stone-700 bg-stone-950 px-2 py-0.5 text-stone-300">
+                <span className="rounded border border-ui-strong bg-ui-subtle px-2 py-0.5 text-ui-body">
                   占优风格 {regime.dominant_style}
                 </span>
               </div>
@@ -66,16 +66,16 @@ export function RegimeBanner({ regime, asofDate, generatedAt, isStale, refreshin
                 {regime.drivers.map((d, i) => (
                   <span
                     key={i}
-                    className="inline-flex items-center gap-1 rounded border border-stone-700 bg-stone-950 px-2 py-1 text-xs text-stone-300"
+                    className="inline-flex items-center gap-1 rounded border border-ui-strong bg-ui-subtle px-2 py-1 text-xs text-ui-body"
                   >
                     {d.direction === "positive" ? (
-                      <TrendingUp className="h-3 w-3 text-red-400" />
+                      <TrendingUp className="h-3 w-3 text-ui-danger" />
                     ) : d.direction === "negative" ? (
-                      <TrendingDown className="h-3 w-3 text-emerald-400" />
+                      <TrendingDown className="h-3 w-3 text-ui-success" />
                     ) : (
-                      <Minus className="h-3 w-3 text-stone-500" />
+                      <Minus className="h-3 w-3 text-ui-faint" />
                     )}
-                    <span className="text-stone-500">{DIMENSION_CN[d.dimension] ?? d.dimension}</span>
+                    <span className="text-ui-faint">{DIMENSION_CN[d.dimension] ?? d.dimension}</span>
                     {d.statement}
                   </span>
                 ))}
@@ -83,7 +83,7 @@ export function RegimeBanner({ regime, asofDate, generatedAt, isStale, refreshin
               {regime.risk_alerts.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {regime.risk_alerts.map((alert, i) => (
-                    <span key={i} className="inline-flex items-center gap-1 text-xs text-amber-300">
+                    <span key={i} className="inline-flex items-center gap-1 text-xs text-ui-warning">
                       <AlertTriangle className="h-3 w-3" />
                       {alert}
                     </span>
@@ -93,8 +93,8 @@ export function RegimeBanner({ regime, asofDate, generatedAt, isStale, refreshin
             </>
           ) : (
             <div>
-              <p className="text-sm font-semibold text-stone-200">大盘 AI 汇总暂不可用</p>
-              <p className="mt-1 text-xs text-stone-500">下方市场数据仍为 {asofDate} 快照，可点击重新生成</p>
+              <p className="text-sm font-semibold text-ui-body">大盘 AI 汇总暂不可用</p>
+              <p className="mt-1 text-xs text-ui-faint">下方市场数据仍为 {asofDate} 快照，可点击重新生成</p>
             </div>
           )}
         </div>
@@ -102,15 +102,15 @@ export function RegimeBanner({ regime, asofDate, generatedAt, isStale, refreshin
           <button
             onClick={onRefresh}
             disabled={refreshing}
-            className="inline-flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-sm font-medium text-teal-200 transition hover:border-teal-400/60 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-2 text-sm font-medium text-ui-accent transition hover:border-ui-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
             {refreshing ? "生成中" : "重新生成"}
           </button>
-          <div className="text-right text-xs text-stone-500">
+          <div className="text-right text-xs text-ui-faint">
             <div>数据日 {asofDate}</div>
             {generatedAt && <div>生成于 {generatedAt.replace("T", " ")}</div>}
-            {isStale && <div className="text-amber-300">数据非最新交易日，建议刷新</div>}
+            {isStale && <div className="text-ui-warning">数据非最新交易日，建议刷新</div>}
           </div>
         </div>
       </div>

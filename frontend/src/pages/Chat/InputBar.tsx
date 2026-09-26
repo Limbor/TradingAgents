@@ -31,17 +31,17 @@ interface InputBarProps {
 
 export function InputBar({ input, setInput, canSend, running, onSubmit, onQuickAction, paperMode = false }: InputBarProps) {
   return (
-    <div className="border-t border-stone-800 pt-3">
+    <div className="border-t border-ui-line pt-3">
       <form onSubmit={onSubmit} className="flex gap-2">
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
           placeholder={paperMode ? "问这次换仓、收益、风险或下一交易日计划..." : "例如: 帮我看看茅台 / 每日选股 / 分析持仓风险..."}
-          className="min-w-0 flex-1 rounded-lg border border-stone-700 bg-stone-900 px-4 py-2.5 text-sm outline-none transition focus:border-teal-400"
+          className="min-w-0 flex-1 rounded-lg border border-ui-strong bg-ui-panel px-4 py-2.5 text-sm outline-none transition focus:border-ui-accent"
         />
         <button
           disabled={!canSend}
-          className="inline-flex items-center gap-2 rounded-lg bg-teal-500 px-5 py-2.5 text-sm font-semibold text-stone-950 transition hover:bg-teal-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg bg-ui-accent px-5 py-2.5 text-sm font-semibold text-ui-onAccent transition hover:bg-ui-accent disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Send className="h-4 w-4" />
         </button>
@@ -54,9 +54,9 @@ export function InputBar({ input, setInput, canSend, running, onSubmit, onQuickA
             key={action.label}
             onClick={() => onQuickAction(action.prompt, action.hint)}
             disabled={running && !!action.prompt}
-            className="inline-flex items-center gap-1.5 rounded-full border border-stone-700 bg-stone-900 px-3 py-1.5 text-xs text-stone-300 transition hover:border-teal-500/50 hover:text-stone-100 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-full border border-ui-strong bg-ui-panel px-3 py-1.5 text-xs text-ui-body transition hover:border-ui-accent/50 hover:text-ui-ink disabled:opacity-50"
           >
-            <action.icon className="h-3.5 w-3.5 text-teal-300" />
+            <action.icon className="h-3.5 w-3.5 text-ui-accent" />
             {action.label}
           </button>
         ))}

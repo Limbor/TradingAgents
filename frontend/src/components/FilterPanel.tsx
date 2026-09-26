@@ -32,7 +32,7 @@ const PRESETS: Preset[] = [
     id: "conservative",
     name: "保守稳健",
     desc: "主板中盘 · 2年+ · 排除银行地产",
-    color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+    color: "border-ui-success/40 bg-ui-success/10 text-ui-success",
     filters: {
       exclude_st: true,
       exclude_suspended: true,
@@ -74,7 +74,7 @@ const PRESETS: Preset[] = [
     id: "defensive",
     name: "价值防御",
     desc: "低估值 · 消费医药公用 · 低换手",
-    color: "border-sky-500/40 bg-sky-500/10 text-sky-300",
+    color: "border-ui-info/40 bg-ui-info/10 text-ui-info",
     filters: {
       exclude_st: true,
       exclude_suspended: true,
@@ -145,28 +145,28 @@ export function FilterPanel({ filters: initial, onSave, compact }: FilterPanelPr
   };
 
   const inputCls =
-    "w-full rounded border border-stone-700 bg-stone-950 px-2.5 py-1.5 text-sm focus:border-teal-500 focus:outline-none";
-  const labelCls = "mb-0.5 block text-xs text-stone-500";
-  const groupTitle = "mb-1.5 text-xs font-semibold uppercase tracking-wider text-stone-500";
+    "w-full rounded border border-ui-strong bg-ui-subtle px-2.5 py-1.5 text-sm focus:border-ui-accent focus:outline-none";
+  const labelCls = "mb-0.5 block text-xs text-ui-faint";
+  const groupTitle = "mb-1.5 text-xs font-semibold uppercase tracking-wider text-ui-faint";
 
   return (
     <div className={compact ? "space-y-3" : "space-y-4"}>
       {/* Header */}
       <div className="flex items-center justify-between">
-        <p className="text-xs text-stone-400">
+        <p className="text-xs text-ui-muted">
           选择预设方案或自定义过滤条件，保存后每次运行自动应用
         </p>
         <div className="flex gap-2">
           <button
             onClick={reset}
-            className="rounded border border-stone-700 px-2.5 py-1 text-xs text-stone-400 transition hover:bg-stone-800"
+            className="rounded border border-ui-strong px-2.5 py-1 text-xs text-ui-muted transition hover:bg-ui-hover"
           >
             清空
           </button>
           <button
             onClick={save}
             disabled={!dirty}
-            className="rounded bg-teal-500 px-3 py-1 text-xs font-semibold text-stone-950 transition hover:bg-teal-400 disabled:opacity-40"
+            className="rounded bg-ui-accent px-3 py-1 text-xs font-semibold text-ui-onAccent transition hover:bg-ui-accent disabled:opacity-40"
           >
             保存
           </button>
@@ -182,11 +182,11 @@ export function FilterPanel({ filters: initial, onSave, compact }: FilterPanelPr
             className={`flex flex-col items-start rounded-lg border px-3 py-2 text-left transition hover:brightness-110 ${
               activePreset === preset.id
                 ? preset.color
-                : "border-stone-700 bg-stone-900 text-stone-300 hover:border-stone-600"
+                : "border-ui-strong bg-ui-panel text-ui-body hover:border-ui-strong"
             }`}
           >
             <span className="text-sm font-medium">{preset.name}</span>
-            <span className={`text-xs ${activePreset === preset.id ? "opacity-80" : "text-stone-500"}`}>
+            <span className={`text-xs ${activePreset === preset.id ? "opacity-80" : "text-ui-faint"}`}>
               {preset.desc}
             </span>
           </button>
@@ -304,8 +304,8 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   return (
     <label className="flex items-center gap-1.5 cursor-pointer">
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
-        className="h-3.5 w-3.5 rounded border-stone-600 bg-stone-900" />
-      <span className="text-xs text-stone-300">{label}</span>
+        className="h-3.5 w-3.5 rounded border-ui-strong bg-ui-panel" />
+      <span className="text-xs text-ui-body">{label}</span>
     </label>
   );
 }

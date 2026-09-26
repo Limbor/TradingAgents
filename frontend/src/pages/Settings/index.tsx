@@ -132,7 +132,7 @@ export default function Settings() {
   if (!config || configQuery.isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <p className="text-stone-400">Loading configuration...</p>
+        <p className="text-ui-muted">Loading configuration...</p>
       </div>
     );
   }
@@ -145,15 +145,15 @@ export default function Settings() {
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Settings</h2>
         {saving && (
-          <span className="text-sm text-stone-400">Saving...</span>
+          <span className="text-sm text-ui-muted">Saving...</span>
         )}
       </div>
 
       {/* API Access Token */}
-      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-2 text-lg font-semibold">API 访问令牌</h3>
-        <p className="mb-3 text-sm text-stone-400">
-          当后端设置 <code className="text-stone-300">TRADINGAGENTS_API_AUTH_TOKEN</code> 后，所有 REST/WebSocket
+        <p className="mb-3 text-sm text-ui-muted">
+          当后端设置 <code className="text-ui-body">TRADINGAGENTS_API_AUTH_TOKEN</code> 后，所有 REST/WebSocket
           请求需携带此令牌。本地默认不设可留空。
         </p>
         <div className="flex gap-2">
@@ -162,14 +162,14 @@ export default function Settings() {
             value={authToken}
             onChange={(e) => setAuthTokenState(e.target.value)}
             placeholder="留空则不启用认证"
-            className="flex-1 rounded border border-stone-600 bg-stone-900 px-3 py-1.5 text-sm text-stone-100"
+            className="flex-1 rounded border border-ui-strong bg-ui-panel px-3 py-1.5 text-sm text-ui-ink"
           />
           <button
             type="button"
             onClick={() => {
               setAuthToken(authToken);
             }}
-            className="rounded bg-teal-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-500"
+            className="rounded bg-ui-accent px-4 py-1.5 text-sm font-medium text-ui-onAccent hover:bg-ui-accent"
           >
             保存
           </button>
@@ -177,18 +177,18 @@ export default function Settings() {
       </section>
 
       {/* API Key Status */}
-      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-4 text-lg font-semibold">API Key Status</h3>
         <div className="flex items-center gap-3">
           <span
-            className={`h-2.5 w-2.5 rounded-full ${apiKeyConfigured ? "bg-teal-400" : "bg-red-400"}`}
+            className={`h-2.5 w-2.5 rounded-full ${apiKeyConfigured ? "bg-ui-accent" : "bg-ui-danger"}`}
           />
           <span className="text-sm">
             {currentProvider?.name ?? config.llm_provider}:{" "}
             {apiKeyConfigured ? (
-              <span className="text-teal-400">API key configured</span>
+              <span className="text-ui-accent">API key configured</span>
             ) : (
-              <span className="text-red-400">
+              <span className="text-ui-danger">
                 API key missing — set the corresponding environment variable
               </span>
             )}
@@ -197,15 +197,15 @@ export default function Settings() {
       </section>
 
       {/* LLM Backbone */}
-      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-4 text-lg font-semibold">LLM Backbone</h3>
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm text-stone-300">Provider</label>
+            <label className="mb-1 block text-sm text-ui-body">Provider</label>
             <select
               value={config.llm_provider}
               onChange={(e) => handleProviderChange(e.target.value)}
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             >
               {providersQuery.data?.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -216,9 +216,9 @@ export default function Settings() {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-stone-300">
+            <label className="mb-1 block text-sm text-ui-body">
               Backend URL{" "}
-              <span className="text-stone-500">(optional, leave empty for default)</span>
+              <span className="text-ui-faint">(optional, leave empty for default)</span>
             </label>
             <input
               type="text"
@@ -226,15 +226,15 @@ export default function Settings() {
               value={customUrl}
               onChange={(e) => setCustomUrl(e.target.value)}
               onBlur={() => save({ backend_url: customUrl || null } as Partial<ConfigResponse>)}
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             />
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
             <div>
-              <label className="mb-1 block text-sm text-stone-300">
+              <label className="mb-1 block text-sm text-ui-body">
                 Quick Model{" "}
-                <span className="text-stone-500">(路由、分析员、候选复核)</span>
+                <span className="text-ui-faint">(路由、分析员、候选复核)</span>
               </label>
               <select
                 value={
@@ -250,7 +250,7 @@ export default function Settings() {
                     save({ quick_think_llm: e.target.value });
                   }
                 }}
-                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
               >
                 {currentProvider?.quick_models.map((m) => (
                   <option key={m.value} value={m.value}>
@@ -275,15 +275,15 @@ export default function Settings() {
                   onBlur={() => {
                     if (customQuick) save({ quick_think_llm: customQuick });
                   }}
-                  className="mt-2 w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                  className="mt-2 w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
                 />
               )}
             </div>
 
             <div>
-              <label className="mb-1 block text-sm text-stone-300">
+              <label className="mb-1 block text-sm text-ui-body">
                 Thinking Model{" "}
-                <span className="text-stone-500">(研究经理、组合决策)</span>
+                <span className="text-ui-faint">(研究经理、组合决策)</span>
               </label>
               <select
                 value={
@@ -299,7 +299,7 @@ export default function Settings() {
                     save({ deep_think_llm: e.target.value });
                   }
                 }}
-                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
               >
                 {currentProvider?.deep_models.map((m) => (
                   <option key={m.value} value={m.value}>
@@ -324,7 +324,7 @@ export default function Settings() {
                   onBlur={() => {
                     if (customDeep) save({ deep_think_llm: customDeep });
                   }}
-                  className="mt-2 w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                  className="mt-2 w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
                 />
               )}
             </div>
@@ -333,7 +333,7 @@ export default function Settings() {
       </section>
 
       {/* StockManager MCP */}
-      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-4 text-lg font-semibold">StockManager MCP</h3>
         <div className="space-y-4">
           <label className="flex items-center gap-2">
@@ -343,14 +343,14 @@ export default function Settings() {
               onChange={(e) =>
                 save({ stockmanager_mcp_enabled: e.target.checked })
               }
-              className="h-4 w-4 rounded border-stone-600 bg-stone-900"
+              className="h-4 w-4 rounded border-ui-strong bg-ui-panel"
             />
-            <span className="text-sm text-stone-300">
+            <span className="text-sm text-ui-body">
               Enable local StockManager MCP service
             </span>
           </label>
           <div>
-            <label className="mb-1 block text-sm text-stone-300">MCP URL</label>
+            <label className="mb-1 block text-sm text-ui-body">MCP URL</label>
             <input
               type="text"
               value={config.stockmanager_mcp_url ?? ""}
@@ -360,13 +360,13 @@ export default function Settings() {
               onBlur={() =>
                 save({ stockmanager_mcp_url: config.stockmanager_mcp_url })
               }
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm text-stone-300">
+            <label className="mb-1 block text-sm text-ui-body">
               Tool Timeout
-              <span className="ml-1 text-stone-500">(seconds)</span>
+              <span className="ml-1 text-ui-faint">(seconds)</span>
             </label>
             <input
               type="number"
@@ -381,18 +381,18 @@ export default function Settings() {
               onBlur={() =>
                 save({ stockmanager_mcp_timeout: config.stockmanager_mcp_timeout })
               }
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             />
           </div>
         </div>
       </section>
 
       {profile && (
-        <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+        <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
           <h3 className="mb-4 text-lg font-semibold">Investment Profile</h3>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
-              <label className="mb-1 block text-sm text-stone-300">Style</label>
+              <label className="mb-1 block text-sm text-ui-body">Style</label>
               <select
                 value={profile.investment_style}
                 onChange={(e) =>
@@ -400,7 +400,7 @@ export default function Settings() {
                     investment_style: e.target.value as UserProfile["investment_style"],
                   })
                 }
-                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
               >
                 <option value="short_term">Short term</option>
                 <option value="medium_term">Medium term</option>
@@ -408,7 +408,7 @@ export default function Settings() {
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-stone-300">Risk Tolerance</label>
+              <label className="mb-1 block text-sm text-ui-body">Risk Tolerance</label>
               <select
                 value={profile.risk_tolerance}
                 onChange={(e) =>
@@ -416,7 +416,7 @@ export default function Settings() {
                     risk_tolerance: e.target.value as UserProfile["risk_tolerance"],
                   })
                 }
-                className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
               >
                 <option value="low">Low</option>
                 <option value="moderate">Moderate</option>
@@ -425,7 +425,7 @@ export default function Settings() {
             </div>
           </div>
           <div className="mt-4">
-            <label className="mb-1 block text-sm text-stone-300">Sector Preferences</label>
+            <label className="mb-1 block text-sm text-ui-body">Sector Preferences</label>
             <input
               type="text"
               value={profile.sector_prefs.join(", ")}
@@ -439,21 +439,21 @@ export default function Settings() {
                 })
               }
               onBlur={() => saveProfile({ sector_prefs: profile.sector_prefs })}
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             />
           </div>
         </section>
       )}
 
       {/* Output */}
-      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-4 text-lg font-semibold">Output Settings</h3>
         <div>
-          <label className="mb-1 block text-sm text-stone-300">Output Language</label>
+          <label className="mb-1 block text-sm text-ui-body">Output Language</label>
           <select
             value={config.output_language}
             onChange={(e) => save({ output_language: e.target.value })}
-            className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+            className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
           >
             {LANGUAGES.map((l) => (
               <option key={l.value} value={l.value}>
@@ -465,20 +465,20 @@ export default function Settings() {
       </section>
 
       {/* Analysis Settings */}
-      <section className="rounded-lg border border-stone-700 bg-stone-800/50 p-5">
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-4 text-lg font-semibold">Analysis Settings</h3>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="mb-1 block text-sm text-stone-300">
+            <label className="mb-1 block text-sm text-ui-body">
               Debate Rounds
-              <span className="ml-1 text-stone-500">(bull vs bear)</span>
+              <span className="ml-1 text-ui-faint">(bull vs bear)</span>
             </label>
             <select
               value={config.max_debate_rounds}
               onChange={(e) =>
                 save({ max_debate_rounds: parseInt(e.target.value) })
               }
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             >
               {[1, 2, 3, 4, 5].map((n) => (
                 <option key={n} value={n}>
@@ -488,16 +488,16 @@ export default function Settings() {
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-sm text-stone-300">
+            <label className="mb-1 block text-sm text-ui-body">
               Risk Rounds
-              <span className="ml-1 text-stone-500">(risk debate)</span>
+              <span className="ml-1 text-ui-faint">(risk debate)</span>
             </label>
             <select
               value={config.max_risk_discuss_rounds}
               onChange={(e) =>
                 save({ max_risk_discuss_rounds: parseInt(e.target.value) })
               }
-              className="w-full rounded-lg border border-stone-600 bg-stone-900 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             >
               {[1, 2, 3, 4, 5].map((n) => (
                 <option key={n} value={n}>
@@ -515,11 +515,11 @@ export default function Settings() {
               onChange={(e) =>
                 save({ checkpoint_enabled: e.target.checked })
               }
-              className="h-4 w-4 rounded border-stone-600 bg-stone-900"
+              className="h-4 w-4 rounded border-ui-strong bg-ui-panel"
             />
-            <span className="text-sm text-stone-300">
+            <span className="text-sm text-ui-body">
               Enable checkpoint/resume{" "}
-              <span className="text-stone-500">
+              <span className="text-ui-faint">
                 (recover from crashes on next run)
               </span>
             </span>
@@ -533,11 +533,11 @@ export default function Settings() {
               onChange={(e) =>
                 save({ adaptive_alpha_enabled: e.target.checked })
               }
-              className="h-4 w-4 rounded border-stone-600 bg-stone-900"
+              className="h-4 w-4 rounded border-ui-strong bg-ui-panel"
             />
-            <span className="text-sm text-stone-300">
+            <span className="text-sm text-ui-body">
               启用自适应 α{" "}
-              <span className="text-stone-500">
+              <span className="text-ui-faint">
                 (根据预测评分动态调整每日选股的 quant/LLM 融合权重；未生效时维持静态权重)
               </span>
             </span>
@@ -547,4 +547,3 @@ export default function Settings() {
     </div>
   );
 }
-

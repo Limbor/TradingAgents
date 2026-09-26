@@ -68,26 +68,26 @@ export function AdjustPositionDialog({ holding, action, submitting, error, initi
     <Dialog.Root open onOpenChange={(o) => { if (!o && !submitting) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-stone-700 bg-stone-900 p-5 shadow-xl">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-ui-strong bg-ui-panel p-5 shadow-xl">
           <div className="flex items-center justify-between">
-            <Dialog.Title className="flex items-center gap-2 text-sm font-semibold text-stone-100">
-              {isAdd ? <TrendingUp className="h-4 w-4 text-teal-300" /> : <TrendingDown className="h-4 w-4 text-amber-300" />}
+            <Dialog.Title className="flex items-center gap-2 text-sm font-semibold text-ui-ink">
+              {isAdd ? <TrendingUp className="h-4 w-4 text-ui-accent" /> : <TrendingDown className="h-4 w-4 text-ui-warning" />}
               {title} · {displayNameOf(holding.name, holding.symbol)}
             </Dialog.Title>
             <Dialog.Close asChild>
-              <button className="rounded p-1 text-stone-500 hover:bg-stone-800 hover:text-stone-200" disabled={submitting} aria-label="关闭">
+              <button className="rounded p-1 text-ui-faint hover:bg-ui-hover hover:text-ui-body" disabled={submitting} aria-label="关闭">
                 <X className="h-4 w-4" />
               </button>
             </Dialog.Close>
           </div>
 
-          <div className="mt-2 text-xs text-stone-500">
-            当前持仓 <span className="font-mono text-stone-300">{fmt(oldQty)}</span> 股 · 成本 <span className="font-mono text-stone-300">{fmt(oldAvg)}</span>
+          <div className="mt-2 text-xs text-ui-faint">
+            当前持仓 <span className="font-mono text-ui-body">{fmt(oldQty)}</span> 股 · 成本 <span className="font-mono text-ui-body">{fmt(oldAvg)}</span>
           </div>
 
           <div className="mt-4 grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-stone-400">{isAdd ? "买入数量" : "卖出数量"}</span>
+              <span className="mb-1 block text-xs font-medium text-ui-muted">{isAdd ? "买入数量" : "卖出数量"}</span>
               <input
                 type="number"
                 min={0}
@@ -95,11 +95,11 @@ export function AdjustPositionDialog({ holding, action, submitting, error, initi
                 value={quantity}
                 placeholder="100"
                 onChange={(e) => setQuantity(e.target.value)}
-                className="w-full rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 outline-none focus:border-teal-400"
+                className="w-full rounded-lg border border-ui-strong bg-ui-subtle px-3 py-2 text-sm text-ui-ink outline-none focus:border-ui-accent"
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-stone-400">{isAdd ? "买入价" : "卖出价"}</span>
+              <span className="mb-1 block text-xs font-medium text-ui-muted">{isAdd ? "买入价" : "卖出价"}</span>
               <input
                 type="number"
                 min={0}
@@ -107,40 +107,40 @@ export function AdjustPositionDialog({ holding, action, submitting, error, initi
                 value={price}
                 placeholder="0.00"
                 onChange={(e) => setPrice(e.target.value)}
-                className="w-full rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 outline-none focus:border-teal-400"
+                className="w-full rounded-lg border border-ui-strong bg-ui-subtle px-3 py-2 text-sm text-ui-ink outline-none focus:border-ui-accent"
               />
             </label>
           </div>
 
           {overSell && (
-            <div className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+            <div className="mt-3 rounded border border-ui-danger/30 bg-ui-danger/10 px-3 py-2 text-xs text-ui-danger">
               卖出数量超过当前持仓({fmt(oldQty)} 股)。
             </div>
           )}
           {lotError && (
-            <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+            <div className="mt-3 rounded border border-ui-warning/30 bg-ui-warning/10 px-3 py-2 text-xs text-ui-warning">
               {lotError}
             </div>
           )}
           {error && (
-            <div className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+            <div className="mt-3 rounded border border-ui-danger/30 bg-ui-danger/10 px-3 py-2 text-xs text-ui-danger">
               {error}
             </div>
           )}
 
           {newQty !== undefined && (
-            <div className="mt-3 rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-xs text-stone-300">
+            <div className="mt-3 rounded-lg border border-ui-strong bg-ui-subtle px-3 py-2 text-xs text-ui-body">
               {isAdd ? (
                 <div>
-                  加仓后 <span className="font-mono text-stone-100">{fmt(newQty)}</span> 股 · 新成本{" "}
-                  <span className="font-mono text-teal-300">{fmt(newAvg!)}</span>
+                  加仓后 <span className="font-mono text-ui-ink">{fmt(newQty)}</span> 股 · 新成本{" "}
+                  <span className="font-mono text-ui-accent">{fmt(newAvg!)}</span>
                 </div>
               ) : (
                 <div>
-                  减仓后 <span className="font-mono text-stone-100">{fmt(newQty)}</span> 股
-                  {closed && <span className="ml-2 text-amber-300">(清仓)</span>}
+                  减仓后 <span className="font-mono text-ui-ink">{fmt(newQty)}</span> 股
+                  {closed && <span className="ml-2 text-ui-warning">(清仓)</span>}
                   {!closed && realized !== undefined && (
-                    <span className={`ml-2 font-mono ${realized >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+                    <span className={`ml-2 font-mono ${realized >= 0 ? "text-ui-success" : "text-ui-danger"}`}>
                       已实现 {realized >= 0 ? "+" : ""}{fmt(realized)}
                     </span>
                   )}
@@ -153,15 +153,15 @@ export function AdjustPositionDialog({ holding, action, submitting, error, initi
             <button
               onClick={onClose}
               disabled={submitting}
-              className="rounded-lg border border-stone-700 px-3 py-2 text-sm text-stone-300 transition hover:bg-stone-800 disabled:opacity-50"
+              className="rounded-lg border border-ui-strong px-3 py-2 text-sm text-ui-body transition hover:bg-ui-hover disabled:opacity-50"
             >
               取消
             </button>
             <button
               onClick={() => canSubmit && onConfirm(action, qty, px)}
               disabled={!canSubmit}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-stone-950 transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                isAdd ? "bg-teal-500 hover:bg-teal-400" : "bg-amber-400 hover:bg-amber-300"
+              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                isAdd ? "bg-ui-accent text-ui-onAccent hover:bg-ui-accent" : "bg-ui-warning text-ui-onWarning hover:bg-ui-warning"
               }`}
             >
               {submitting ? "提交中..." : `确认${title}`}

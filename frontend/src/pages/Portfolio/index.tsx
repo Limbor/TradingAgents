@@ -222,18 +222,18 @@ export default function Portfolio() {
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-5">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-stone-800 pb-5">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-ui-line pb-5">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-300">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ui-accent">
             Portfolio
           </p>
-          <h2 className="mt-2 text-2xl font-semibold text-stone-50">持仓管理</h2>
-          <p className="mt-1 text-sm text-stone-500">仓位、盈亏、集中度和风险扫描入口</p>
+          <h2 className="mt-2 text-2xl font-semibold text-ui-ink">持仓管理</h2>
+          <p className="mt-1 text-sm text-ui-faint">仓位、盈亏、集中度和风险扫描入口</p>
         </div>
         <button
           onClick={openRiskScan}
           disabled={holdings.length === 0}
-          className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-200 transition hover:border-amber-400/60 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-ui-warning/30 bg-ui-warning/10 px-3 py-2 text-sm font-medium text-ui-warning transition hover:border-ui-warning/60 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <ShieldAlert className="h-4 w-4" />
           风险扫描
@@ -241,7 +241,7 @@ export default function Portfolio() {
         <button
           onClick={refreshPrices}
           disabled={holdings.length === 0 || refreshing}
-          className="inline-flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-sm font-medium text-teal-200 transition hover:border-teal-400/60 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-2 text-sm font-medium text-ui-accent transition hover:border-ui-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RotateCcw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
           进入下一交易日
@@ -266,20 +266,20 @@ export default function Portfolio() {
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+        <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
           <div className="mb-4 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-stone-100">
+            <div className="flex items-center gap-2 text-ui-ink">
               {editingSymbol ? (
-                <Edit3 className="h-4 w-4 text-teal-300" />
+                <Edit3 className="h-4 w-4 text-ui-accent" />
               ) : (
-                <Plus className="h-4 w-4 text-teal-300" />
+                <Plus className="h-4 w-4 text-ui-accent" />
               )}
               <h3 className="text-sm font-semibold">{editingSymbol ? "编辑持仓" : "新增持仓"}</h3>
             </div>
             {editingSymbol && (
               <button
                 onClick={resetForm}
-                className="inline-flex items-center gap-1 rounded border border-stone-700 px-2 py-1 text-xs text-stone-400 transition hover:border-stone-500 hover:text-stone-100"
+                className="inline-flex items-center gap-1 rounded border border-ui-strong px-2 py-1 text-xs text-ui-muted transition hover:border-ui-strong hover:text-ui-ink"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 重置
@@ -323,14 +323,14 @@ export default function Portfolio() {
               placeholder="核心仓 / 观察仓 / 止损线..."
             />
             {error && (
-              <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              <div className="rounded border border-ui-danger/30 bg-ui-danger/10 px-3 py-2 text-xs text-ui-danger">
                 {error}
               </div>
             )}
             <button
               onClick={save}
               disabled={saving}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-teal-500 px-4 py-2 text-sm font-semibold text-stone-950 transition hover:bg-teal-400 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-ui-accent px-4 py-2 text-sm font-semibold text-ui-onAccent transition hover:bg-ui-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Save className="h-4 w-4" />
               {saving ? "保存中..." : editingSymbol ? "保存修改" : "加入持仓"}
@@ -338,35 +338,35 @@ export default function Portfolio() {
           </div>
         </section>
 
-        <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+        <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-stone-100">
-              <BriefcaseBusiness className="h-4 w-4 text-teal-300" />
+            <div className="flex items-center gap-2 text-ui-ink">
+              <BriefcaseBusiness className="h-4 w-4 text-ui-accent" />
               <h3 className="text-sm font-semibold">持仓列表</h3>
             </div>
-            <div className="flex items-center gap-2 text-xs text-stone-500">
+            <div className="flex items-center gap-2 text-xs text-ui-faint">
               <ClipboardList className="h-3.5 w-3.5" />
               {summary.count} 条记录
             </div>
           </div>
 
           {notice && (
-            <div className="mb-3 rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+            <div className="mb-3 rounded border border-ui-success/30 bg-ui-success/10 px-3 py-2 text-xs text-ui-success">
               {notice}
             </div>
           )}
 
           {holdingsQuery.isLoading ? (
-            <p className="text-sm text-stone-400">Loading holdings...</p>
+            <p className="text-sm text-ui-muted">Loading holdings...</p>
           ) : sortedHoldings.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-stone-700 bg-stone-950 px-4 py-10 text-center">
-              <BriefcaseBusiness className="mx-auto h-8 w-8 text-stone-600" />
-              <p className="mt-3 text-sm text-stone-400">暂无持仓记录</p>
+            <div className="rounded-lg border border-dashed border-ui-strong bg-ui-subtle px-4 py-10 text-center">
+              <BriefcaseBusiness className="mx-auto h-8 w-8 text-ui-faint" />
+              <p className="mt-3 text-sm text-ui-muted">暂无持仓记录</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-stone-800">
+            <div className="overflow-x-auto rounded-lg border border-ui-line">
               <table className="w-full min-w-[840px] text-left text-sm">
-                <thead className="bg-stone-950 text-xs uppercase text-stone-500">
+                <thead className="bg-ui-subtle text-xs uppercase text-ui-faint">
                   <tr>
                     <th className="px-3 py-2">标的</th>
                     <th className="px-3 py-2 text-right">数量</th>
@@ -386,15 +386,15 @@ export default function Portfolio() {
                     const weight = summary.value ? (value / summary.value) * 100 : 0;
                     const displayName = displayNameOf(item.name, item.symbol);
                     return (
-                      <tr key={item.symbol} className="border-t border-stone-800">
+                      <tr key={item.symbol} className="border-t border-ui-line">
                         <td className="px-3 py-2">
-                          <div className="font-semibold text-stone-100">{displayName}</div>
+                          <div className="font-semibold text-ui-ink">{displayName}</div>
                           {displayName !== item.symbol && (
-                            <div className="mt-0.5 font-mono text-xs text-stone-500">{item.symbol}</div>
+                            <div className="mt-0.5 font-mono text-xs text-ui-faint">{item.symbol}</div>
                           )}
                           {item.latest_analysis && (
                             <div
-                              className="mt-1 max-w-64 truncate text-xs text-stone-500"
+                              className="mt-1 max-w-64 truncate text-xs text-ui-faint"
                               title={[
                                 item.latest_analysis.date ? `分析日期 ${item.latest_analysis.date}` : "",
                                 item.latest_analysis.summary ?? "",
@@ -402,33 +402,33 @@ export default function Portfolio() {
                                 .filter(Boolean)
                                 .join(" · ")}
                             >
-                              <span className="mr-1 rounded bg-teal-500/10 px-1.5 py-0.5 text-teal-200">
+                              <span className="mr-1 rounded bg-ui-accent/10 px-1.5 py-0.5 text-ui-accent">
                                 {item.latest_analysis.rating || "最近分析"}
                               </span>
                               {item.latest_analysis.date && (
-                                <span className="mr-1 text-stone-500">{item.latest_analysis.date}</span>
+                                <span className="mr-1 text-ui-faint">{item.latest_analysis.date}</span>
                               )}
                               {item.latest_analysis.summary && <span>{item.latest_analysis.summary}</span>}
                             </div>
                           )}
-                          <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-stone-800">
+                          <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-ui-hover">
                             <div
-                              className={`h-full rounded-full ${weight > 50 ? "bg-amber-300" : "bg-teal-300"}`}
+                              className={`h-full rounded-full ${weight > 50 ? "bg-ui-warning" : "bg-ui-accent"}`}
                               style={{ width: `${Math.min(weight, 100)}%` }}
                             />
                           </div>
                         </td>
-                        <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(item.quantity)}</td>
-                        <td className="px-3 py-2 text-right font-mono text-stone-300">{formatNumber(item.avg_cost)}</td>
-                        <td className="px-3 py-2 text-right font-mono text-stone-300">
+                        <td className="px-3 py-2 text-right font-mono text-ui-body">{formatNumber(item.quantity)}</td>
+                        <td className="px-3 py-2 text-right font-mono text-ui-body">{formatNumber(item.avg_cost)}</td>
+                        <td className="px-3 py-2 text-right font-mono text-ui-body">
                           {formatNumber(item.current_price ?? item.avg_cost)}
                         </td>
-                        <td className="px-3 py-2 text-right font-mono text-stone-100">{formatMoney(value)}</td>
-                        <td className={`px-3 py-2 text-right font-mono ${pnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+                        <td className="px-3 py-2 text-right font-mono text-ui-ink">{formatMoney(value)}</td>
+                        <td className={`px-3 py-2 text-right font-mono ${pnl >= 0 ? "text-ui-success" : "text-ui-danger"}`}>
                           {formatMoney(pnl)}
                         </td>
-                        <td className="px-3 py-2 text-right font-mono text-stone-300">{weight.toFixed(1)}%</td>
-                        <td className="max-w-40 truncate px-3 py-2 text-stone-500">{item.notes || "-"}</td>
+                        <td className="px-3 py-2 text-right font-mono text-ui-body">{weight.toFixed(1)}%</td>
+                        <td className="max-w-40 truncate px-3 py-2 text-ui-faint">{item.notes || "-"}</td>
                         <td className="px-3 py-2">
                           <div className="flex justify-end gap-1.5">
                             <button
@@ -440,35 +440,35 @@ export default function Portfolio() {
                                   intentHint: positionAdviceHint(item.symbol, "review"),
                                 })
                               }
-                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-indigo-300"
+                              className="rounded border border-ui-strong p-1.5 text-ui-muted transition hover:bg-ui-hover hover:text-indigo-300"
                               title="持仓建议"
                             >
                               <Scale className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => { setNotice(null); setAdjustError(null); setAdjustTarget({ holding: item, action: "add" }); }}
-                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-teal-300"
+                              className="rounded border border-ui-strong p-1.5 text-ui-muted transition hover:bg-ui-hover hover:text-ui-accent"
                               title="加仓"
                             >
                               <TrendingUp className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => { setNotice(null); setAdjustError(null); setAdjustTarget({ holding: item, action: "reduce" }); }}
-                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-amber-300"
+                              className="rounded border border-ui-strong p-1.5 text-ui-muted transition hover:bg-ui-hover hover:text-ui-warning"
                               title="减仓"
                             >
                               <TrendingDown className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => edit(item)}
-                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-teal-300"
+                              className="rounded border border-ui-strong p-1.5 text-ui-muted transition hover:bg-ui-hover hover:text-ui-accent"
                               title="编辑"
                             >
                               <Edit3 className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => remove(item.symbol)}
-                              className="rounded border border-stone-700 p-1.5 text-stone-400 transition hover:bg-stone-800 hover:text-red-300"
+                              className="rounded border border-ui-strong p-1.5 text-ui-muted transition hover:bg-ui-hover hover:text-ui-danger"
                               title="删除"
                             >
                               <Trash2 className="h-4 w-4" />
@@ -501,9 +501,9 @@ export default function Portfolio() {
       )}
 
       {sortedHoldings.length > 0 && (
-        <section className="rounded-lg border border-stone-800 bg-stone-900 p-4">
-          <div className="mb-4 flex items-center gap-2 text-stone-100">
-            <BarChart3 className="h-4 w-4 text-teal-300" />
+        <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
+          <div className="mb-4 flex items-center gap-2 text-ui-ink">
+            <BarChart3 className="h-4 w-4 text-ui-accent" />
             <h3 className="text-sm font-semibold">仓位分布</h3>
           </div>
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
@@ -512,17 +512,17 @@ export default function Portfolio() {
 	              const weight = summary.value ? (value / summary.value) * 100 : 0;
 	              const displayName = displayNameOf(item.name, item.symbol);
 	              return (
-	                <div key={item.symbol} className="rounded-lg border border-stone-800 bg-stone-950 px-3 py-2">
+	                <div key={item.symbol} className="rounded-lg border border-ui-line bg-ui-subtle px-3 py-2">
 	                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-	                    <span className="truncate text-stone-100">{displayName}</span>
-	                    <span className="text-stone-500">{weight.toFixed(1)}%</span>
+	                    <span className="truncate text-ui-ink">{displayName}</span>
+	                    <span className="text-ui-faint">{weight.toFixed(1)}%</span>
 	                  </div>
 	                  {displayName !== item.symbol && (
-	                    <div className="mb-2 font-mono text-xs text-stone-600">{item.symbol}</div>
+	                    <div className="mb-2 font-mono text-xs text-ui-faint">{item.symbol}</div>
 	                  )}
-	                  <div className="h-2 overflow-hidden rounded-full bg-stone-800">
+	                  <div className="h-2 overflow-hidden rounded-full bg-ui-hover">
                     <div
-                      className={`h-full rounded-full ${weight > 50 ? "bg-amber-300" : "bg-teal-300"}`}
+                      className={`h-full rounded-full ${weight > 50 ? "bg-ui-warning" : "bg-ui-accent"}`}
                       style={{ width: `${Math.min(weight, 100)}%` }}
                     />
                   </div>
@@ -553,17 +553,17 @@ function Metric({
   tone?: "stone" | "teal" | "emerald" | "red" | "amber";
 }) {
   const toneClass = {
-    stone: "text-stone-50",
-    teal: "text-teal-300",
-    emerald: "text-emerald-300",
-    red: "text-red-300",
-    amber: "text-amber-300",
+    stone: "text-ui-ink",
+    teal: "text-ui-accent",
+    emerald: "text-ui-success",
+    red: "text-ui-danger",
+    amber: "text-ui-warning",
   }[tone];
   return (
-    <div className="rounded-lg border border-stone-800 bg-stone-900 px-4 py-3">
-      <div className="text-xs text-stone-500">{label}</div>
+    <div className="rounded-lg border border-ui-line bg-ui-panel px-4 py-3">
+      <div className="text-xs text-ui-faint">{label}</div>
       <div className={`mt-1 font-mono text-xl font-semibold ${toneClass}`}>{value}</div>
-      {sub && <div className="mt-1 text-xs text-stone-500">{sub}</div>}
+      {sub && <div className="mt-1 text-xs text-ui-faint">{sub}</div>}
     </div>
   );
 }
@@ -583,7 +583,7 @@ function Input({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-stone-400">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-ui-muted">{label}</span>
       <input
         type={type}
         min={type === "number" ? 0 : undefined}
@@ -591,7 +591,7 @@ function Input({
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 outline-none transition placeholder:text-stone-600 focus:border-teal-400"
+        className="w-full rounded-lg border border-ui-strong bg-ui-subtle px-3 py-2 text-sm text-ui-ink outline-none transition placeholder:text-ui-faint focus:border-ui-accent"
       />
     </label>
   );

@@ -50,22 +50,22 @@ export function ReportPanel({ sections, toolCalls }: ReportPanelProps) {
   return (
     <div className="flex h-full flex-col">
       {/* Top tabs: Report / Tools */}
-      <div className="mb-3 flex items-center justify-between border-b border-stone-800 pb-3">
+      <div className="mb-3 flex items-center justify-between border-b border-ui-line pb-3">
         <div>
-          <h3 className="text-sm font-semibold text-stone-200">Research Report</h3>
-          <p className="text-xs text-stone-500">Streaming sections and tool telemetry</p>
+          <h3 className="text-sm font-semibold text-ui-body">Research Report</h3>
+          <p className="text-xs text-ui-faint">Streaming sections and tool telemetry</p>
         </div>
-        <div className="flex rounded-lg border border-stone-800 bg-stone-950 p-1">
+        <div className="flex rounded-lg border border-ui-line bg-ui-subtle p-1">
         <button
           onClick={() => setActiveTab("report")}
-          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${activeTab === "report" ? "bg-stone-800 text-stone-50" : "text-stone-500 hover:text-stone-200"}`}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${activeTab === "report" ? "bg-ui-hover text-ui-ink" : "text-ui-faint hover:text-ui-body"}`}
         >
           <FileText className="h-3.5 w-3.5" />
           Report
         </button>
         <button
           onClick={() => setActiveTab("tools")}
-          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${activeTab === "tools" ? "bg-stone-800 text-stone-50" : "text-stone-500 hover:text-stone-200"}`}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${activeTab === "tools" ? "bg-ui-hover text-ui-ink" : "text-ui-faint hover:text-ui-body"}`}
         >
           <TerminalSquare className="h-3.5 w-3.5" />
           Tools ({toolCalls.length})
@@ -84,8 +84,8 @@ export function ReportPanel({ sections, toolCalls }: ReportPanelProps) {
                   onClick={() => setActiveSection(key)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                     displaySection === key
-                      ? "bg-teal-500 text-stone-950"
-                      : "border border-stone-800 bg-stone-950 text-stone-400 hover:text-stone-100"
+                      ? "bg-ui-accent text-ui-onAccent"
+                      : "border border-ui-line bg-ui-subtle text-ui-muted hover:text-ui-ink"
                   }`}
                 >
                   {SECTION_TITLES[key] ?? key}
@@ -95,7 +95,7 @@ export function ReportPanel({ sections, toolCalls }: ReportPanelProps) {
           )}
 
           {/* Report content */}
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-800 bg-stone-950 p-4">
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-ui-line bg-ui-subtle p-4">
             {displaySection && sections[displaySection] ? (
               <div className="prose prose-invert prose-sm max-w-none">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -103,21 +103,21 @@ export function ReportPanel({ sections, toolCalls }: ReportPanelProps) {
                 </ReactMarkdown>
               </div>
             ) : (
-              <p className="text-sm text-stone-500">Waiting for report content...</p>
+              <p className="text-sm text-ui-faint">Waiting for report content...</p>
             )}
           </div>
         </>
       )}
 
       {activeTab === "tools" && (
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-stone-800 bg-stone-950 p-3 font-mono text-xs">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-ui-line bg-ui-subtle p-3 font-mono text-xs">
           {toolCalls.length === 0 ? (
-            <p className="text-stone-500">No tool calls yet</p>
+            <p className="text-ui-faint">No tool calls yet</p>
           ) : (
             toolCalls.map((call, i) => (
-              <div key={i} className="rounded-md border border-stone-800 bg-stone-900 p-2">
-                <span className="text-teal-300">{call.tool}</span>
-                <span className="text-stone-500">
+              <div key={i} className="rounded-md border border-ui-line bg-ui-panel p-2">
+                <span className="text-ui-accent">{call.tool}</span>
+                <span className="text-ui-faint">
                   {" "}
                   ({JSON.stringify(call.args).slice(0, 120)})
                 </span>

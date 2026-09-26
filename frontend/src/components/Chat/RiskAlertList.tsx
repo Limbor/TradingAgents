@@ -14,10 +14,10 @@ interface RiskAlertListProps {
 }
 
 const levelConfig: Record<string, { icon: typeof ShieldAlert; color: string; bg: string }> = {
-  critical: { icon: ShieldX, color: "text-red-300", bg: "bg-red-500/10 border-red-500/30" },
+  critical: { icon: ShieldX, color: "text-ui-danger", bg: "bg-ui-danger/10 border-ui-danger/30" },
   high: { icon: ShieldAlert, color: "text-orange-300", bg: "bg-orange-500/10 border-orange-500/30" },
-  medium: { icon: AlertTriangle, color: "text-amber-300", bg: "bg-amber-500/10 border-amber-500/30" },
-  low: { icon: ShieldCheck, color: "text-emerald-300", bg: "bg-emerald-500/10 border-emerald-500/30" },
+  medium: { icon: AlertTriangle, color: "text-ui-warning", bg: "bg-ui-warning/10 border-ui-warning/30" },
+  low: { icon: ShieldCheck, color: "text-ui-success", bg: "bg-ui-success/10 border-ui-success/30" },
 };
 
 function getLevelConfig(level: string) {
@@ -31,7 +31,7 @@ function getLevelConfig(level: string) {
 export function RiskAlertList({ risks, onAnalyze }: RiskAlertListProps) {
   if (risks.length === 0) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-300">
+      <div className="flex items-center gap-2 rounded-lg border border-ui-success/20 bg-ui-success/10 p-4 text-sm text-ui-success">
         <ShieldCheck className="h-4 w-4" />
         当前没有发现明确风险事件。
       </div>
@@ -51,22 +51,22 @@ export function RiskAlertList({ risks, onAnalyze }: RiskAlertListProps) {
             <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${cfg.color}`} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-stone-100">
+                <span className="text-sm font-medium text-ui-ink">
                   {displayNameOf(risk.name, risk.symbol)}
                   {risk.name && risk.name !== risk.symbol && (
-                    <span className="ml-1 font-mono text-xs text-stone-500">{risk.symbol}</span>
+                    <span className="ml-1 font-mono text-xs text-ui-faint">{risk.symbol}</span>
                   )}
                 </span>
                 <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${cfg.color}`}>
                   {risk.level}
                 </span>
               </div>
-              <p className="mt-1 text-sm text-stone-300">{risk.summary}</p>
+              <p className="mt-1 text-sm text-ui-body">{risk.summary}</p>
             </div>
             {onAnalyze && (
               <button
                 onClick={() => onAnalyze(risk.symbol)}
-                className="shrink-0 rounded border border-stone-700 px-2 py-1 text-xs text-stone-300 transition hover:bg-stone-800"
+                className="shrink-0 rounded border border-ui-strong px-2 py-1 text-xs text-ui-body transition hover:bg-ui-hover"
               >
                 详情
               </button>

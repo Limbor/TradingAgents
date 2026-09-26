@@ -59,12 +59,14 @@ async function mockApi(page: Page, options: { artifacts?: unknown[] } = {}) {
 
 test("dashboard renders structured risk events", async ({ page }) => {
   page.on("pageerror", (error) => console.error("pageerror", error.message));
+  await page.addInitScript(() => window.localStorage.setItem("tradingagents.theme", "light"));
   await mockApi(page);
   await page.goto("/");
 
   await expect(page.getByText("结构化风险事件")).toBeVisible();
   await expect(page.getByText(/公司被立案调查/)).toBeVisible();
   await expect(page.getByText("高", { exact: true })).toBeVisible();
+  if (process.env.CAPTURE_THEME_QA) await page.screenshot({ path: "test-results/theme-dashboard.png", fullPage: true });
 });
 
 test("decision desk shows sourced candidates and their selected evidence", async ({ page }) => {

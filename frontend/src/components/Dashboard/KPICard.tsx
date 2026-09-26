@@ -9,21 +9,21 @@ interface KPICardProps {
 }
 
 const tones = {
-  teal: "text-teal-300",
-  emerald: "text-emerald-300",
-  amber: "text-amber-300",
-  red: "text-red-300",
+  teal: "text-ui-accent",
+  emerald: "text-ui-success",
+  amber: "text-ui-warning",
+  red: "text-ui-danger",
 };
 
 export function KPICard({ icon: Icon, label, value, sub, tone = "teal" }: KPICardProps) {
   return (
-    <div className="rounded-lg border border-stone-800 bg-stone-900 p-4">
+    <div className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className={`mb-2 flex items-center gap-2 text-xs ${tones[tone]}`}>
         <Icon className="h-4 w-4" />
         <span>{label}</span>
       </div>
-      <div className="font-mono text-xl font-semibold text-stone-50">{value}</div>
-      <div className="mt-1 text-xs text-stone-500">{sub}</div>
+      <div className="font-mono text-xl font-semibold text-ui-ink">{value}</div>
+      <div className="mt-1 text-xs text-ui-faint">{sub}</div>
     </div>
   );
 }

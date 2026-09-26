@@ -23,8 +23,8 @@ export const StockName = memo(function StockName({
   name,
   symbol,
   className,
-  nameClassName = "font-medium text-stone-100",
-  symbolClassName = "ml-1 font-mono text-xs text-stone-500",
+  nameClassName = "font-medium text-ui-ink",
+  symbolClassName = "ml-1 font-mono text-xs text-ui-faint",
 }: {
   name: string | null | undefined;
   symbol: string;

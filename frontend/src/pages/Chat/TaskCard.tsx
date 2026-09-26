@@ -34,15 +34,15 @@ export const TaskCard = React.memo(function TaskCard({
   const status = message.taskStatus ?? "running";
   return (
     <div className="flex justify-start gap-3">
-      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-teal-500/30 bg-teal-500/10">
-        <Bot className="h-4 w-4 text-teal-300" />
+      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-ui-accent/30 bg-ui-accent/10">
+        <Bot className="h-4 w-4 text-ui-accent" />
       </div>
-      <div className="w-full max-w-[90%] rounded-lg border border-stone-800 bg-stone-950 p-4">
+      <div className="w-full max-w-[90%] rounded-lg border border-ui-line bg-ui-subtle p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-stone-50">{message.content}</div>
+            <div className="text-sm font-semibold text-ui-ink">{message.content}</div>
             {message.skillId && (
-              <div className="mt-0.5 text-xs text-stone-500">{message.skillId}</div>
+              <div className="mt-0.5 text-xs text-ui-faint">{message.skillId}</div>
             )}
           </div>
           <StatusBadge status={status} />
@@ -64,11 +64,11 @@ export const TaskCard = React.memo(function TaskCard({
         )}
 
         {message.runId && (
-          <div className="mt-3 flex items-center justify-between border-t border-stone-800 pt-2 text-xs">
-            <span className="font-mono text-stone-500">run {message.runId.slice(0, 8)}</span>
+          <div className="mt-3 flex items-center justify-between border-t border-ui-line pt-2 text-xs">
+            <span className="font-mono text-ui-faint">run {message.runId.slice(0, 8)}</span>
             <Link
               to={`/library?run_id=${message.runId}`}
-              className="inline-flex items-center gap-1 text-teal-300 hover:text-teal-200"
+              className="inline-flex items-center gap-1 text-ui-accent hover:text-ui-accent"
             >
               产物
               <ExternalLink className="h-3.5 w-3.5" />
@@ -210,7 +210,7 @@ function TaskResult({
           {holdingConfirm}
           {structured.remainingText.trim() && (
             <details className="group">
-              <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">
+              <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">
                 展开完整报告文本
               </summary>
               <MarkdownPanel text={structured.remainingText} className="mt-2 max-h-60" />
@@ -237,7 +237,7 @@ function TaskResult({
         />
         {structured.remainingText.trim() && (
           <details className="group">
-            <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">
+            <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">
               展开选股报告正文
             </summary>
             <MarkdownPanel text={structured.remainingText} className="mt-2 max-h-60" />
@@ -250,7 +250,7 @@ function TaskResult({
   if (structured?.type === "shadow_candidates") {
     return (
       <div className="space-y-2">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-amber-300">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-ui-warning">
           扩展池观察候选（Shadow）
         </h4>
         <CandidateTable
@@ -270,7 +270,7 @@ function TaskResult({
         <RiskAlertList risks={risks} onAnalyze={onAnalyze} />
         {structured.remainingText.trim() && (
           <details className="group">
-            <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">
+            <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">
               展开风险报告正文
             </summary>
             <MarkdownPanel text={structured.remainingText} className="mt-2 max-h-60" />
@@ -286,7 +286,7 @@ function TaskResult({
         <PositionAdviceCard advice={structured.data as Record<string, unknown>} />
         {structured.remainingText.trim() && (
           <details className="group">
-            <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">展开完整建议</summary>
+            <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">展开完整建议</summary>
             <MarkdownPanel text={structured.remainingText} className="mt-2 max-h-60" />
           </details>
         )}
@@ -306,7 +306,7 @@ function TaskResult({
           />
           {holdingConfirm}
           <details className="group">
-            <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">
+            <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">
               展开完整报告文本
             </summary>
             <MarkdownPanel text={result} className="mt-2 max-h-60" />
@@ -327,7 +327,7 @@ function TaskResult({
 function MarkdownPanel({ text, className = "" }: { text: string; className?: string }) {
   return (
     <div
-      className={className + " overflow-y-auto rounded-lg border border-stone-800 bg-stone-900 p-3 text-sm leading-6 text-stone-200"}
+      className={className + " overflow-y-auto rounded-lg border border-ui-line bg-ui-panel p-3 text-sm leading-6 text-ui-body"}
     >
       <div className="prose prose-invert prose-sm max-w-none break-words">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
@@ -351,31 +351,31 @@ function AddHoldingConfirm({
   onConfirm: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-end gap-2 rounded-lg border border-teal-500/30 bg-teal-500/5 p-3 text-xs">
-      <div className="font-medium text-stone-200">添加持仓 {draft.symbol}</div>
+    <div className="flex flex-wrap items-end gap-2 rounded-lg border border-ui-accent/30 bg-ui-accent/5 p-3 text-xs">
+      <div className="font-medium text-ui-body">添加持仓 {draft.symbol}</div>
       <label className="flex flex-col gap-1">
-        <span className="text-stone-500">数量</span>
+        <span className="text-ui-faint">数量</span>
         <input
           type="number"
           value={draft.quantity}
           onChange={(e) => onChange({ ...draft, quantity: e.target.value })}
-          className="w-24 rounded border border-stone-700 bg-stone-950 px-2 py-1.5 font-mono text-stone-100 outline-none transition focus:border-teal-400"
+          className="w-24 rounded border border-ui-strong bg-ui-subtle px-2 py-1.5 font-mono text-ui-ink outline-none transition focus:border-ui-accent"
         />
       </label>
       <label className="flex flex-col gap-1">
-        <span className="text-stone-500">成本</span>
+        <span className="text-ui-faint">成本</span>
         <input
           type="number"
           value={draft.avgCost}
           onChange={(e) => onChange({ ...draft, avgCost: e.target.value })}
-          className="w-24 rounded border border-stone-700 bg-stone-950 px-2 py-1.5 font-mono text-stone-100 outline-none transition focus:border-teal-400"
+          className="w-24 rounded border border-ui-strong bg-ui-subtle px-2 py-1.5 font-mono text-ui-ink outline-none transition focus:border-ui-accent"
         />
       </label>
       <button
         type="button"
         onClick={onConfirm}
         disabled={saving}
-        className="rounded bg-teal-500 px-3 py-1.5 font-semibold text-stone-950 transition hover:bg-teal-400 disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded bg-ui-accent px-3 py-1.5 font-semibold text-ui-onAccent transition hover:bg-ui-accent disabled:cursor-not-allowed disabled:opacity-50"
       >
         {saving ? "保存中..." : "确认添加"}
       </button>
@@ -383,7 +383,7 @@ function AddHoldingConfirm({
         type="button"
         onClick={onCancel}
         disabled={saving}
-        className="rounded border border-stone-700 px-3 py-1.5 text-stone-400 transition hover:bg-stone-800 disabled:opacity-50"
+        className="rounded border border-ui-strong px-3 py-1.5 text-ui-muted transition hover:bg-ui-hover disabled:opacity-50"
       >
         取消
       </button>
@@ -412,9 +412,9 @@ export function AdaptiveAlphaBadge({ meta }: { meta?: Record<string, unknown> })
     const suggested = formatAlphaValue(meta.suggested_alpha);
     const n = typeof meta.n === "number" ? meta.n : undefined;
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-xs text-teal-200">
+      <div className="flex items-center gap-2 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-2 text-xs text-ui-accent">
         <span className="font-medium">自适应α已生效</span>
-        <span className="text-teal-300/80">
+        <span className="text-ui-accent/80">
           quant权重 {staticAlpha} → {suggested}
           {n !== undefined ? `（有效样本 n=${n}）` : ""}
         </span>
@@ -425,8 +425,8 @@ export function AdaptiveAlphaBadge({ meta }: { meta?: Record<string, unknown> })
     (typeof meta.reason === "string" && ADAPTIVE_ALPHA_REASONS[meta.reason]) ||
     "本次未生效，维持静态权重";
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-800/60 px-3 py-2 text-xs text-stone-400">
-      <span className="font-medium text-stone-300">自适应α已开启</span>
+    <div className="flex items-center gap-2 rounded-lg border border-ui-strong bg-ui-hover/60 px-3 py-2 text-xs text-ui-muted">
+      <span className="font-medium text-ui-body">自适应α已开启</span>
       <span>{reason}</span>
     </div>
   );
@@ -508,7 +508,7 @@ function CompositeTaskResult({
         if (block.type === "risks") {
           return (
             <section key={`${block.type}-${index}`} className="space-y-2">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-stone-400">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-ui-muted">
                 持仓风险结果
               </h4>
               <RiskAlertList risks={parseRisks(block.data)} onAnalyze={onAnalyze} />
@@ -518,7 +518,7 @@ function CompositeTaskResult({
         if (block.type === "candidates") {
           return (
             <section key={`${block.type}-${index}`} className="space-y-2">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-stone-400">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-ui-muted">
                 次日选股结果
               </h4>
               <AdaptiveAlphaBadge meta={block.adaptiveAlpha} />
@@ -537,7 +537,7 @@ function CompositeTaskResult({
         if (block.type === "shadow_candidates") {
           return (
             <section key={`${block.type}-${index}`} className="space-y-2">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-amber-300">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-ui-warning">
                 扩展池观察候选（Shadow）
               </h4>
               <CandidateTable
@@ -553,7 +553,7 @@ function CompositeTaskResult({
       })}
       {remainingText && (
         <details className="group">
-          <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-300">
+          <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">
             展开完整复盘报告
           </summary>
           <MarkdownPanel text={remainingText} className="mt-2 max-h-80" />
@@ -579,13 +579,13 @@ function StepRow({ step }: { step: ChatTaskStep }) {
   const truncated = detail.length > DETAIL_MAX_CHARS ? `${detail.slice(0, DETAIL_MAX_CHARS)}…` : detail;
   return (
     <div className="relative flex gap-2 text-xs">
-      <span className="absolute -left-4 top-0 bg-stone-950">
+      <span className="absolute -left-4 top-0 bg-ui-subtle">
         <StepIcon status={step.status} />
       </span>
       <div className="min-w-0">
-        <span className="text-stone-200">{step.label}</span>
+        <span className="text-ui-body">{step.label}</span>
         {detail && (
-          <span className="ml-2 break-all font-mono text-[11px] text-stone-500" title={detail}>
+          <span className="ml-2 break-all font-mono text-[11px] text-ui-faint" title={detail}>
             {truncated}
           </span>
         )}
@@ -629,7 +629,7 @@ export function StepTimeline({
 
   const timeline = (visible: ChatTaskStep[]) => (
     <div className="relative space-y-2 pl-4">
-      <div className="absolute bottom-1.5 left-[6px] top-1.5 w-0.5 bg-stone-800" aria-hidden />
+      <div className="absolute bottom-1.5 left-[6px] top-1.5 w-0.5 bg-ui-hover" aria-hidden />
       {visible.map((step) => (
         <StepRow key={step.id} step={step} />
       ))}
@@ -641,11 +641,11 @@ export function StepTimeline({
     const hidden = steps.length - RECENT_STEP_COUNT;
     return (
       <div className="mt-3 space-y-2">
-        <div className="flex items-center gap-2 rounded-lg border border-teal-500/20 bg-teal-500/5 px-2.5 py-1.5 text-xs">
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-teal-300" />
-          <span className="min-w-0 truncate text-stone-100">{latest.label}</span>
-          <span className="ml-auto shrink-0 font-mono text-stone-500">{duration}</span>
-          <span className="shrink-0 rounded border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-400">
+        <div className="flex items-center gap-2 rounded-lg border border-ui-accent/20 bg-ui-accent/5 px-2.5 py-1.5 text-xs">
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ui-accent" />
+          <span className="min-w-0 truncate text-ui-ink">{latest.label}</span>
+          <span className="ml-auto shrink-0 font-mono text-ui-faint">{duration}</span>
+          <span className="shrink-0 rounded border border-ui-strong px-1.5 py-0.5 text-[10px] text-ui-muted">
             第 {steps.length} 步
           </span>
         </div>
@@ -654,7 +654,7 @@ export function StepTimeline({
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}
-            className="text-xs text-stone-500 transition hover:text-stone-300"
+            className="text-xs text-ui-faint transition hover:text-ui-body"
           >
             {expanded ? "收起步骤" : `展开全部 ${steps.length} 步`}
           </button>
@@ -668,7 +668,7 @@ export function StepTimeline({
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
-        className="flex items-center gap-1.5 text-xs text-stone-500 transition hover:text-stone-300"
+        className="flex items-center gap-1.5 text-xs text-ui-faint transition hover:text-ui-body"
       >
         <ChevronDown
           className={`h-3.5 w-3.5 transition-transform ${expanded ? "" : "-rotate-90"}`}
@@ -691,15 +691,15 @@ function StatusBadge({ status }: { status: ChatTaskStatus }) {
   }[status];
   const tone =
     status === "completed"
-      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+      ? "border-ui-success/30 bg-ui-success/10 text-ui-success"
       : status === "failed"
-        ? "border-red-500/30 bg-red-500/10 text-red-300"
-        : "border-teal-500/30 bg-teal-500/10 text-teal-300";
+        ? "border-ui-danger/30 bg-ui-danger/10 text-ui-danger"
+        : "border-ui-accent/30 bg-ui-accent/10 text-ui-accent";
   return <span className={`shrink-0 rounded border px-2 py-1 text-xs ${tone}`}>{copy}</span>;
 }
 
 function StepIcon({ status }: { status: ChatTaskStatus }) {
-  if (status === "completed") return <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" />;
-  if (status === "failed") return <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-300" />;
-  return <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-teal-300" />;
+  if (status === "completed") return <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-success" />;
+  if (status === "failed") return <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-danger" />;
+  return <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-ui-accent" />;
 }
