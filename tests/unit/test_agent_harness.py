@@ -171,6 +171,25 @@ def test_missing_factor_score_is_masked_only_in_model_input():
     assert result["snapshot"]["rows"][0]["factor_scores"]["flow"] == 50.0
 
 
+def test_unusable_paper_plan_is_masked_only_in_model_input():
+    plan = {"signal_date": "2026-09-24", "items": [{"code": "600519.SH", "action": "BUY"}]}
+    result = {"session_id": "paper:mine", "snapshot": {"equity": 120000},
+              "next_plan": plan, "readiness": {"can_reference_plan": False}}
+    safe = _answer_evidence_result({"tool_name": "get_paper_session", "result": result})
+    assert safe["snapshot"] == {"equity": 120000}
+    assert safe["next_plan"] is None
+    assert "不得据此提出交易建议" in safe["plan_interpretation"]
+    assert result["next_plan"] == plan
+
+    stale = {"next_plan": plan, "freshness": {"is_active_plan_current": False}}
+    assert _answer_evidence_result({"tool_name": "get_paper_session", "result": stale})[
+        "next_plan"] is None
+    current = {"next_plan": plan, "readiness": {"can_reference_plan": True},
+               "freshness": {"is_active_plan_current": True}}
+    assert _answer_evidence_result({"tool_name": "get_paper_session", "result": current})[
+        "next_plan"] == plan
+
+
 def _harness(tmp_path, *, paper_handler, chat=None):
     db = Database(tmp_path / "agent.db")
     store = AgentStore(db)
@@ -261,6 +280,39 @@ async def test_unknown_or_stale_paper_plan_does_not_generate_judgment(
     result = store.get_task(task["id"])["result"]
     assert expected in result["content"]
     assert "没有生成交易判断" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_risk_question_masks_unusable_plan_from_model_but_keeps_audit(tmp_path, monkeypatch):
+    plan = {"signal_date": "2026-09-24", "items": [{"code": "600519.SH", "action": "BUY"}]}
+
+    async def paper(session_id):
+        return {"session_id": session_id, "source": "StockManager ledger",
+                "as_of_date": "2026-09-24", "snapshot": {"equity": 120000},
+                "readiness": {"can_reference_plan": False}, "next_plan": plan}
+
+    captured = []
+
+    class FakeLLM:
+        async def ainvoke(self, messages):
+            captured.extend(messages)
+            return SimpleNamespace(content="账本权益为 120000，策略计划尚不可引用。")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=FakeLLM))
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "这个模拟盘账户的权益和风险状态如何？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "completed"
+    assert detail["evidence"][0]["result"]["next_plan"] == plan
+    model_evidence = json.loads(captured[1].content.split("证据 JSON：\n", 1)[1])
+    assert model_evidence[0]["data"]["next_plan"] is None
+    assert "不得据此提出交易建议" in model_evidence[0]["data"]["plan_interpretation"]
+    assert "can_reference_plan=false" in captured[0].content
 
 
 @pytest.mark.asyncio
