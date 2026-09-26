@@ -85,6 +85,34 @@ async def test_unavailable_paper_source_does_not_generate_trade_advice(tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger, goal, expected", [
+    ({"session_id": "paper:other", "as_of_date": "2026-09-25",
+      "snapshot": {"equity": 100000}}, "评估模拟盘风险", "账户"),
+    ({"session_id": "paper:mine", "as_of_date": "2026-09-25",
+      "session": {"session_id": "paper:mine", "last_date": "2026-09-24"},
+      "snapshot": {"as_of_date": "2026-09-25", "equity": 100000}},
+     "推进模拟盘到 2026-09-28", "日期"),
+])
+async def test_conflicting_paper_ledger_abstains_and_never_proposes_action(
+    tmp_path, ledger, goal, expected,
+):
+    async def paper(session_id):
+        assert session_id == "paper:mine"
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], goal)
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert expected in detail["evidence"][0]["result"]["error"]
+    assert "没有生成交易判断" in detail["result"]["content"]
+    assert detail["proposal"] is None
+
+
+@pytest.mark.asyncio
 async def test_cancel_stops_task_and_rejects_concurrent_submission(tmp_path):
     started = asyncio.Event()
 

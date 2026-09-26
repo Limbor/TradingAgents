@@ -10,10 +10,36 @@ These are registered with ToolRegistry during app startup (see app.py lifespan).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def paper_ledger_conflicts(expected_session_id: str, result: dict[str, Any]) -> list[str]:
+    """Reject account or ledger-date contradictions before using paper evidence."""
+    conflicts: list[str] = []
+    session = result.get("session") if isinstance(result.get("session"), dict) else {}
+    snapshot = result.get("snapshot") if isinstance(result.get("snapshot"), dict) else {}
+    for actual in (result.get("session_id"), session.get("session_id")):
+        if actual and actual != expected_session_id:
+            conflicts.append("账本返回的模拟盘账户与当前对话绑定账户不一致")
+            break
+
+    dates: list[str] = []
+    for value in (result.get("as_of_date"), snapshot.get("as_of_date"), session.get("last_date")):
+        if value is None or value == "":
+            continue
+        normalized = str(value)[:10]
+        try:
+            date.fromisoformat(normalized)
+        except ValueError:
+            conflicts.append("账本基准日期格式无效")
+            break
+        dates.append(normalized)
+    if len(set(dates)) > 1:
+        conflicts.append("账本快照日期与会话日期不一致")
+    return conflicts
 
 
 def make_get_paper_session(config: dict[str, Any]):
@@ -30,6 +56,10 @@ def make_get_paper_session(config: dict[str, Any]):
             status = (await paper_request(config, "GET", root + "/status")).get("data") or {}
         except PaperServiceError as exc:
             return {"error": str(exc), "warnings": ["StockManager 模拟盘不可用"]}
+        conflicts = paper_ledger_conflicts(session_id, status)
+        if conflicts:
+            return {"error": "；".join(conflicts), "warnings": conflicts,
+                    "session_id": session_id, "source": "StockManager strategy paper ledger"}
         from asyncio import gather
 
         plan_result, trades_result, curve_result = await gather(

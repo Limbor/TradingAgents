@@ -16,6 +16,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from tradingagents.core.lightweight_tools import paper_ledger_conflicts
 from tradingagents.core.persistence import Database
 
 logger = logging.getLogger(__name__)
@@ -593,6 +594,10 @@ class TradingAgentHarness:
                         result.setdefault("source", f"TradingAgents Skill: {step['skill_id']}")
                     if step["tool"] == "get_paper_session" and not result.get("error"):
                         warnings = list(result.get("warnings") or [])
+                        conflicts = paper_ledger_conflicts(paper_session_id, result)
+                        if conflicts:
+                            result["error"] = "；".join(conflicts)
+                            warnings.extend(conflicts)
                         if not result.get("as_of_date"):
                             warnings.append("账本缺少基准日，不能判断数据时效")
                         readiness = result.get("readiness") or {}

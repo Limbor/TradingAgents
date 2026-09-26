@@ -69,6 +69,23 @@ class TestLightweightToolHandlers:
     """Tests for individual lightweight tool handlers."""
 
     @pytest.mark.asyncio
+    async def test_paper_handler_rejects_mismatched_account_before_other_reads(self, monkeypatch):
+        from tradingagents.core.lightweight_tools import make_get_paper_session
+
+        paths = []
+
+        async def paper_request(_config, _method, path):
+            paths.append(path)
+            return {"data": {"session": {"session_id": "paper:other",
+                                         "last_date": "2026-09-25"},
+                             "snapshot": {"as_of_date": "2026-09-25"}}}
+
+        monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+        result = await make_get_paper_session({})("paper:mine")
+        assert "账户" in result["error"]
+        assert paths == ["/api/v2/paper/paper:mine/status"]
+
+    @pytest.mark.asyncio
     async def test_get_portfolio_summary_with_holdings(self):
         from tradingagents.core.lightweight_tools import make_get_portfolio_summary
 
