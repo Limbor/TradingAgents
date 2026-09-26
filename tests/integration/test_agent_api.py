@@ -22,7 +22,7 @@ def test_agent_task_api_persists_evidence_and_scope(tmp_path, monkeypatch):
                         "equity": 200000, "cash": 100000, "positions": {}},
                     "recent_trades": []}
 
-        async def synthesize(*_args):
+        async def synthesize(*_args, **_kwargs):
             return "模拟盘权益 20 万元；来源为 StockManager 账本。"
 
         app.state.tool_registry.get("get_paper_session").handler = paper_handler

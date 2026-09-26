@@ -30,6 +30,12 @@ class _Skills:
         raise AssertionError("写入型 Skill 不得启动")
 
 
+def test_stock_reference_only_applies_to_stock_followups():
+    assert TradingAgentHarness._is_stock_followup("那它的公告呢？")
+    assert TradingAgentHarness._is_stock_followup("这只股票怎么样？")
+    assert not TradingAgentHarness._is_stock_followup("解释计划为何没有执行它")
+
+
 def test_missing_factor_score_is_masked_only_in_model_input():
     result = {"snapshot": {"rows": [{"data_coverage": {"valuation": "available", "flow": "missing"},
                                     "factor_scores": {"valuation": 52.0, "flow": 50.0}}]}}
@@ -62,7 +68,7 @@ async def test_paper_task_persists_events_and_evidence_across_store_reopen(tmp_p
 
     harness, store = _harness(tmp_path, paper_handler=paper)
 
-    async def synthesize(*_args):
+    async def synthesize(*_args, **_kwargs):
         return "截至 2026-09-25，权益 100 万元。"
 
     harness._synthesize = synthesize
@@ -108,6 +114,9 @@ async def test_unavailable_paper_source_does_not_generate_trade_advice(tmp_path)
     ({"session_id": "paper:mine", "as_of_date": "2026-09-25",
       "snapshot": {"equity": 100000}, "freshness": {"is_active_plan_current": False}},
      "当前策略切换的依据是什么", "策略计划当前不可引用"),
+    ({"session_id": "paper:mine", "as_of_date": "2026-09-25",
+      "snapshot": {"equity": 100000}, "freshness": {"is_active_plan_current": False}},
+     "现在可以买么？", "策略计划当前不可引用"),
 ])
 async def test_unknown_or_stale_paper_plan_does_not_generate_judgment(
     tmp_path, ledger, goal, expected,
@@ -297,7 +306,7 @@ async def test_explicit_stock_question_reads_factor_evidence(tmp_path):
         handler=factor,
     ))
 
-    async def synthesize(*_args):
+    async def synthesize(*_args, **_kwargs):
         return "截至 2026-09-25 的因子快照已读取。"
 
     harness._synthesize = synthesize
@@ -380,7 +389,7 @@ async def test_paper_factor_query_uses_verified_ledger_date(tmp_path):
         handler=factor,
     ))
 
-    async def synthesize(*_args):
+    async def synthesize(*_args, **_kwargs):
         return "同一基准日的证据已核对。"
 
     harness._synthesize = synthesize
@@ -501,7 +510,7 @@ async def test_two_explicit_stocks_each_get_a_bound_factor_snapshot(tmp_path):
         handler=factor,
     ))
 
-    async def synthesize(*_args):
+    async def synthesize(*_args, **_kwargs):
         return "两个标的证据已核对。"
 
     harness._synthesize = synthesize
@@ -549,7 +558,7 @@ async def test_announcement_question_reads_dates_without_factor_snapshot(tmp_pat
         handler=announcements,
     ))
 
-    async def synthesize(*_args):
+    async def synthesize(*_args, **_kwargs):
         return "未返回风险关键词命中；不能据此判断没有风险公告。"
 
     harness._synthesize = synthesize
@@ -579,6 +588,19 @@ async def test_model_cannot_switch_announcement_symbol_or_cutoff(tmp_path):
     assert [(step["tool"], step["args"]) for step in plan] == [
         ("get_mcp_risk_announcements", {"ts_code": "600519.SH"}),
     ]
+
+
+def test_announcement_plan_ignores_unrequested_archive_search(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+    plan = harness._validate_model_steps(
+        [{"tool": "search_artifacts", "query": "旧公告"},
+         {"tool": "get_portfolio_summary"}],
+        "查看 600519.SH 的公告", None,
+    )
+    assert [step["tool"] for step in plan] == ["get_mcp_risk_announcements"]
 
 
 @pytest.mark.asyncio
@@ -644,6 +666,90 @@ async def test_paper_factor_and_announcement_scope_requires_one_stock(tmp_path):
     result = store.get_task(task["id"])
     assert result["status"] == "needs_input"
     assert "缩小到一只股票" in result["result"]["content"]
+    assert store.list_evidence(task["id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_followups_reuse_one_previous_conversation_symbol(tmp_path):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    calls = []
+    factor_calls = []
+
+    async def factor(ts_code):
+        factor_calls.append(ts_code)
+        return {"ts_code": ts_code, "as_of_date": "2026-09-25", "source": "MCP",
+                "snapshot": {"rows": [{"ts_code": ts_code}]}}
+
+    async def announcements(ts_code, end_date=""):
+        calls.append(ts_code)
+        return {"ts_code": ts_code, "as_of_date": "2026-09-25", "source": "MCP",
+                "start_date": "2026-06-27", "end_date": "2026-09-25",
+                "rows": [], "count": 0}
+
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={}, handler=factor,
+    ))
+    harness.tools.register(LightweightTool(
+        name="get_mcp_risk_announcements", description="risk", parameters={},
+        handler=announcements,
+    ))
+
+    async def synthesize(*_args, **_kwargs):
+        return "已核对工具证据"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("测试", None)
+    first = harness.submit(conversation["id"], "看 600519.SH 估值")
+    await harness._active[first["id"]]
+    followup = harness.submit(conversation["id"], "那它的公告呢？")
+    await harness._active[followup["id"]]
+
+    detail = store.get_task(followup["id"])
+    events = store.list_events(followup["id"])
+    assert detail["status"] == "completed"
+    assert detail["goal"] == "那它的公告呢？"
+    assert calls == ["600519.SH"]
+    assert [item["tool_name"] for item in store.list_evidence(followup["id"])] == [
+        "get_mcp_risk_announcements",
+    ]
+    assert next(event["payload"]["ts_code"] for event in events
+                if event["event_type"] == "scope_resolved") == "600519.SH"
+
+    third = harness.submit(conversation["id"], "那它的估值呢？")
+    await harness._active[third["id"]]
+    assert store.get_task(third["id"])["status"] == "completed"
+    assert factor_calls == ["600519.SH", "600519.SH"]
+    assert [item["tool_name"] for item in store.list_evidence(third["id"])] == [
+        "get_mcp_factor_snapshot",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous_goal, expected", [
+    (None, "请提供"),
+    ("比较 600519.SH 和 000001.SZ", "多只股票"),
+    ("你好", "没有明确"),
+])
+async def test_stock_followup_without_unique_prior_symbol_requests_code(
+    tmp_path, previous_goal, expected,
+):
+    async def paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    conversation = store.create_conversation("测试", None)
+    if previous_goal is not None:
+        previous = store.create_task(conversation["id"], previous_goal)
+        store.set_status(previous["id"], "completed", result={"content": "旧任务"})
+    task = harness.submit(conversation["id"], "那它的公告呢？")
+    await harness._active[task["id"]]
+    detail = store.get_task(task["id"])
+    assert detail["status"] == "needs_input"
+    assert expected in detail["result"]["content"]
     assert store.list_evidence(task["id"]) == []
 
 
