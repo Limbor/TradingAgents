@@ -16,7 +16,8 @@ test("Agent timeline shows steps added after a tool failure", async ({ page }) =
       events: [
         event(1, "plan_created", { steps: [{ id: "portfolio", label: "读取当前手工持仓" }] }),
         event(2, "step_completed", { id: "portfolio", status: "failed" }),
-        event(3, "plan_revised", { steps: [{ id: "artifacts", label: "查找关联分析产物" }] }),
+        event(3, "plan_revised", { steps: [{ id: "artifacts", label: "查找关联分析产物" }],
+          reason: "持仓数据源不可用，改查历史分析产物" }),
         event(4, "step_completed", { id: "artifacts", status: "completed" }),
       ] }],
   };
@@ -29,6 +30,7 @@ test("Agent timeline shows steps added after a tool failure", async ({ page }) =
   await expect(page.getByText("执行过程 · 已调整计划")).toBeVisible();
   await expect(page.getByText("读取当前手工持仓")).toBeVisible();
   await expect(page.getByText("查找关联分析产物")).toBeVisible();
+  await expect(page.getByText("调整原因：持仓数据源不可用，改查历史分析产物")).toBeVisible();
   await expect(page.getByText("失败", { exact: true })).toBeVisible();
 });
 
@@ -57,6 +59,7 @@ test("interrupted read task requires an explicit retry", async ({ page }) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.goto("/chat?paper_session=paper%3Aone");
+  await expect(page.getByText("本任务没有可展示的执行步骤。")).toBeVisible();
   await expect(page.getByRole("button", { name: "重新运行任务" })).toBeVisible();
   expect(submissions).toBe(0);
   await page.getByRole("button", { name: "重新运行任务" }).click();

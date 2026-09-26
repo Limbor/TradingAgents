@@ -15,13 +15,21 @@ test("each Agent answer opens its own evidence and shows trading facts", async (
     summary: "手工持仓 1 只", warnings: ["价格为本地保存值"], result: {
       total_symbols: 1, holdings: [{ symbol: "000001.SZ", pnl: 250 }],
     } };
+  const events = (taskId: string, stepId: string, label: string) => [
+    { task_id: taskId, seq: 1, event_type: "plan_created",
+      payload: { steps: [{ id: stepId, label }] }, created_at: now },
+    { task_id: taskId, seq: 2, event_type: "step_completed",
+      payload: { id: stepId, status: "completed" }, created_at: now },
+  ];
   const tasks = [
     { id: "t-old", conversation_id: conversation.id, goal: "旧任务：分析 600519.SH",
       status: "completed", result: { content: "旧回答", citations: [{ id: oldEvidence.id }] },
-      error: null, created_at: now, updated_at: now, events: [], evidence: [oldEvidence], proposal: null },
+      error: null, created_at: now, updated_at: now,
+      events: events("t-old", "factor", "读取 600519.SH 因子快照"), evidence: [oldEvidence], proposal: null },
     { id: "t-new", conversation_id: conversation.id, goal: "新任务：检查组合",
       status: "completed", result: { content: "新回答", citations: [{ id: newEvidence.id }] },
-      error: null, created_at: now, updated_at: now, events: [], evidence: [newEvidence], proposal: null },
+      error: null, created_at: now, updated_at: now,
+      events: events("t-new", "portfolio", "读取当前手工持仓"), evidence: [newEvidence], proposal: null },
   ];
   const messages = [
     { id: "m1", conversation_id: conversation.id, task_id: "t-old", role: "user", content: tasks[0].goal, created_at: now },
@@ -46,6 +54,8 @@ test("each Agent answer opens its own evidence and shows trading facts", async (
   await expect(inspector.getByText("旧任务：分析 600519.SH")).toBeVisible();
   await expect(inspector.getByText("市盈率")).toBeVisible();
   await expect(inspector.getByText("12.3")).toBeVisible();
+  await expect(inspector.getByText("来源")).toBeVisible();
+  await expect(inspector.getByText("基准日")).toBeVisible();
   if (process.env.CAPTURE_AGENT_QA) await page.screenshot({ path: "test-results/agent-evidence.png", fullPage: true });
   await page.getByRole("button", { name: "已关联 1 项证据 · 查看任务档案" }).last().click();
   await expect(inspector.getByText("新任务：检查组合")).toBeVisible();
