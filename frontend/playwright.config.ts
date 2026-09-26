@@ -27,15 +27,19 @@ const backendServer = {
   cwd: "..",
   url: "http://127.0.0.1:8423/api/v1/health",
   reuseExistingServer: false,
-  // MCP init waits up to 10s before degrading, plus import/startup overhead.
+  // Leave room for backend import/startup overhead.
   timeout: 120_000,
   env: {
     TRADINGAGENTS_API_HOST: "127.0.0.1",
     TRADINGAGENTS_API_PORT: "8423",
     // A throwaway DB file (the connect-per-call layer can't use :memory:) keeps
-    // the smoke off the developer's real ~/.tradingagents/app.db. Assertions are
-    // data-independent (shell + health + static header), so stale rows are fine.
+    // the smoke off the developer's real ~/.tradingagents/app.db. Tests create
+    // their own conversations, so earlier smoke rows do not affect assertions.
     TRADINGAGENTS_APP_DB: "/tmp/tradingagents-e2e-smoke.db",
+    STOCKMANAGER_MCP_ENABLED: "false",
+    TRADINGAGENTS_AGENT_MODEL_PLANNING_ENABLED: "false",
+    TRADINGAGENTS_SCHEDULER_ENABLED: "false",
+    TRADINGAGENTS_TICKER_NAME_BACKFILL_ENABLED: "false",
   },
 };
 

@@ -63,3 +63,52 @@ test("portfolio route renders its empty state from the real backend", async ({ p
   await expect(page.getByRole("navigation", { name: "更多工具" }).getByRole("link", { name: "持仓管理" })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("Agent keeps a trade question when the user supplies a missing symbol", async ({ page, request }) => {
+  await page.goto("/chat");
+  const createdResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/v1/agent/conversations") &&
+    response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "新建对话" }).click();
+  const conversation = await (await createdResponse).json() as { id: string };
+
+  const input = page.getByRole("textbox", { name: "交易问题" });
+  await input.fill("现在要不要买入茅台？");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText(/请直接回复要评估的 A 股代码/)).toBeVisible();
+  await expect(page.getByText("需要补充信息").first()).toBeVisible();
+
+  await input.fill("600519.SH");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText("600519.SH", { exact: true })).toBeVisible();
+  await expect.poll(async () => {
+    const detail = await (await request.get(`/api/v1/agent/conversations/${conversation.id}`)).json();
+    const task = detail.tasks[1];
+    return {
+      count: detail.tasks.length,
+      goal: task?.goal,
+      scope: task?.events.find((event: { event_type: string }) => event.event_type === "scope_resolved")?.payload.ts_code,
+      input: detail.messages.find((message: { task_id: string; role: string }) =>
+        message.task_id === task?.id && message.role === "user")?.content,
+    };
+  }).toMatchObject({
+    count: 2,
+    goal: expect.stringContaining("现在要不要买入茅台"),
+    scope: "600519.SH",
+    input: "600519.SH",
+  });
+  await expect.poll(async () => {
+    const detail = await (await request.get(`/api/v1/agent/conversations/${conversation.id}`)).json();
+    return detail.tasks[1]?.status;
+  }).toBe("completed");
+  const detail = await (await request.get(`/api/v1/agent/conversations/${conversation.id}`)).json();
+  expect(detail.tasks[1].evidence.map((item: { tool_name: string }) => item.tool_name))
+    .toContain("get_mcp_factor_snapshot");
+  expect(detail.tasks[1].evidence[0].result.error).toContain("MCP");
+  expect(detail.tasks[1].result.content).toContain("没有生成交易判断");
+  await expect(page.getByText(/本轮没有生成交易判断/)).toBeVisible();
+  const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
+  await expect(inspector.getByText("读取失败")).toBeVisible();
+  await expect(inspector.getByText("StockManager MCP is not connected")).toBeVisible();
+});
