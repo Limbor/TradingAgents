@@ -25,6 +25,9 @@ _ARTIFACT_WORDS = ("以前", "历史", "之前", "报告", "分析", "回测", "
 _HOLDING_WORDS = ("持仓", "组合", "账户", "盈亏", "仓位", "我的股票", "我持有")
 _PLAN_WORDS = ("计划", "下一交易日", "策略切换", "调仓", "加仓", "减仓",
                "买入", "卖出", "买", "卖")
+_TRADE_ACTION_WORDS = ("买入", "卖出", "加仓", "减仓", "调仓", "止损", "止盈", "持有", "买", "卖")
+_TRADE_DECISION_WORDS = ("要不要", "该不该", "应不应该", "是否", "能否", "能不能",
+                         "可不可以", "可以", "适合", "值得")
 _ANNOUNCEMENT_WORDS = ("公告", "问询", "立案", "违规", "处罚", "退市", "减持", "预亏")
 _FACTOR_WORDS = ("估值", "因子", "市盈率", "市净率", "资金流", "动量", "行情", "股价",
                  "价格", "走势", "基本面", "财报", "roe", "pe", "pb")
@@ -461,9 +464,26 @@ class TradingAgentHarness:
         goal = goal.strip()
         if not goal or len(goal) > 4000:
             raise ValueError("请输入 1–4000 字的交易问题")
+        user_input = goal
+        clarified_from = None
+        if _A_SHARE_TICKER.fullmatch(goal.upper()):
+            previous = next(iter(reversed(self.store.list_tasks(conversation_id))), None)
+            if previous and previous["status"] == "needs_input" and any(
+                event["event_type"] == "task_needs_input" and
+                event["payload"].get("reason") == "trade_scope"
+                for event in self.store.list_events(previous["id"])
+            ):
+                clarified_from = previous["id"]
+                goal = (f"评估 {goal.upper()}。原交易问题：{previous['goal']}。"
+                        f"标的代码以用户本轮提供的 {goal.upper()} 为准。")
         task = self.store.create_task(conversation_id, goal)
-        self.store.add_message(conversation_id, "user", goal, task["id"])
+        self.store.add_message(conversation_id, "user", user_input, task["id"])
         self.store.event(task["id"], "task_created", {"goal": goal})
+        if clarified_from:
+            self.store.event(task["id"], "scope_resolved", {
+                "ts_code": user_input.upper(), "source": "clarification",
+                "previous_task_id": clarified_from,
+            })
         running = asyncio.create_task(self._execute(task["id"], conversation, intent_hint))
         self._active[task["id"]] = running
         running.add_done_callback(lambda _: self._active.pop(task["id"], None))
@@ -648,6 +668,16 @@ class TradingAgentHarness:
                 self.store.event(task_id, "scope_resolved", {
                     "ts_code": tickers[0], "source": "previous_task",
                 })
+            if (not tickers and not conversation.get("paper_session_id") and
+                    self._asks_trade_decision(goal)):
+                content = ("请直接回复要评估的 A 股代码（例如 600519.SH），我会继续这项问题；"
+                           "若询问模拟盘调仓，请先选择对应模拟盘账户。")
+                self.store.add_message(conversation["id"], "assistant", content, task_id)
+                self.store.set_status(task_id, "needs_input", result={"content": content})
+                self.store.event(task_id, "task_needs_input", {
+                    "content": content, "reason": "trade_scope",
+                })
+                return
             if len(tickers) > 2:
                 content = "一次最多核对两个明确的 A 股代码。请缩小到两个标的后重试。"
                 self.store.add_message(conversation["id"], "assistant", content, task_id)
@@ -907,6 +937,15 @@ class TradingAgentHarness:
     def _may_read_portfolio(goal: str) -> bool:
         return (any(word in goal for word in _HOLDING_WORDS) or
                 any(word in goal for word in ("买", "卖", "调仓", "加仓", "减仓")))
+
+    @staticmethod
+    def _asks_trade_decision(goal: str) -> bool:
+        if not any(word in goal for word in _TRADE_ACTION_WORDS):
+            return False
+        return (any(word in goal for word in _TRADE_DECISION_WORDS) or
+                bool(re.search(r"(?:建议|帮我|给我)(?:制定|做|提供|一个|一份|个)?"
+                               r"(?:买入|卖出|加仓|减仓|调仓|止损|止盈)", goal)) or
+                bool(re.search(r"(?:买入|卖出|加仓|减仓|调仓|止损|止盈|持有).{0,12}[吗么]", goal)))
 
     @classmethod
     def _needs_factor(cls, goal: str) -> bool:
@@ -1174,6 +1213,11 @@ class TradingAgentHarness:
             if "风险公告查询截止日与模拟盘账本不一致" in reason["summary"]:
                 return "风险公告查询截止日与模拟盘账本基准日不一致。本轮没有生成交易判断，请核对数据源后重试。"
             return f"当前无法核对所需数据：{reason['summary']}。本轮没有生成交易判断，请检查数据源后重试。"
+        if (not conversation.get("paper_session_id") and
+                self._asks_trade_decision(goal) and
+                any(item["tool_name"] == "get_portfolio_summary" for item in evidence)):
+            return ("手工持仓和本地保存价格尚未与交易账户及当前行情核对，不能据此判断是否买卖或加减仓。"
+                    "本轮没有生成交易判断；请先核对实际持仓、价格时点，或选择对应模拟盘账户。")
         if conversation.get("paper_session_id"):
             ledger = next((item for item in evidence if item["tool_name"] == "get_paper_session"), None)
             if ledger and not ledger["as_of_date"]:

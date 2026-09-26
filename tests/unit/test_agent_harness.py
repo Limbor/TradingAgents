@@ -36,6 +36,113 @@ def test_stock_reference_only_applies_to_stock_followups():
     assert not TradingAgentHarness._is_stock_followup("解释计划为何没有执行它")
 
 
+def test_trade_decision_detection_keeps_general_education_separate():
+    assert TradingAgentHarness._asks_trade_decision("现在要不要买入茅台？")
+    assert TradingAgentHarness._asks_trade_decision("600519.SH 适合加仓吗？")
+    assert TradingAgentHarness._asks_trade_decision("给我一个买入计划")
+    assert not TradingAgentHarness._asks_trade_decision("如何制定买入纪律？")
+    assert not TradingAgentHarness._asks_trade_decision("帮我介绍买卖策略")
+
+
+@pytest.mark.asyncio
+async def test_unscoped_trade_decision_asks_for_symbol_before_legacy_chat(tmp_path):
+    class UnusedChat:
+        async def handle(self, *_args, **_kwargs):
+            raise AssertionError("没有标的和账户的交易判断不得走旧聊天路由")
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"没有绑定模拟盘时不得读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper, chat=UnusedChat())
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "现在要不要买入茅台？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "needs_input"
+    assert "A 股代码" in detail["result"]["content"]
+    assert detail["evidence"] == []
+    assert detail["events"][-1]["event_type"] == "task_needs_input"
+
+
+@pytest.mark.asyncio
+async def test_code_reply_continues_previous_trade_decision_with_fresh_evidence(tmp_path):
+    async def unused_paper(session_id):
+        raise AssertionError(f"没有绑定模拟盘时不得读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    calls = []
+
+    async def factor(ts_code):
+        calls.append(ts_code)
+        return {"source": "StockManager MCP", "ts_code": ts_code,
+                "as_of_date": "2026-09-25", "snapshot": {"rows": []}}
+
+    async def synthesize(goal, _conversation_id, _evidence, **_kwargs):
+        assert "要不要买入" in goal
+        assert "600519.SH" in goal
+        return "已根据新取的证据评估。"
+
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={}, handler=factor,
+    ))
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("测试", None)
+    first = harness.submit(conversation["id"], "现在要不要买入茅台？")
+    await harness._active[first["id"]]
+    second = harness.submit(conversation["id"], "600519.SH")
+    await harness._active[second["id"]]
+
+    detail = store.conversation_detail(conversation["id"])
+    resumed = detail["tasks"][1]
+    assert calls == ["600519.SH"]
+    assert resumed["status"] == "completed"
+    assert resumed["result"]["content"] == "已根据新取的证据评估。"
+    assert detail["messages"][-2]["content"] == "600519.SH"
+    assert any(event["event_type"] == "scope_resolved" and
+               event["payload"]["previous_task_id"] == first["id"]
+               for event in resumed["events"])
+    assert "原交易问题" in resumed["goal"]
+
+
+@pytest.mark.asyncio
+async def test_manual_holdings_cannot_support_current_trade_decision(tmp_path):
+    async def unused_paper(session_id):
+        raise AssertionError(f"没有绑定模拟盘时不得读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+
+    async def portfolio():
+        return {"source": "TradingAgents local holdings", "holdings": [
+            {"symbol": "600519.SH", "quantity": 40, "current_price": 1500,
+             "record_updated_at": "2026-09-20"}],
+            "warnings": ["持仓价格为本地保存值，未核对实时行情或价格时点"]}
+
+    async def factor(ts_code):
+        return {"source": "StockManager MCP", "ts_code": ts_code,
+                "as_of_date": "2026-09-25", "snapshot": {"rows": []}}
+
+    harness.tools.register(LightweightTool(
+        name="get_portfolio_summary", description="portfolio", parameters={}, handler=portfolio,
+    ))
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={}, handler=factor,
+    ))
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "我持有 600519.SH，现在要不要加仓？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "completed"
+    assert [item["tool_name"] for item in detail["evidence"]] == [
+        "get_portfolio_summary", "get_mcp_factor_snapshot",
+    ]
+    assert "尚未与交易账户及当前行情核对" in detail["result"]["content"]
+    assert "没有生成交易判断" in detail["result"]["content"]
+
+
 def test_missing_factor_score_is_masked_only_in_model_input():
     result = {"snapshot": {"rows": [{"data_coverage": {"valuation": "available", "flow": "missing"},
                                     "factor_scores": {"valuation": 52.0, "flow": 50.0}}]}}
