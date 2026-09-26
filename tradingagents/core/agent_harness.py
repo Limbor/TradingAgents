@@ -602,6 +602,20 @@ class TradingAgentHarness:
                     step_index += 1
                     if step["tool"] == "chat_agent":
                         continue
+                    if step["tool"] == "get_mcp_factor_snapshot" and paper_session_id:
+                        ledger = next((item for item in evidence
+                                       if item["tool_name"] == "get_paper_session" and
+                                       not item["result"].get("error")), None)
+                        ledger_date = ledger["as_of_date"] if ledger else None
+                        if isinstance(ledger_date, str):
+                            try:
+                                trade_date = date.fromisoformat(ledger_date).isoformat()
+                            except ValueError:
+                                trade_date = None
+                            if trade_date:
+                                # The account's ledger date owns the time scope. A
+                                # model-supplied date must never replace it.
+                                step = {**step, "args": {**step["args"], "trade_date": trade_date}}
                     self.store.event(task_id, "step_started", step)
                     if step["tool"] == "skill":
                         result = await self._run_skill(task_id, step["skill_id"], step["args"])
@@ -621,6 +635,14 @@ class TradingAgentHarness:
                         result = {"value": result}
                     if step["tool"] == "get_mcp_factor_snapshot":
                         result.setdefault("ts_code", step["args"]["ts_code"])
+                        if paper_session_id and not result.get("error"):
+                            ledger = next((item for item in evidence
+                                           if item["tool_name"] == "get_paper_session" and
+                                           not item["result"].get("error")), None)
+                            ledger_date = ledger["as_of_date"] if ledger else None
+                            if not ledger_date or result.get("as_of_date") != ledger_date:
+                                result["warnings"] = [*(result.get("warnings") or []),
+                                    "因子快照与模拟盘账本基准日不一致，不能合并为同一时点的交易判断"]
                     if step["tool"] == "skill":
                         result.setdefault("source", f"TradingAgents Skill: {step['skill_id']}")
                     if step["tool"] == "get_paper_session" and not result.get("error"):
@@ -943,6 +965,14 @@ class TradingAgentHarness:
         if missing or not usable:
             reason = missing or evidence[0]
             return f"当前无法核对所需数据：{reason['summary']}。本轮没有生成交易判断，请检查数据源后重试。"
+        if conversation.get("paper_session_id") and self._goal_tickers(goal):
+            ledger = next((item for item in evidence if item["tool_name"] == "get_paper_session"), None)
+            ledger_date = ledger["as_of_date"] if ledger else None
+            factor_dates = [item["as_of_date"] for item in evidence
+                            if item["tool_name"] == "get_mcp_factor_snapshot"]
+            if not ledger_date or any(factor_date != ledger_date for factor_date in factor_dates):
+                return ("模拟盘账本与标的因子快照的基准日无法对齐，不能把不同日期的数据合并"
+                        "为同一时点的交易判断。请核对数据源后重试。")
         from langchain_core.messages import HumanMessage, SystemMessage
 
         from tradingagents.llm_clients import create_llm_client

@@ -297,7 +297,7 @@ async def test_paper_stock_question_requires_both_ledger_and_factor_snapshot(tmp
         return {"session_id": session_id, "source": "StockManager ledger",
                 "as_of_date": "2026-09-25", "snapshot": {"equity": 100000}}
 
-    async def factor(ts_code):
+    async def factor(ts_code, trade_date=""):
         return {"error": f"{ts_code} 因子源不可用"}
 
     harness, store = _harness(tmp_path, paper_handler=paper)
@@ -315,6 +315,66 @@ async def test_paper_stock_question_requires_both_ledger_and_factor_snapshot(tmp
         "get_paper_session", "get_mcp_factor_snapshot",
     ]
     assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_paper_factor_query_uses_verified_ledger_date(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "source": "StockManager ledger",
+                "as_of_date": "2026-09-25", "snapshot": {"equity": 100000}}
+
+    calls = []
+
+    async def factor(ts_code, trade_date=""):
+        calls.append((ts_code, trade_date))
+        return {"ts_code": ts_code, "as_of_date": trade_date,
+                "source": "StockManager MCP", "snapshot": {"rows": []}}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+
+    async def synthesize(*_args):
+        return "同一基准日的证据已核对。"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "评估模拟盘内 600519.SH 的风险")
+    await harness._active[task["id"]]
+
+    assert calls == [("600519.SH", "2026-09-25")]
+    started = [event for event in store.list_events(task["id"])
+               if event["event_type"] == "step_started"]
+    assert started[1]["payload"]["args"]["trade_date"] == "2026-09-25"
+
+
+@pytest.mark.asyncio
+async def test_paper_factor_date_conflict_abstains_before_model(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "as_of_date": "2026-09-25",
+                "snapshot": {"equity": 100000}}
+
+    async def factor(ts_code, trade_date=""):
+        assert trade_date == "2026-09-25"
+        return {"ts_code": ts_code, "as_of_date": "2026-09-24",
+                "source": "StockManager MCP", "snapshot": {"rows": []}}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "评估模拟盘内 600519.SH 的风险")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert "不能把不同日期的数据合并" in detail["result"]["content"]
+    assert "基准日不一致" in detail["evidence"][1]["warnings"][0]
 
 
 @pytest.mark.asyncio
