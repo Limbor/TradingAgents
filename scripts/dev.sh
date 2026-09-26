@@ -20,19 +20,28 @@ LOG_DIR="$ROOT_DIR/.dev-logs"
 BACKEND_PID_FILE="$PID_DIR/backend.pid"
 FRONTEND_PID_FILE="$PID_DIR/frontend.pid"
 STOCKMANAGER_PID_FILE="$PID_DIR/stockmanager-web.pid"
+STOCKMANAGER_MCP_PID_FILE="$PID_DIR/stockmanager-mcp.pid"
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 STOCKMANAGER_LOG="$LOG_DIR/stockmanager-web.log"
+STOCKMANAGER_MCP_LOG="$LOG_DIR/stockmanager-mcp.log"
 
 # ── 端口配置 ──────────────────────────────────────────────
 BACKEND_PORT="${TRADINGAGENTS_API_PORT:-8422}"
 FRONTEND_PORT="${VITE_PORT:-5173}"
 STOCKMANAGER_ROOT="${TRADINGAGENTS_MCP_STOCKMANAGER_DIR:-$ROOT_DIR/../StockManager}"
 STOCKMANAGER_WEB_URL="${STOCKMANAGER_WEB_URL:-http://127.0.0.1:8787}"
+STOCKMANAGER_MCP_URL="${STOCKMANAGER_MCP_URL:-http://127.0.0.1:8765/mcp}"
 STOCKMANAGER_WEB_PORT=""
 if [[ "$STOCKMANAGER_WEB_URL" =~ ^http://(127\.0\.0\.1|localhost):([0-9]+)$ ]]; then
   STOCKMANAGER_WEB_PORT="${BASH_REMATCH[2]}"
 fi
+STOCKMANAGER_MCP_PORT=""
+if [[ "$STOCKMANAGER_MCP_URL" =~ ^http://(127\.0\.0\.1|localhost):([0-9]+)/mcp/?$ ]]; then
+  STOCKMANAGER_MCP_PORT="${BASH_REMATCH[2]}"
+fi
+STOCKMANAGER_MCP_HEALTH="${STOCKMANAGER_MCP_URL%/}"
+STOCKMANAGER_MCP_HEALTH="${STOCKMANAGER_MCP_HEALTH%/mcp}/health"
 
 # ── 本地服务直连 ──────────────────────────────────────────
 # 避免系统/终端代理（例如 127.0.0.1:7897）劫持本地 API、WS、MCP。
@@ -65,6 +74,7 @@ header(){ echo -e "\n${CYAN}═══ $* ═══${NC}\n"; }
 precheck() {
   mkdir -p "$PID_DIR" "$LOG_DIR"
   touch "$STOCKMANAGER_LOG"
+  touch "$STOCKMANAGER_MCP_LOG"
 
   if [ -z "$PYTHON" ]; then
     error "未找到 Python 虚拟环境 (.venv)"
@@ -121,6 +131,12 @@ is_stockmanager_web() {
   local command
   command="$(pid_command "$1")"
   [[ "$command" == *"$STOCKMANAGER_ROOT/.venv/bin/python -m uvicorn stockmanager.web.app:app"* ]]
+}
+
+is_stockmanager_mcp() {
+  local command
+  command="$(pid_command "$1")"
+  [[ "$command" == *"stockmanager-mcp/server.py --transport http"* ]]
 }
 
 pid_or_child_owns_port() {
@@ -380,6 +396,66 @@ stop_stockmanager_web() {
   fi
 }
 
+# ── 启动 StockManager 量化 MCP（在后端之前发现工具能力）──────
+start_stockmanager_mcp() {
+  if curl -sf --max-time 2 "$STOCKMANAGER_MCP_HEALTH" >/dev/null 2>&1; then
+    info "StockManager MCP 已就绪，复用现有服务 → $STOCKMANAGER_MCP_URL"
+    return 0
+  fi
+  if [ -z "$STOCKMANAGER_MCP_PORT" ]; then
+    warn "StockManager MCP 地址不是本机标准 HTTP 地址，由用户自行管理: $STOCKMANAGER_MCP_URL"
+    return 0
+  fi
+  if port_in_use "$STOCKMANAGER_MCP_PORT"; then
+    warn "StockManager MCP 端口 $STOCKMANAGER_MCP_PORT 已占用，但健康检查失败"
+    return 0
+  fi
+  if [ ! -x "$STOCKMANAGER_ROOT/.venv/bin/python" ] || [ ! -f "$STOCKMANAGER_ROOT/stockmanager-mcp/server.py" ]; then
+    warn "未找到 StockManager MCP 运行环境: $STOCKMANAGER_ROOT"
+    return 0
+  fi
+
+  info "启动 StockManager MCP → $STOCKMANAGER_MCP_URL"
+  (
+    cd "$STOCKMANAGER_ROOT"
+    STOCKMANAGER_MCP_HOST=127.0.0.1 STOCKMANAGER_MCP_PORT="$STOCKMANAGER_MCP_PORT" \
+      PYTHONPATH=.:stockmanager-mcp nohup "$STOCKMANAGER_ROOT/.venv/bin/python" \
+      stockmanager-mcp/server.py --transport http > "$STOCKMANAGER_MCP_LOG" 2>&1 &
+    echo "$!" > "$STOCKMANAGER_MCP_PID_FILE"
+  )
+  local pid
+  pid="$(cat "$STOCKMANAGER_MCP_PID_FILE")"
+  local i=0
+  while [ $i -lt 60 ]; do
+    if curl -sf --max-time 2 "$STOCKMANAGER_MCP_HEALTH" >/dev/null 2>&1; then
+      info "StockManager MCP 就绪 ✓ (PID: $pid)"
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      warn "StockManager MCP 启动失败，查看日志: $STOCKMANAGER_MCP_LOG"
+      tail -20 "$STOCKMANAGER_MCP_LOG" 2>/dev/null || true
+      rm -f "$STOCKMANAGER_MCP_PID_FILE"
+      return 0
+    fi
+    sleep 0.5
+    i=$((i + 1))
+  done
+  warn "StockManager MCP 启动超时，查看日志: $STOCKMANAGER_MCP_LOG"
+}
+
+stop_stockmanager_mcp() {
+  if [ ! -f "$STOCKMANAGER_MCP_PID_FILE" ]; then
+    return 0
+  fi
+  local pid
+  pid="$(cat "$STOCKMANAGER_MCP_PID_FILE")"
+  if is_running "$STOCKMANAGER_MCP_PID_FILE" && is_stockmanager_mcp "$pid"; then
+    stop_pid "$STOCKMANAGER_MCP_PID_FILE" "StockManager MCP"
+  else
+    rm -f "$STOCKMANAGER_MCP_PID_FILE"
+  fi
+}
+
 # ── 停止单个进程 ─────────────────────────────────────────
 stop_pid() {
   local pid_file="$1"
@@ -407,6 +483,7 @@ cmd_start() {
   header "启动 TradingAgents 开发服务"
   precheck
   start_stockmanager_web
+  start_stockmanager_mcp
   start_backend
   start_frontend
   echo
@@ -414,6 +491,7 @@ cmd_start() {
   echo -e "  ${CYAN}前端${NC}:  http://localhost:${FRONTEND_PORT}"
   echo -e "  ${CYAN}后端${NC}:  http://127.0.0.1:${BACKEND_PORT}"
   echo -e "  ${CYAN}模拟盘账本${NC}: $STOCKMANAGER_WEB_URL"
+  echo -e "  ${CYAN}量化 MCP${NC}: $STOCKMANAGER_MCP_URL"
   echo -e "  ${CYAN}API 文档${NC}: http://127.0.0.1:${BACKEND_PORT}/docs"
   echo -e "  日志: tail -f $LOG_DIR/{backend,frontend}.log"
   echo -e "  停止: ./scripts/dev.sh stop"
@@ -425,6 +503,7 @@ cmd_stop() {
   header "停止 TradingAgents 开发服务"
   stop_pid "$FRONTEND_PID_FILE" "前端"
   stop_pid "$BACKEND_PID_FILE"  "后端"
+  stop_stockmanager_mcp
   stop_stockmanager_web
   echo
   info "所有服务已停止"
@@ -471,6 +550,11 @@ cmd_status() {
   else
     echo -e "  ${RED}○${NC} StockManager Web  $STOCKMANAGER_WEB_URL  未连接"
   fi
+  if curl -sf --max-time 2 "$STOCKMANAGER_MCP_HEALTH" >/dev/null 2>&1; then
+    echo -e "  ${GREEN}●${NC} StockManager MCP  $STOCKMANAGER_MCP_URL  状态: healthy"
+  else
+    echo -e "  ${RED}○${NC} StockManager MCP  $STOCKMANAGER_MCP_URL  未连接"
+  fi
   echo
 }
 
@@ -490,9 +574,13 @@ cmd_logs() {
       info "StockManager Web 日志 (Ctrl+C 退出):"
       tail -f "$STOCKMANAGER_LOG"
       ;;
+    mcp)
+      info "StockManager MCP 日志 (Ctrl+C 退出):"
+      tail -f "$STOCKMANAGER_MCP_LOG"
+      ;;
     all|*)
       info "全部日志 (Ctrl+C 退出):"
-      tail -f "$BACKEND_LOG" "$FRONTEND_LOG" "$STOCKMANAGER_LOG"
+      tail -f "$BACKEND_LOG" "$FRONTEND_LOG" "$STOCKMANAGER_LOG" "$STOCKMANAGER_MCP_LOG"
       ;;
   esac
 }
@@ -507,6 +595,7 @@ cmd_foreground() {
     info "收到退出信号，正在清理 ..."
     stop_pid "$FRONTEND_PID_FILE" "前端"
     stop_pid "$BACKEND_PID_FILE"  "后端"
+    stop_stockmanager_mcp
     stop_stockmanager_web
     exit 0
   }
@@ -514,6 +603,7 @@ cmd_foreground() {
 
   # 后台启动后端
   start_stockmanager_web
+  start_stockmanager_mcp
   start_backend
 
   prepare_frontend_start || true
@@ -540,7 +630,7 @@ case "${1:-fg}" in
   logs)    shift; cmd_logs "${1:-all}" ;;
   fg|"")   cmd_foreground ;;
   *)
-    echo "用法: $0 {fg|start|stop|restart|status|logs [backend|frontend|stockmanager|all]}"
+    echo "用法: $0 {fg|start|stop|restart|status|logs [backend|frontend|stockmanager|mcp|all]}"
     echo
     echo "命令:"
     echo "  fg (默认)     前台启动前后端，Ctrl+C 统一退出"
