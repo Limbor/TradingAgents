@@ -150,7 +150,7 @@ function EvidenceCard({ item }: { item: AgentEvidence }) {
 }
 
 function Inspector({ task, paperId, overlay, onClose }: { task?: AgentTask; paperId?: string | null; overlay?: boolean; onClose: () => void }) {
-  return <aside aria-label="任务证据与方案" className={`fixed inset-y-0 right-0 z-50 flex w-[min(90vw,320px)] min-h-0 flex-col border-l border-ui-line bg-ui-panel shadow-xl ${overlay ? "" : "lg:static lg:w-[284px] lg:shrink-0 lg:shadow-none"}`}>
+  return <aside aria-label="任务证据与方案" className={`fixed inset-y-0 right-0 z-50 flex w-[min(100vw,360px)] min-h-0 flex-col border-l border-ui-line bg-ui-panel shadow-xl ${overlay ? "" : "lg:static lg:w-[284px] lg:shrink-0 lg:shadow-none"}`}>
     <div className="flex h-[54px] items-center justify-between border-b border-ui-line px-4"><div><strong className="text-sm font-semibold">任务档案</strong><span className="ml-2 text-xs text-ui-muted">{task ? statusText[task.status] ?? task.status : "待命"}</span></div><button aria-label="收起任务档案" onClick={onClose} className="rounded p-1 text-ui-muted hover:bg-ui-hover"><PanelRightClose className="h-4 w-4" /></button></div>
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 text-sm">
       <section><h3 className="agent-section-title">当前目标</h3><p className="mt-2 leading-6 text-ui-body">{task?.goal || "输入交易问题后，这里显示目标、证据和结果。"}</p></section>
@@ -260,6 +260,15 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
 
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages.length, latestTask?.status]);
 
+  useEffect(() => {
+    if (!showInspector) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowInspector(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [showInspector]);
+
   const submit = (event: FormEvent) => { event.preventDefault(); void send(input, pendingHint); };
   const inspectTask = (taskId: string) => { setInspectedTaskId(taskId); setShowInspector(true); };
   const newConversation = async () => {
@@ -317,6 +326,6 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
       </div></div>
       {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[760px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[760px]"><div className="flex items-end gap-2 rounded-lg border border-ui-strong bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint" /><button type="submit" disabled={!input.trim() || running || busy} aria-label="发送" className="flex h-8 w-8 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><p className="mt-2 text-xs text-ui-faint">{paperId ? `账户 ${paperId} · ` : ""}{latestTask?.proposal ? "模拟盘动作会在确认后执行。" : "不会修改持仓或模拟盘账本。数据来源和基准日会记录在任务档案中。"}</p></div></form>}
     </section>
-    {showInspector && <Inspector task={inspectedTask} paperId={paperId} overlay={embedded} onClose={() => setShowInspector(false)} />}
+    {showInspector && <><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className={`fixed inset-0 z-40 bg-black/40 ${embedded ? "" : "lg:hidden"}`} /><Inspector task={inspectedTask} paperId={paperId} overlay={embedded} onClose={() => setShowInspector(false)} /></>}
   </div>;
 }

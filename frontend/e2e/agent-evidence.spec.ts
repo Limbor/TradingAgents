@@ -1,4 +1,27 @@
 import { expect, test } from "@playwright/test";
+import { mockAgentTasks } from "./agentMock";
+
+test("mobile Agent keeps the conversation usable with the evidence drawer", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => window.localStorage.setItem("tradingagents.theme", "light"));
+  await mockAgentTasks(page, "账户数据已核对。");
+
+  await page.goto("/chat");
+  await page.getByRole("textbox", { name: "交易问题" }).fill("看看当前持仓风险");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText("账户数据已核对。")).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "关闭任务档案遮罩" })).toBeVisible();
+  if (process.env.CAPTURE_AGENT_QA) await page.screenshot({ path: "test-results/agent-mobile.png", fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toHaveCount(0);
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  await page.getByRole("button", { name: "关闭任务档案遮罩" }).click({ position: { x: 10, y: 400 } });
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "交易问题" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
 
 test("paper Agent deep link opens the requested conversation", async ({ page }) => {
   const now = "2026-09-25T08:00:00Z";
