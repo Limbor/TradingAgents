@@ -196,6 +196,9 @@ class AgentStore:
     def create_task(self, conversation_id: str, goal: str) -> dict:
         tid, now = str(uuid.uuid4()), _now()
         with self.db._conn() as conn:
+            # Serialize the active-task check with the insert across processes.
+            # A deferred read would let two requests both observe an idle chat.
+            conn.execute("BEGIN IMMEDIATE")
             archived = conn.execute(
                 "SELECT 1 FROM agent_imports WHERE conversation_id = ?", (conversation_id,)
             ).fetchone()
@@ -245,6 +248,7 @@ class AgentStore:
     def event(self, task_id: str, event_type: str, payload: dict) -> dict:
         now = _now()
         with self.db._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM agent_events WHERE task_id = ?",
                 (task_id,),

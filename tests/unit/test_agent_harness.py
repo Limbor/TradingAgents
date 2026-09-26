@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +30,52 @@ class _Chat:
 class _Skills:
     def get(self, _name):
         raise AssertionError("写入型 Skill 不得启动")
+
+
+def test_concurrent_submissions_keep_one_active_task_per_conversation(tmp_path):
+    database = Database(tmp_path / "agent.db")
+    first_store = AgentStore(database)
+    second_store = AgentStore(database)
+    conversation = first_store.create_conversation("并发任务", None)
+    barrier = Barrier(2)
+
+    def create(store, goal):
+        barrier.wait(timeout=5)
+        try:
+            return store.create_task(conversation["id"], goal)["id"]
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(create, first_store, "分析甲")
+        second = pool.submit(create, second_store, "分析乙")
+        results = [first.result(timeout=10), second.result(timeout=10)]
+
+    assert len(first_store.list_tasks(conversation["id"])) == 1
+    assert sum(result == "当前对话已有运行中的任务" for result in results) == 1
+
+
+def test_concurrent_event_writers_keep_contiguous_replay_sequence(tmp_path):
+    database = Database(tmp_path / "agent.db")
+    stores = [AgentStore(database), AgentStore(database)]
+    conversation = stores[0].create_conversation("事件重放", None)
+    task = stores[0].create_task(conversation["id"], "分析")
+    barrier = Barrier(2)
+
+    def write_events(store, writer):
+        barrier.wait(timeout=5)
+        for index in range(20):
+            store.event(task["id"], "test_event", {"writer": writer, "index": index})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(write_events, stores[0], "first")
+        second = pool.submit(write_events, stores[1], "second")
+        first.result(timeout=15)
+        second.result(timeout=15)
+
+    events = stores[0].list_events(task["id"])
+    assert [event["seq"] for event in events] == list(range(1, 41))
+    assert {event["payload"]["writer"] for event in events} == {"first", "second"}
 
 
 def test_stock_reference_only_applies_to_stock_followups():
