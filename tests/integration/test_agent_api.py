@@ -64,6 +64,37 @@ def test_agent_api_rejects_invalid_scope_and_empty_message(tmp_path, monkeypatch
         assert client.get("/api/v1/agent/conversations/missing").status_code == 404
 
 
+def test_legacy_chat_import_is_inert_scoped_and_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "agent-import.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+    payload = {"paper_session_id": "paper:old", "messages": [
+        {"role": "user", "content": "解释旧模拟盘", "created_at": "2026-09-20T08:00:00Z"},
+        {"role": "assistant", "content": "这是旧版回答", "created_at": "2026-09-20T08:00:01Z"},
+    ]}
+    with TestClient(create_app()) as client:
+        first = client.post("/api/v1/agent/legacy-import", json=payload)
+        assert first.status_code == 201
+        second = client.post("/api/v1/agent/legacy-import", json=payload)
+        assert second.status_code == 201
+        assert first.json()["id"] == second.json()["id"]
+        detail = client.get(f"/api/v1/agent/conversations/{first.json()['id']}").json()
+        assert detail["paper_session_id"] == "paper:old"
+        assert detail["legacy_archive"] == 1
+        assert [item["content"] for item in detail["messages"]] == [
+            "解释旧模拟盘", "这是旧版回答",
+        ]
+        assert detail["tasks"] == []
+        assert client.post(f"/api/v1/agent/conversations/{first.json()['id']}/tasks",
+                           json={"message": "继续分析"}).status_code == 422
+        assert client.post("/api/v1/agent/legacy-import", json={
+            **payload, "paper_session_id": "../other"}).status_code == 422
+        assert client.post("/api/v1/agent/legacy-import", json={
+            **payload, "messages": [{**payload["messages"][0], "role": "system"}]
+        }).status_code == 422
+
+
 def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "agent-proposal.db"))
     monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)

@@ -8,6 +8,7 @@ export interface AgentConversation {
   created_at: string;
   updated_at: string;
   latest_status?: string | null;
+  legacy_archive?: number | boolean;
 }
 
 export interface AgentMessage {
@@ -68,6 +69,12 @@ export interface AgentConversationDetail extends AgentConversation {
   tasks: AgentTask[];
 }
 
+export interface LegacyArchiveMessage {
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
 export const listAgentConversations = () =>
   fetchJson<AgentConversation[]>(`${agentApiBase}/conversations`);
 
@@ -76,6 +83,13 @@ export const createAgentConversation = (paperSessionId?: string | null) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title: paperSessionId ? `模拟盘 · ${paperSessionId}` : "新对话", paper_session_id: paperSessionId ?? null }),
+  });
+
+export const importLegacyAgentConversation = (paperSessionId: string | null, messages: LegacyArchiveMessage[]) =>
+  fetchJson<AgentConversation & { imported_count: number }>(`${agentApiBase}/legacy-import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paper_session_id: paperSessionId, messages }),
   });
 
 export const getAgentConversation = (id: string) =>

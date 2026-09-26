@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -20,6 +22,17 @@ class NewTask(BaseModel):
     intent_hint: dict | None = None
 
 
+class LegacyMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=20_000)
+    created_at: datetime
+
+
+class LegacyImport(BaseModel):
+    paper_session_id: str | None = Field(default=None, max_length=160)
+    messages: list[LegacyMessage] = Field(min_length=1, max_length=100)
+
+
 @router.get("/conversations")
 def list_conversations(request: Request):
     return request.app.state.agent_store.list_conversations()
@@ -30,6 +43,18 @@ def create_conversation(request: Request, body: NewConversation):
     try:
         return request.app.state.agent_store.create_conversation(
             body.title.strip() or "新对话", body.paper_session_id
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/legacy-import", status_code=201)
+def import_legacy_conversation(request: Request, body: LegacyImport):
+    messages = [{"role": item.role, "content": item.content,
+                 "created_at": item.created_at.isoformat()} for item in body.messages]
+    try:
+        return request.app.state.agent_store.import_legacy_messages(
+            body.paper_session_id, messages
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

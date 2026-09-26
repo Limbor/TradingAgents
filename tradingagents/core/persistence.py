@@ -283,6 +283,12 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_messages_conversation ON agent_messages(conversation_id, created_at);
 
+CREATE TABLE IF NOT EXISTS agent_imports (
+    source_hash TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES agent_conversations(id),
+    imported_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_tasks (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES agent_conversations(id),

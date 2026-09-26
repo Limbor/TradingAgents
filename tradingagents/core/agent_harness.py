@@ -7,6 +7,7 @@ the boundary around paper writes are enforced here, outside model output.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -76,14 +77,17 @@ class AgentStore:
     def get_conversation(self, conversation_id: str) -> dict | None:
         with self.db._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM agent_conversations WHERE id = ?", (conversation_id,)
+                "SELECT c.*, EXISTS(SELECT 1 FROM agent_imports i WHERE i.conversation_id = c.id) "
+                "AS legacy_archive FROM agent_conversations c WHERE c.id = ?",
+                (conversation_id,),
             ).fetchone()
         return dict(row) if row else None
 
     def list_conversations(self, limit: int = 100) -> list[dict]:
         with self.db._conn() as conn:
             rows = conn.execute(
-                """SELECT c.*, (SELECT status FROM agent_tasks t WHERE
+                """SELECT c.*, EXISTS(SELECT 1 FROM agent_imports i WHERE i.conversation_id = c.id)
+                    AS legacy_archive, (SELECT status FROM agent_tasks t WHERE
                     t.conversation_id = c.id ORDER BY t.created_at DESC LIMIT 1) AS latest_status
                     FROM agent_conversations c ORDER BY c.updated_at DESC LIMIT ?""",
                 (min(max(limit, 1), 200),),
@@ -118,9 +122,55 @@ class AgentStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def import_legacy_messages(self, paper_session_id: str | None,
+                               messages: list[dict]) -> dict:
+        """Import browser history once as inert text; never create runnable tasks."""
+        if paper_session_id and (not _PAPER_ID.fullmatch(paper_session_id) or ".." in paper_session_id):
+            raise ValueError("无效的模拟盘会话 ID")
+        if not messages or len(messages) > 100:
+            raise ValueError("每次导入需要 1–100 条消息")
+        for message in messages:
+            if message.get("role") not in {"user", "assistant"} or not isinstance(message.get("content"), str):
+                raise ValueError("旧版聊天记录格式无效")
+            if not message["content"].strip() or len(message["content"]) > 20_000:
+                raise ValueError("旧版聊天内容长度无效")
+        digest = hashlib.sha256(_json({
+            "scope": paper_session_id, "messages": messages,
+        }).encode("utf-8")).hexdigest()
+        first_user = next((item["content"] for item in messages if item["role"] == "user"), "聊天")
+        label = "旧版模拟盘记录" if paper_session_id else "旧版聊天记录"
+        title = f"{label} · {' '.join(first_user.split())[:42]}"[:120]
+        cid, now = str(uuid.uuid4()), _now()
+        with self.db._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT conversation_id FROM agent_imports WHERE source_hash = ?", (digest,)
+            ).fetchone()
+            if existing:
+                cid = existing["conversation_id"]
+            else:
+                conn.execute(
+                    "INSERT INTO agent_conversations VALUES (?, ?, ?, ?, ?)",
+                    (cid, title, paper_session_id, now, now),
+                )
+                conn.executemany(
+                    "INSERT INTO agent_messages VALUES (?, ?, NULL, ?, ?, ?)",
+                    [(str(uuid.uuid4()), cid, item["role"], item["content"],
+                      item["created_at"]) for item in messages],
+                )
+                conn.execute(
+                    "INSERT INTO agent_imports VALUES (?, ?, ?)", (digest, cid, now)
+                )
+        return {**(self.get_conversation(cid) or {}), "imported_count": len(messages)}
+
     def create_task(self, conversation_id: str, goal: str) -> dict:
         tid, now = str(uuid.uuid4()), _now()
         with self.db._conn() as conn:
+            archived = conn.execute(
+                "SELECT 1 FROM agent_imports WHERE conversation_id = ?", (conversation_id,)
+            ).fetchone()
+            if archived:
+                raise ValueError("旧版聊天存档仅供回看，请新建对话继续")
             active = conn.execute(
                 "SELECT id FROM agent_tasks WHERE conversation_id = ? "
                 "AND status IN ('queued', 'planning', 'running', 'reviewing', "
