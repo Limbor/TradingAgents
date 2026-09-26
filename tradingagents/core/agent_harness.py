@@ -60,6 +60,40 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+def _paper_state_fingerprint(ledger: dict) -> str | None:
+    """Fingerprint account facts that an advance approval depends on.
+
+    StockManager enriches positions with display names and cached daily P&L
+    on each status read. Those fields are not persisted account state.
+    """
+    session = ledger.get("session")
+    snapshot = ledger.get("snapshot")
+    if (not isinstance(session, dict) or not session.get("session_id") or
+            not isinstance(snapshot, dict) or
+            not all(key in snapshot for key in ("equity", "cash", "positions")) or
+            not isinstance(snapshot["positions"], dict) or
+            any(not isinstance(position, dict) for position in snapshot["positions"].values())):
+        return None
+    positions = {
+        code: {key: value for key, value in position.items()
+               if key not in {"name", "prev_close", "day_pnl", "day_pnl_pct"}}
+        for code, position in snapshot["positions"].items()
+        if isinstance(position, dict)
+    }
+    state = {
+        "session": {key: session.get(key) for key in (
+            "session_id", "strategy", "config_name", "strategy_hash", "config_hash",
+            "initial_cash", "params",
+        )},
+        "snapshot": {key: snapshot.get(key) for key in (
+            "as_of_date", "equity", "cash", "cash_receivable", "pending_stock",
+        )},
+        "positions": positions,
+    }
+    serialized = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 class AgentStore:
     """Small transaction-bound repository for conversations and task events."""
 
@@ -892,6 +926,16 @@ class TradingAgentHarness:
                         return
                     baseline = {"as_of_date": baseline_date,
                                 "equity": (evidence[0]["result"].get("snapshot") or {}).get("equity")}
+                    fingerprint = _paper_state_fingerprint(evidence[0]["result"])
+                    if not fingerprint:
+                        content = ("模拟盘账本缺少账户、资金或持仓快照，无法安全准备推进提案。"
+                                   "请先核对 StockManager 账本。")
+                        self.store.add_message(conversation["id"], "assistant", content, task_id)
+                        self.store.set_status(task_id, "completed", result={"content": content,
+                                                                              "read_only": True})
+                        self.store.event(task_id, "action_blocked", {"reason": "incomplete_ledger"})
+                        return
+                    baseline["state_fingerprint"] = fingerprint
                     blocker = self.store.unresolved_paper_action(conversation["paper_session_id"])
                     if blocker:
                         content = ("同一模拟盘仍有推进操作执行中或结果待核对。"
@@ -1408,6 +1452,19 @@ class TradingAgentHarness:
                 self.store.set_status(task_id, "completed", result={"content": content})
                 self.store.add_message(self.store.get_task(task_id)["conversation_id"], "assistant", content, task_id)
                 self.store.event(task_id, "action_stale", {"current_date": current_date})
+                return
+            fingerprint = proposal["baseline"].get("state_fingerprint")
+            if not fingerprint or _paper_state_fingerprint(current) != fingerprint:
+                reason = "account_state_changed" if fingerprint else "missing_baseline"
+                self.store.set_proposal_status(proposal_id, "stale", {"current_date": current_date,
+                                                                       "reason": reason})
+                content = ("确认前账户资金、持仓或策略配置发生变化，提案已失效，账本未推进。"
+                           if fingerprint else "旧提案缺少完整账本快照，已失效且未执行。")
+                content += "请重新核对账户后提出请求。"
+                self.store.set_status(task_id, "completed", result={"content": content, "read_only": True})
+                self.store.add_message(self.store.get_task(task_id)["conversation_id"], "assistant", content, task_id)
+                self.store.event(task_id, "action_stale", {"reason": reason,
+                                                           "current_date": current_date})
                 return
             post_attempted = True
             response = await paper_request(

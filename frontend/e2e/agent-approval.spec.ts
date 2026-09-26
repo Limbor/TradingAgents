@@ -116,3 +116,34 @@ test("completed paper job without ledger advance is shown as no change", async (
   await expect(page.getByRole("status")).toContainText("目标日期 2026-09-26 尚未达到");
   await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
 });
+
+test("same-day account change invalidates the paper approval card", async ({ page }) => {
+  const time = "2026-09-25T08:00:00Z";
+  const conversation = { id: "conversation-stale", title: "模拟盘 · paper:one",
+    paper_session_id: "paper:one", created_at: time, updated_at: time, latest_status: "completed" };
+  const detail = { ...conversation,
+    messages: [
+      { id: "m1", conversation_id: conversation.id, task_id: "task-stale", role: "user",
+        content: "推进模拟盘到 2026-09-29", created_at: time },
+      { id: "m2", conversation_id: conversation.id, task_id: "task-stale", role: "assistant",
+        content: "确认前账户资金发生变化，提案已失效。", created_at: time },
+    ],
+    tasks: [{ id: "task-stale", conversation_id: conversation.id, goal: "推进模拟盘到 2026-09-29",
+      status: "completed", result: { content: "提案未执行" }, error: null,
+      created_at: time, updated_at: time, events: [], evidence: [],
+      proposal: { id: "proposal-stale", task_id: "task-stale", action_type: "advance_paper_day",
+        session_id: "paper:one", args: { target_date: "2026-09-29" },
+        baseline: { as_of_date: "2026-09-25", equity: 100000 }, status: "stale",
+        result: { current_date: "2026-09-25", reason: "account_state_changed" },
+        expires_at: time } }],
+  };
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    await route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify(path === "/api/v1/agent/conversations" ? [conversation] : detail) });
+  });
+  await page.goto("/chat?paper_session=paper%3Aone");
+  await expect(page.getByText("提案已失效", { exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("原提案失效且未执行");
+  await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
+});

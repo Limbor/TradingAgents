@@ -69,6 +69,13 @@ def synthetic_advance(self, session_id, *, target_date, skip_next_plan=False):
 PaperRunner.advance_to = synthetic_advance
 app = create_app(root=root, enable_live_services=False)
 app.add_api_route("/__test/advance_calls", lambda: {"calls": calls})
+
+def mutate_cash_without_new_day():
+    store.put_snapshot(session_id, as_of_date="2026-09-25", equity=101000,
+        cash=100500, positions={}, engine_state={})
+    return {"cash": 100500}
+
+app.add_api_route("/__test/mutate_cash", mutate_cash_without_new_day, methods=["POST"])
 uvicorn.run(app, host="127.0.0.1", port=int(os.environ["SYNTH_STOCK_PORT"]), log_level="error")
 '''
 
@@ -207,7 +214,31 @@ async def main() -> None:
                 calls = (await sm.get("/__test/advance_calls")).json()["calls"]
                 assert calls == [["paper:synthetic", "2026-09-25"],
                                  ["paper:synthetic", "2026-09-26"]], calls
+                stale = await ta.post(f"/api/v1/agent/conversations/{cid}/tasks", json={
+                    "message": "推进模拟盘到 2026-09-29"})
+                assert stale.status_code == 202, stale.text
+                stale_id = stale.json()["id"]
+                stale_task = None
+                for _ in range(100):
+                    stale_task = (await ta.get(f"/api/v1/agent/tasks/{stale_id}")).json()
+                    if stale_task["status"] == "awaiting_approval":
+                        break
+                    await asyncio.sleep(0.1)
+                assert stale_task and stale_task["status"] == "awaiting_approval", stale_task
+                assert stale_task["proposal"]["baseline"].get("state_fingerprint")
+                assert (await sm.post("/__test/mutate_cash")).status_code == 200
+                stale_proposal = stale_task["proposal"]["id"]
+                assert (await ta.post(f"/api/v1/agent/proposals/{stale_proposal}/approve")).status_code == 200
+                for _ in range(100):
+                    stale_task = (await ta.get(f"/api/v1/agent/tasks/{stale_id}")).json()
+                    if stale_task["status"] in {"completed", "failed", "needs_review"}:
+                        break
+                    await asyncio.sleep(0.1)
+                assert stale_task["proposal"]["status"] == "stale", stale_task
+                assert stale_task["proposal"]["result"]["reason"] == "account_state_changed"
+                assert (await sm.get("/__test/advance_calls")).json()["calls"] == calls
                 print(json.dumps({"status": task["status"], "no_day_status": no_day_task["proposal"]["status"],
+                                  "same_day_change_status": stale_task["proposal"]["status"],
                                   "advance_calls": len(calls),
                                   "before": before["session"]["last_date"],
                                   "after": after["session"]["last_date"],

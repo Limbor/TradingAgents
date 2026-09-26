@@ -249,7 +249,10 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
 
     async def tool(session_id):
         return {"session_id": session_id, "source": "StockManager ledger",
-                "as_of_date": "2026-09-25", "snapshot": {"equity": 100000, "positions": {}}}
+                "as_of_date": "2026-09-25",
+                "session": {"session_id": session_id, "last_date": "2026-09-25"},
+                "snapshot": {"as_of_date": "2026-09-25", "equity": 100000,
+                             "cash": 100000, "positions": {}}}
 
     async def paper_request(config, method, path, payload=None):
         if method == "POST":
@@ -258,7 +261,10 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
         if path.endswith("/status"):
             as_of = "2026-09-28" if writes else "2026-09-25"
             return {"data": {"session": {"session_id": "paper:api", "last_date": as_of},
-                             "snapshot": {"as_of_date": as_of, "equity": 101000}}}
+                             "snapshot": {"as_of_date": as_of,
+                                          "equity": 101000 if writes else 100000,
+                                          "cash": 101000 if writes else 100000,
+                                          "positions": {}}}}
         return {"state": "success", "result": {"data": {
             "session_id": "paper:api", "last_date": "2026-09-28", "advanced_days": 1}}}
 

@@ -12,6 +12,7 @@ from tradingagents.core.agent_harness import (
     AgentStore,
     TradingAgentHarness,
     _answer_evidence_result,
+    _paper_state_fingerprint,
 )
 from tradingagents.core.chat_agent import ChatResponse
 from tradingagents.core.persistence import Database
@@ -1062,7 +1063,11 @@ async def test_model_plan_allows_one_registered_analysis_skill(tmp_path):
 async def _proposed_advance(tmp_path):
     async def paper(session_id):
         return {"session_id": session_id, "source": "StockManager ledger",
-                "as_of_date": "2026-09-25", "snapshot": {"equity": 100000, "positions": {}}}
+                "as_of_date": "2026-09-25",
+                "session": {"session_id": session_id, "strategy_hash": "strategy:v1",
+                            "config_hash": "config:v1"},
+                "snapshot": {"as_of_date": "2026-09-25", "equity": 100000,
+                             "cash": 100000, "positions": {}}}
 
     harness, store = _harness(tmp_path, paper_handler=paper)
     conversation = store.create_conversation("推进测试", "paper:advance")
@@ -1072,6 +1077,42 @@ async def _proposed_advance(tmp_path):
     assert store.get_task(task["id"])["status"] == "awaiting_approval"
     assert proposal["args"] == {"target_date": "2026-09-28"}
     return harness, store, task, proposal
+
+
+def _paper_status(as_of_date="2026-09-25", *, equity=100000, cash=100000,
+                  positions=None, strategy_hash="strategy:v1"):
+    return {"data": {
+        "session": {"session_id": "paper:advance", "last_date": as_of_date,
+                    "strategy_hash": strategy_hash, "config_hash": "config:v1"},
+        "snapshot": {"as_of_date": as_of_date, "equity": equity, "cash": cash,
+                     "positions": positions if positions is not None else {}},
+    }}
+
+
+def test_paper_fingerprint_ignores_display_enrichment_but_detects_account_change():
+    ledger = _paper_status(positions={"600519.SH": {"shares": 100, "avg_cost": 80}})["data"]
+    baseline = _paper_state_fingerprint(ledger)
+    enriched = json.loads(json.dumps(ledger))
+    enriched["snapshot"]["positions"]["600519.SH"].update({
+        "name": "贵州茅台", "day_pnl": 200, "day_pnl_pct": 0.01, "prev_close": 100,
+    })
+    assert baseline == _paper_state_fingerprint(enriched)
+    enriched["snapshot"]["positions"]["600519.SH"]["shares"] = 200
+    assert baseline != _paper_state_fingerprint(enriched)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_paper_ledger_cannot_create_advance_proposal(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "as_of_date": "2026-09-25",
+                "snapshot": {"equity": 100000}}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    conversation = store.create_conversation("缺失资金", "paper:advance")
+    task = harness.submit(conversation["id"], "推进模拟盘到 2026-09-28")
+    await harness._active[task["id"]]
+    assert store.proposal_for_task(task["id"]) is None
+    assert "无法安全准备推进提案" in store.get_task(task["id"])["result"]["content"]
 
 
 @pytest.mark.asyncio
@@ -1112,7 +1153,7 @@ async def test_advance_requires_one_time_approval_and_reconciles_ledger(tmp_path
             return {"job_id": "job:one"}
         if path.endswith("/status"):
             date_value = "2026-09-28" if any(call[0] == "POST" for call in calls) else "2026-09-25"
-            return {"data": {"snapshot": {"as_of_date": date_value, "equity": 101000}}}
+            return _paper_status(date_value, equity=101000 if date_value == "2026-09-28" else 100000)
         return {"state": "success", "result": {"data": {
             "session_id": "paper:advance", "last_date": "2026-09-28", "advanced_days": 1}}}
 
@@ -1143,6 +1184,44 @@ async def test_advance_refuses_stale_account_before_write(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_advance_refuses_same_day_position_change_before_write(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    calls = []
+
+    async def changed(config, method, path, payload=None):
+        calls.append(method)
+        return _paper_status(positions={"600519.SH": {"shares": 100, "avg_cost": 80}})
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", changed)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert calls == ["GET"]
+    assert store.get_proposal(proposal["id"])["status"] == "stale"
+    assert store.get_proposal(proposal["id"])["result"]["reason"] == "account_state_changed"
+    assert "持仓或策略配置发生变化" in store.get_task(task["id"])["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_old_proposal_without_account_fingerprint_cannot_write(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    with store.db._conn() as conn:
+        conn.execute("UPDATE agent_proposals SET baseline_json = ? WHERE id = ?",
+                     (json.dumps({"as_of_date": "2026-09-25", "equity": 100000}), proposal["id"]))
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append(method)
+        return _paper_status()
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert calls == ["GET"]
+    assert store.get_proposal(proposal["id"])["result"]["reason"] == "missing_baseline"
+    assert "未执行" in store.get_task(task["id"])["result"]["content"]
+
+
+@pytest.mark.asyncio
 async def test_uncertain_post_never_retries(tmp_path, monkeypatch):
     harness, store, task, proposal = await _proposed_advance(tmp_path)
     posts = 0
@@ -1152,7 +1231,7 @@ async def test_uncertain_post_never_retries(tmp_path, monkeypatch):
         if method == "POST":
             posts += 1
             raise PaperServiceError("连接中断")
-        return {"data": {"snapshot": {"as_of_date": "2026-09-25"}}}
+        return _paper_status()
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", uncertain)
     harness.approve(proposal["id"])
@@ -1274,7 +1353,7 @@ async def test_success_receipt_must_match_account_ledger(tmp_path, monkeypatch):
             return {"state": "success", "result": {"data": {
                 "session_id": "paper:someone-else", "last_date": "2026-09-28"}}}
         as_of = "2026-09-28" if store.get_proposal(proposal["id"])["status"] == "submitted" else "2026-09-25"
-        return {"data": {"snapshot": {"as_of_date": as_of}}}
+        return _paper_status(as_of)
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     harness.approve(proposal["id"])
@@ -1293,7 +1372,7 @@ async def test_poll_failure_keeps_job_id_for_later_reconciliation(tmp_path, monk
             return {"job_id": "job:recover"}
         if path.startswith("/api/jobs/"):
             raise PaperServiceError("服务重启")
-        return {"data": {"snapshot": {"as_of_date": "2026-09-25"}}}
+        return _paper_status()
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     harness.approve(proposal["id"])
@@ -1313,7 +1392,7 @@ async def test_failed_job_with_changed_ledger_needs_review(tmp_path, monkeypatch
         if path.startswith("/api/jobs/"):
             return {"state": "error", "message": "计算中断"}
         as_of = "2026-09-26" if store.get_proposal(proposal["id"])["status"] != "executing" else "2026-09-25"
-        return {"data": {"snapshot": {"as_of_date": as_of}}}
+        return _paper_status(as_of)
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     harness.approve(proposal["id"])
@@ -1334,7 +1413,7 @@ async def test_successful_non_trading_target_uses_receipt_date(tmp_path, monkeyp
         if path.startswith("/api/jobs/"):
             return {"state": "success", "result": {"data": {
                 "session_id": "paper:advance", "last_date": "2026-09-25", "advanced_days": 0}}}
-        return {"data": {"snapshot": {"as_of_date": "2026-09-25", "equity": 100000}}}
+        return _paper_status()
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     harness.approve(proposal["id"])
@@ -1356,7 +1435,7 @@ async def test_success_receipt_with_zero_days_and_new_date_needs_review(tmp_path
             return {"state": "success", "result": {"data": {
                 "session_id": "paper:advance", "last_date": "2026-09-26", "advanced_days": 0}}}
         as_of = "2026-09-26" if store.get_proposal(proposal["id"])["status"] == "submitted" else "2026-09-25"
-        return {"data": {"snapshot": {"as_of_date": as_of}}}
+        return _paper_status(as_of)
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     harness.approve(proposal["id"])
