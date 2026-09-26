@@ -92,6 +92,52 @@ def test_paper_conversation_requires_existing_consistent_session(
         assert client.get("/api/v1/agent/conversations").json() == []
 
 
+def test_stale_single_strategy_plan_is_not_used_for_agent_judgment(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "stale-single-plan.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "agent_model_planning_enabled", False)
+
+    async def paper_request(_config, method, path, payload=None):
+        assert method == "GET"
+        if path.endswith("/status"):
+            return {"data": {"session": {"session_id": "paper:single",
+                                         "last_date": "2026-09-25"},
+                             "snapshot": {"as_of_date": "2026-09-25", "equity": 100000}}}
+        if path.endswith("/next_plan"):
+            return {"data": {"signal_date": "2026-09-24", "items": [
+                {"code": "600519.SH", "action": "BUY"}]}}
+        if path.endswith("/trades?limit=30"):
+            return {"items": []}
+        if path.endswith("/equity_curve"):
+            return {"data": {"daily_records": []}}
+        raise AssertionError(path)
+
+    monkeypatch.setattr("tradingagents.api.routes.agent.paper_request", paper_request)
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    with TestClient(create_app()) as client:
+        created = client.post("/api/v1/agent/conversations", json={
+            "paper_session_id": "paper:single",
+        })
+        assert created.status_code == 201
+        cid = created.json()["id"]
+        submitted = client.post(f"/api/v1/agent/conversations/{cid}/tasks", json={
+            "message": "下一交易日计划是什么？",
+        })
+        assert submitted.status_code == 202
+        task_id = submitted.json()["id"]
+        for _ in range(100):
+            task = client.get(f"/api/v1/agent/tasks/{task_id}").json()
+            if task["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert task["status"] == "completed"
+        assert "策略计划当前不可引用" in task["result"]["content"]
+        assert "没有生成交易判断" in task["result"]["content"]
+        assert task["evidence"][0]["result"]["freshness"]["is_active_plan_current"] is False
+
+
 def test_agent_api_rejects_invalid_scope_and_empty_message(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "agent-invalid.db"))
     monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)

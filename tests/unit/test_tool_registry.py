@@ -86,6 +86,58 @@ class TestLightweightToolHandlers:
         assert paths == ["/api/v2/paper/paper:mine/status"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("plan, expected_current", [
+        ({"signal_date": "2026-09-25", "items": []}, None),
+        ({"signal_date": "2026-09-24", "items": []}, False),
+        ({"signal_date": None, "items": [], "error": "engine build failed"}, False),
+        (None, False),
+    ])
+    async def test_paper_handler_checks_plan_date_against_ledger(
+        self, monkeypatch, plan, expected_current,
+    ):
+        from tradingagents.core.lightweight_tools import make_get_paper_session
+
+        async def paper_request(_config, _method, path):
+            if path.endswith("/status"):
+                return {"data": {"session": {"session_id": "paper:mine",
+                                             "last_date": "2026-09-25"},
+                                 "snapshot": {"as_of_date": "2026-09-25", "equity": 100000}}}
+            if path.endswith("/next_plan"):
+                return {"data": plan}
+            if path.endswith("/trades?limit=30"):
+                return {"items": []}
+            if path.endswith("/equity_curve"):
+                return {"data": {"daily_records": []}}
+            raise AssertionError(path)
+
+        monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+        result = await make_get_paper_session({})("paper:mine")
+        assert result["freshness"].get("is_active_plan_current") is expected_current
+        assert bool(result["warnings"]) is (expected_current is False)
+        assert result["next_plan"] == plan
+
+    @pytest.mark.asyncio
+    async def test_paper_handler_preserves_upstream_stale_flag(self, monkeypatch):
+        from tradingagents.core.lightweight_tools import make_get_paper_session
+
+        async def paper_request(_config, _method, path):
+            if path.endswith("/status"):
+                return {"data": {"session": {"session_id": "paper:mine",
+                                             "last_date": "2026-09-25"},
+                                 "freshness": {"is_active_plan_current": False}}}
+            if path.endswith("/next_plan"):
+                return {"data": {"signal_date": "2026-09-25", "items": []}}
+            if path.endswith("/trades?limit=30"):
+                return {"items": []}
+            if path.endswith("/equity_curve"):
+                return {"data": {"daily_records": []}}
+            raise AssertionError(path)
+
+        monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+        result = await make_get_paper_session({})("paper:mine")
+        assert result["freshness"]["is_active_plan_current"] is False
+
+    @pytest.mark.asyncio
     async def test_get_portfolio_summary_with_holdings(self):
         from tradingagents.core.lightweight_tools import make_get_portfolio_summary
 

@@ -44,6 +44,21 @@ def paper_ledger_conflicts(expected_session_id: str, result: dict[str, Any]) -> 
     return conflicts
 
 
+def _paper_plan_current(plan: Any, ledger_date: Any) -> bool:
+    """A next-day plan must be based on the account's current ledger date."""
+    if not isinstance(plan, dict) or plan.get("error") or not ledger_date:
+        return False
+    signal_date = plan.get("signal_date")
+    if not signal_date:
+        return False
+    try:
+        return date.fromisoformat(str(signal_date)[:10]) == date.fromisoformat(
+            str(ledger_date)[:10]
+        )
+    except ValueError:
+        return False
+
+
 def make_get_paper_session(config: dict[str, Any]):
     """Read current strategy-paper evidence from StockManager for chat."""
     async def _handler(session_id: str = "") -> dict[str, Any]:
@@ -82,18 +97,24 @@ def make_get_paper_session(config: dict[str, Any]):
         trades = trades_result.get("items", []) if isinstance(trades_result, dict) else []
         curve = curve_result.get("data") if isinstance(curve_result, dict) else None
         snapshot = status.get("snapshot") or {}
+        ledger_date = snapshot.get("as_of_date") or status.get("session", {}).get("last_date")
+        freshness = status.get("freshness")
+        freshness = dict(freshness) if isinstance(freshness, dict) else {}
+        if not _paper_plan_current(plan, ledger_date):
+            freshness["is_active_plan_current"] = False
+            warnings.append("下一日计划缺失、出错或基准日与账本不一致，不能作为当前交易依据")
         if status.get("caveat"):
             warnings.append(status["caveat"])
         return {
             "session_id": session_id,
-            "as_of_date": snapshot.get("as_of_date") or status.get("session", {}).get("last_date"),
+            "as_of_date": ledger_date,
             "source": "StockManager strategy paper ledger",
             "session": status.get("session"),
             "snapshot": snapshot,
             "decision": status.get("decision"),
             "recent_decisions": (status.get("decisions") or [])[-5:],
             "readiness": status.get("readiness"),
-            "freshness": status.get("freshness"),
+            "freshness": freshness,
             "sleeves": status.get("sleeves"),
             "summary": status.get("summary"),
             "next_plan": plan,
