@@ -134,7 +134,7 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
             <h3 className="text-sm font-semibold text-ui-ink">行业与热点矩阵</h3>
             <span className="text-xs text-ui-faint">({sorted.length} 个)</span>
           </div>
-          <p className="mt-1 text-[10px] text-ui-faint">
+          <p className="mt-1 text-xs text-ui-faint">
             {scope === "industry"
               ? "标准机构行业口径；优先中信行业，数据不可用时降级申万"
               : "热点主题独立展示并归并同义项，不再混入标准行业排名"}
@@ -187,12 +187,12 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
               <div className="flex items-center justify-between gap-1">
                 <span className="truncate text-xs font-medium text-ui-ink">{row.industry}</span>
                 {row.board_type && (
-                  <span className="shrink-0 rounded bg-ui-subtle/40 px-1 py-0.5 text-[9px] text-ui-muted">
+                  <span className="shrink-0 rounded bg-ui-subtle/40 px-1 py-0.5 text-xs text-ui-muted">
                     {boardLabel(row)}
                   </span>
                 )}
                 {row.rating && (
-                  <span className={`shrink-0 rounded border px-1 py-0.5 text-[10px] ${ratingBadgeClass(row.rating)}`}>
+                  <span className={`shrink-0 rounded border px-1 py-0.5 text-xs ${ratingBadgeClass(row.rating)}`}>
                     {ratingLabel(row)}
                   </span>
                 )}
@@ -202,16 +202,16 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
                   {fmtPct(row.pct_change)}
                 </span>
                 {row.score !== undefined && (
-                  <span className="font-mono text-[11px] text-ui-body">评分 {row.score > 0 ? "+" : ""}{row.score.toFixed(1)}</span>
+                  <span className="font-mono text-xs text-ui-body">评分 {row.score > 0 ? "+" : ""}{row.score.toFixed(1)}</span>
                 )}
               </div>
               {(row.phase || row.confidence) && (
-                <p className="mt-1 truncate text-[10px] text-ui-muted">
+                <p className="mt-1 truncate text-xs text-ui-muted">
                   {[row.phase, row.confidence ? CONFIDENCE_CN[row.confidence] : undefined].filter(Boolean).join(" · ")}
                 </p>
               )}
               {row.reason && (
-                <p className="mt-1 truncate text-[10px] leading-tight text-ui-faint">{row.reason}</p>
+                <p className="mt-1 truncate text-xs leading-tight text-ui-faint">{row.reason}</p>
               )}
               <div className="absolute inset-x-0 bottom-0 hidden justify-end gap-1 rounded-b bg-ui-subtle/80 p-1 group-hover:flex">
                 <span
@@ -220,7 +220,7 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
                     e.stopPropagation();
                     onDeepDive(row.industry);
                   }}
-                  className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-ui-accent hover:bg-ui-hover"
+                  className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-ui-accent hover:bg-ui-hover"
                 >
                   <Search className="h-2.5 w-2.5" /> 深挖
                 </span>
@@ -232,7 +232,7 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
                     e.stopPropagation();
                     if (canPickStocks(row)) onPickStocks(row);
                   }}
-                  className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] ${canPickStocks(row) ? "text-ui-accent hover:bg-ui-hover" : "cursor-not-allowed text-ui-faint"}`}
+                  className={`flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs ${canPickStocks(row) ? "text-ui-accent hover:bg-ui-hover" : "cursor-not-allowed text-ui-faint"}`}
                 >
                   <Sparkles className="h-2.5 w-2.5" /> 选股
                 </span>
@@ -273,7 +273,7 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
                   <td className="py-2 pr-2 text-ui-ink">
                     {row.industry}
                     {row.board_type && (
-                      <span className="ml-1 text-[10px] text-ui-faint">{boardLabel(row)}</span>
+                      <span className="ml-1 text-xs text-ui-faint">{boardLabel(row)}</span>
                     )}
                   </td>
                   <td className={`py-2 pr-2 font-mono ${(row.pct_change ?? 0) >= 0 ? "text-ui-danger" : "text-ui-success"}`}>
@@ -284,7 +284,7 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
                   </td>
                   <td className="py-2 pr-2 font-mono text-ui-body">
                     {row.score !== undefined ? `${row.score > 0 ? "+" : ""}${row.score.toFixed(1)}` : "--"}
-                    {row.confidence && <span className="ml-1 text-[10px] text-ui-faint">{CONFIDENCE_CN[row.confidence]}</span>}
+                    {row.confidence && <span className="ml-1 text-xs text-ui-faint">{CONFIDENCE_CN[row.confidence]}</span>}
                   </td>
                   <td className="py-2 pr-2">
                     {row.rating ? (
@@ -371,56 +371,56 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
 
             <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div className="rounded-lg border border-ui-line bg-ui-subtle p-3">
-                <div className="text-[10px] uppercase tracking-wide text-ui-faint">今日涨跌</div>
+                <div className="text-xs uppercase tracking-wide text-ui-faint">今日涨跌</div>
                 <div className={`mt-1 flex items-center gap-1 font-mono text-base ${(detail.pct_change ?? 0) >= 0 ? "text-ui-danger" : "text-ui-success"}`}>
                   {(detail.pct_change ?? 0) >= 0 ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
                   {fmtPct(detail.pct_change)}
                 </div>
               </div>
               <div className="rounded-lg border border-ui-line bg-ui-subtle p-3">
-                <div className="text-[10px] uppercase tracking-wide text-ui-faint">主力净流入</div>
+                <div className="text-xs uppercase tracking-wide text-ui-faint">主力净流入</div>
                 <div className={`mt-1 font-mono text-base ${(detail.main_inflow ?? 0) >= 0 ? "text-ui-danger" : "text-ui-success"}`}>
                   {fmtInflow(detail.main_inflow)}
                 </div>
               </div>
               <div className="rounded-lg border border-ui-line bg-ui-subtle p-3">
-                <div className="text-[10px] uppercase tracking-wide text-ui-faint">领涨股</div>
+                <div className="text-xs uppercase tracking-wide text-ui-faint">领涨股</div>
                 <div className="mt-1 truncate text-base text-ui-body">{detail.leader_stock ?? "--"}</div>
               </div>
               <div className="rounded-lg border border-ui-line bg-ui-subtle p-3">
-                <div className="text-[10px] uppercase tracking-wide text-ui-faint">多因子评分</div>
+                <div className="text-xs uppercase tracking-wide text-ui-faint">多因子评分</div>
                 <div className="mt-1 font-mono text-base text-ui-body">
                   {detail.score !== undefined ? `${detail.score > 0 ? "+" : ""}${detail.score.toFixed(1)}` : "--"}
                 </div>
-                <div className="text-[10px] text-ui-faint">
+                <div className="text-xs text-ui-faint">
                   {[detail.phase, detail.confidence ? CONFIDENCE_CN[detail.confidence] : undefined].filter(Boolean).join(" · ")}
                 </div>
               </div>
             </div>
 
             <div className="mt-3 rounded-lg border border-ui-line bg-ui-subtle p-3">
-              <div className="text-[10px] uppercase tracking-wide text-ui-faint">AI 评级理由</div>
+              <div className="text-xs uppercase tracking-wide text-ui-faint">AI 评级理由</div>
               <p className="mt-1 text-sm leading-relaxed text-ui-body">
                 {detail.reason ?? "该板块未进入本次 AI 评级样本，暂无理由。可用下方“深挖驱动逻辑”发起分析。"}
               </p>
             </div>
 
             {detail.source_name && detail.source_name !== detail.industry && (
-              <p className="mt-2 text-[11px] text-ui-faint">
+              <p className="mt-2 text-xs text-ui-faint">
                 数据源原始名称：{detail.source_names?.length
                   ? detail.source_names.join(" / ")
                   : detail.source_name}
               </p>
             )}
 
-            <p className={`mt-2 text-[11px] ${canPickStocks(detail) ? "text-ui-accent/80" : "text-ui-warning/80"}`}>
+            <p className={`mt-2 text-xs ${canPickStocks(detail) ? "text-ui-accent/80" : "text-ui-warning/80"}`}>
               {selectionDescription(detail)}
             </p>
 
             {detail.evidence && detail.evidence.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {detail.evidence.map((item) => (
-                  <span key={item} className="rounded border border-ui-strong bg-ui-subtle px-2 py-0.5 text-[11px] text-ui-body">
+                  <span key={item} className="rounded border border-ui-strong bg-ui-subtle px-2 py-0.5 text-xs text-ui-body">
                     {item}
                   </span>
                 ))}
@@ -428,15 +428,15 @@ export function IndustryMatrix({ stances, onDeepDive, onPickStocks }: IndustryMa
             )}
 
             {detail.ai_comment && (
-              <div className="mt-3 rounded-lg border border-indigo-500/20 bg-indigo-500/5 p-3">
-                <div className="text-[10px] uppercase tracking-wide text-indigo-300/70">AI 补充解读</div>
+              <div className="mt-3 rounded-lg border border-ui-info/20 bg-ui-info/5 p-3">
+                <div className="text-xs uppercase tracking-wide text-ui-info">AI 补充解读</div>
                 <p className="mt-1 text-sm leading-relaxed text-ui-body">{detail.ai_comment}</p>
               </div>
             )}
 
             {detail.key_stocks.length > 0 && (
               <div className="mt-3">
-                <div className="text-[10px] uppercase tracking-wide text-ui-faint">关联个股</div>
+                <div className="text-xs uppercase tracking-wide text-ui-faint">关联个股</div>
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                   {detail.key_stocks.map((stock) => (
                     <span key={stock} className="rounded border border-ui-strong bg-ui-subtle px-2 py-0.5 text-xs text-ui-body">

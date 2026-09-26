@@ -104,7 +104,7 @@ export function MessageList({ messages, sendReady, onAnalyze, onSendPrompt, onPr
                 className="ml-11 max-w-[85%] rounded-lg border border-ui-line bg-ui-subtle/60"
               >
                 <div className="flex items-center gap-1.5 border-b border-ui-line px-3 py-1.5 text-xs text-ui-muted">
-                  <Wrench className="h-3.5 w-3.5 text-indigo-300/80" />
+                  <Wrench className="h-3.5 w-3.5 text-ui-info" />
                   <span>工具调用 ×{group.messages.length}</span>
                 </div>
                 <div className="divide-y divide-ui-line">

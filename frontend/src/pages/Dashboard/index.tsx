@@ -568,16 +568,16 @@ function RiskEventCard({
           {events.slice(0, 5).map((event) => (
             <div key={event.id} className="rounded border border-ui-line bg-ui-subtle p-3">
               <div className="flex items-start gap-2">
-                <span className={`mt-0.5 rounded px-1.5 py-0.5 text-[11px] ${["red", "critical", "high"].includes(event.level) ? "bg-ui-danger/10 text-ui-danger" : "bg-ui-warning/10 text-ui-warning"}`}>{event.level}</span>
+                <span className={`mt-0.5 rounded px-1.5 py-0.5 text-xs ${["red", "critical", "high"].includes(event.level) ? "bg-ui-danger/10 text-ui-danger" : "bg-ui-warning/10 text-ui-warning"}`}>{event.level}</span>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-medium text-ui-body">{event.symbol} · {event.title}</div>
-                  <div className="mt-1 text-[11px] text-ui-faint">{event.event_date || event.last_seen_at.slice(0, 10)} · {event.source || "unknown"}</div>
+                  <div className="mt-1 text-xs text-ui-faint">{event.event_date || event.last_seen_at.slice(0, 10)} · {event.source || "unknown"}</div>
                 </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                <button onClick={() => onAdvice(event)} className="rounded border border-indigo-500/30 px-2 py-1 text-[11px] text-indigo-200">持仓建议</button>
-                <button onClick={() => onMonitor(event.id)} className="rounded border border-ui-strong px-2 py-1 text-[11px] text-ui-body">持续关注</button>
-                <button onClick={() => onResolve(event.id)} className="rounded border border-ui-success/30 px-2 py-1 text-[11px] text-ui-success">标记解除</button>
+                <button onClick={() => onAdvice(event)} className="rounded border border-ui-info/30 px-2 py-1 text-xs text-ui-info">持仓建议</button>
+                <button onClick={() => onMonitor(event.id)} className="rounded border border-ui-strong px-2 py-1 text-xs text-ui-body">持续关注</button>
+                <button onClick={() => onResolve(event.id)} className="rounded border border-ui-success/30 px-2 py-1 text-xs text-ui-success">标记解除</button>
               </div>
             </div>
           ))}
@@ -618,7 +618,7 @@ function StrategyLessonsCard({ lessons }: { lessons: Array<{ id: string; finding
   return (
     <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center gap-2">
-        <Brain className="h-4 w-4 text-purple-300" />
+        <Brain className="h-4 w-4 text-ui-info" />
         <h3 className="text-sm font-semibold text-ui-ink">策略经验</h3>
       </div>
       {lessons.length === 0 ? (
@@ -626,8 +626,8 @@ function StrategyLessonsCard({ lessons }: { lessons: Array<{ id: string; finding
       ) : (
         <div className="space-y-2">
           {lessons.map((lesson) => (
-            <div key={lesson.id} className="rounded border border-purple-500/20 bg-purple-500/5 p-2">
-              <div className="mb-1 text-xs text-purple-300">{lesson.confidence}</div>
+            <div key={lesson.id} className="rounded border border-ui-info/20 bg-ui-info/5 p-2">
+              <div className="mb-1 text-xs text-ui-info">{lesson.confidence}</div>
               <div className="line-clamp-3 text-xs text-ui-body">{lesson.finding}</div>
             </div>
           ))}
@@ -649,7 +649,7 @@ function ReflectionSummaryCard({ data }: { data: { total: number; correct: numbe
   return (
     <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
       <div className="mb-3 flex items-center gap-2">
-        <Brain className="h-4 w-4 text-purple-300" />
+        <Brain className="h-4 w-4 text-ui-info" />
         <h3 className="text-sm font-semibold text-ui-ink">反思摘要</h3>
       </div>
       {data && data.total > 0 ? (
@@ -676,7 +676,7 @@ function ReflectionSummaryCard({ data }: { data: { total: number; correct: numbe
       )}
       <button
         onClick={triggerReflection}
-        className="mt-3 w-full rounded border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-medium text-purple-200 transition hover:border-purple-400/60"
+        className="mt-3 w-full rounded border border-ui-info/30 bg-ui-info/10 px-3 py-1.5 text-xs font-medium text-ui-info transition hover:border-ui-info/60"
       >
         手动触发反思
       </button>

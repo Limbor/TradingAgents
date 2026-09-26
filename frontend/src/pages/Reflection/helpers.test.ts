@@ -111,15 +111,15 @@ describe("attributionMeta", () => {
   it("falls back to the raw token with neutral styling", () => {
     const meta = attributionMeta("unknown_token");
     expect(meta.label).toBe("unknown_token");
-    expect(meta.cls).toContain("stone");
+    expect(meta.cls).toContain("ui-muted");
   });
 });
 
 describe("confidenceCls", () => {
   it("maps confidence levels", () => {
-    expect(confidenceCls("high")).toContain("emerald");
-    expect(confidenceCls("medium")).toContain("amber");
-    expect(confidenceCls("low")).toContain("stone");
+    expect(confidenceCls("high")).toContain("ui-success");
+    expect(confidenceCls("medium")).toContain("ui-warning");
+    expect(confidenceCls("low")).toContain("ui-muted");
   });
 });
 
@@ -334,15 +334,15 @@ describe("formatAlpha", () => {
 
 describe("alphaDeltaTone", () => {
   it("treats small / null / non-finite deltas as neutral", () => {
-    expect(alphaDeltaTone(null)).toBe("text-stone-400");
-    expect(alphaDeltaTone(0)).toBe("text-stone-400");
-    expect(alphaDeltaTone(0.01)).toBe("text-stone-400");
-    expect(alphaDeltaTone(Number.NaN)).toBe("text-stone-400");
+    expect(alphaDeltaTone(null)).toBe("text-ui-muted");
+    expect(alphaDeltaTone(0)).toBe("text-ui-muted");
+    expect(alphaDeltaTone(0.01)).toBe("text-ui-muted");
+    expect(alphaDeltaTone(Number.NaN)).toBe("text-ui-muted");
   });
   it("marks a meaningful positive shift toward quant emerald", () => {
-    expect(alphaDeltaTone(0.05)).toBe("text-emerald-300");
+    expect(alphaDeltaTone(0.05)).toBe("text-ui-success");
   });
   it("marks a meaningful negative shift toward LLM amber", () => {
-    expect(alphaDeltaTone(-0.05)).toBe("text-amber-300");
+    expect(alphaDeltaTone(-0.05)).toBe("text-ui-warning");
   });
 });

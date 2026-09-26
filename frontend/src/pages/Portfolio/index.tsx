@@ -440,7 +440,7 @@ export default function Portfolio() {
                                   intentHint: positionAdviceHint(item.symbol, "review"),
                                 })
                               }
-                              className="rounded border border-ui-strong p-1.5 text-ui-muted transition hover:bg-ui-hover hover:text-indigo-300"
+                              className="rounded border border-ui-strong p-1.5 text-ui-muted transition hover:bg-ui-hover hover:text-ui-info"
                               title="持仓建议"
                             >
                               <Scale className="h-4 w-4" />

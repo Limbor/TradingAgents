@@ -197,7 +197,7 @@ export default function Reflection() {
       <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-ui-ink">
-            <Lightbulb className="h-4 w-4 text-purple-300" /> 策略经验库
+            <Lightbulb className="h-4 w-4 text-ui-accent" /> 策略经验库
             <span className="text-xs font-normal text-ui-faint">
               {lessons.data ? `${lessons.data.length} 条` : ""}
             </span>
@@ -216,7 +216,7 @@ export default function Reflection() {
             <button
               onClick={runMining}
               disabled={busy !== null}
-              className="flex items-center gap-1.5 rounded border border-purple-500/40 px-2.5 py-1 text-xs text-purple-200 transition hover:bg-purple-500/10 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded border border-ui-accent/40 px-2.5 py-1 text-xs text-ui-accent transition hover:bg-ui-accent/10 disabled:opacity-40"
             >
               <Sparkles className="h-3.5 w-3.5" /> {busy === "mine" ? "挖掘中..." : "挖掘规律"}
             </button>
@@ -328,24 +328,24 @@ function LessonCard({
     <div className={`rounded-lg border p-3 ${lesson.active ? "border-ui-line bg-ui-subtle" : "border-ui-line/60 bg-ui-subtle/40 opacity-70"}`}>
       <div className="mb-1.5 flex items-center gap-2">
         <ConfidenceBadge confidence={lesson.confidence} />
-        <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.isNeutral ? "border border-ui-info/30 text-ui-info" : "border border-ui-warning/30 text-ui-warning"}`}>
+        <span className={`rounded px-1.5 py-0.5 text-xs ${m.isNeutral ? "border border-ui-info/30 text-ui-info" : "border border-ui-warning/30 text-ui-warning"}`}>
           {m.isNeutral ? "中性通道" : "方向通道"}
         </span>
         {lesson.scope !== "global" && (
-          <span className="rounded border border-ui-strong px-1.5 py-0.5 text-[10px] text-ui-muted">
+          <span className="rounded border border-ui-strong px-1.5 py-0.5 text-xs text-ui-muted">
             {lesson.scope}={lesson.target}
           </span>
         )}
-        <span className="text-[10px] text-ui-faint">
+        <span className="text-xs text-ui-faint">
           {lesson.governance_status === "approved" ? "已批准" : lesson.governance_status === "validated" ? "统计已验证·待批准" : lesson.governance_status === "candidate" ? "候选·待验证/批准" : "已退役"}
         </span>
-        <span className="ml-auto text-[10px] text-ui-faint">证据 {lesson.evidence_count}</span>
+        <span className="ml-auto text-xs text-ui-faint">证据 {lesson.evidence_count}</span>
       </div>
       <p className="text-sm text-ui-body">{lesson.finding}</p>
       {lesson.suggested_adjustment && (
         <p className="mt-1 text-xs text-ui-muted">建议：{lesson.suggested_adjustment}</p>
       )}
-      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-ui-faint">
+      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ui-faint">
         {m.isNeutral && m.distinctPeriods > 0 && <span>跨 {m.distinctPeriods} 个 ISO 周</span>}
         {m.avgExcess !== null && <span>平均超额 {formatPct(m.avgExcess, 2, true)}</span>}
         {m.winRate !== null && <span>胜率 {formatPct(m.winRate, 1)}</span>}
@@ -354,7 +354,7 @@ function LessonCard({
       <div className="mt-2 flex items-center gap-3 border-t border-ui-line/70 pt-2">
         <button
           onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-1 text-[10px] text-ui-faint transition hover:text-ui-body"
+          className="flex items-center gap-1 text-xs text-ui-faint transition hover:text-ui-body"
         >
           <ChevronDown className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`} />
           {open ? "收起详情" : "展开详情"}
@@ -363,7 +363,7 @@ function LessonCard({
           <button
             onClick={retire}
             disabled={retiring}
-            className="ml-auto rounded border border-ui-strong px-2 py-0.5 text-[10px] text-ui-muted transition hover:border-ui-danger/40 hover:text-ui-danger disabled:opacity-40"
+            className="ml-auto rounded border border-ui-strong px-2 py-0.5 text-xs text-ui-muted transition hover:border-ui-danger/40 hover:text-ui-danger disabled:opacity-40"
           >
             {retiring ? "停用中..." : "停用"}
           </button>
@@ -372,7 +372,7 @@ function LessonCard({
           <button
             onClick={approve}
             disabled={approving}
-            className="ml-auto rounded border border-ui-accent px-2 py-0.5 text-[10px] text-ui-accent transition hover:border-ui-accent disabled:opacity-40"
+            className="ml-auto rounded border border-ui-accent px-2 py-0.5 text-xs text-ui-accent transition hover:border-ui-accent disabled:opacity-40"
           >
             {approving ? "批准中..." : "人工批准"}
           </button>
@@ -381,7 +381,7 @@ function LessonCard({
 
       {open && (
         <div className="mt-2 space-y-3">
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-ui-faint">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-ui-faint">
             <Detail label="类型" value={lesson.lesson_type} />
             <Detail label="治理状态" value={lesson.governance_status} />
             <Detail label="样本量" value={m.sampleSize !== null ? String(m.sampleSize) : "—"} />
@@ -395,7 +395,7 @@ function LessonCard({
 
           {/* Metric trend across mining days (miner persists a history series). */}
           <div>
-            <p className="mb-1 text-[10px] text-ui-faint">{trend.label}趋势（按挖掘日）</p>
+            <p className="mb-1 text-xs text-ui-faint">{trend.label}趋势（按挖掘日）</p>
             {trendPath ? (
               <div className="flex items-center gap-2">
                 <svg viewBox="0 0 96 24" className="h-6 w-24 overflow-visible" preserveAspectRatio="none">
@@ -407,7 +407,7 @@ function LessonCard({
                     className={m.isNeutral ? "text-ui-info" : "text-ui-warning"}
                   />
                 </svg>
-                <span className="font-mono text-[10px] text-ui-faint">
+                <span className="font-mono text-xs text-ui-faint">
                   {trend.values
                     .filter((v): v is number => v !== null)
                     .map((v) => formatPct(v, m.isNeutral ? 1 : 0, trend.signed))
@@ -415,16 +415,16 @@ function LessonCard({
                 </span>
               </div>
             ) : (
-              <p className="text-[10px] text-ui-faint">样本仅一期，暂无趋势。</p>
+              <p className="text-xs text-ui-faint">样本仅一期，暂无趋势。</p>
             )}
           </div>
 
           {/* Supporting evidence: the reflection cases behind this lesson. */}
           <div>
-            <p className="mb-1 text-[10px] text-ui-faint">支撑证据</p>
-            {lessonCases.isLoading && <p className="text-[10px] text-ui-faint">加载中...</p>}
+            <p className="mb-1 text-xs text-ui-faint">支撑证据</p>
+            {lessonCases.isLoading && <p className="text-xs text-ui-faint">加载中...</p>}
             {!lessonCases.isLoading && (lessonCases.data?.length ?? 0) === 0 && (
-              <p className="text-[10px] text-ui-faint">暂无关联案例（该经验早于证据追踪，或案例已清理）。</p>
+              <p className="text-xs text-ui-faint">暂无关联案例（该经验早于证据追踪，或案例已清理）。</p>
             )}
             <div className="space-y-1.5">
               {(lessonCases.data ?? []).map((c) => (
@@ -457,11 +457,11 @@ function CaseRow({ item }: { item: ReflectionCase }) {
         <div className="flex items-center gap-2 text-sm text-ui-body">
           {displayNameOf(item.name, item.symbol)}
           {item.name && item.name !== item.symbol && (
-            <span className="font-mono text-[10px] text-ui-faint">{item.symbol}</span>
+            <span className="font-mono text-xs text-ui-faint">{item.symbol}</span>
           )}
           <AttributionBadge attribution={attribution} status={item.status} />
         </div>
-        <div className="mt-0.5 text-[10px] text-ui-faint">
+        <div className="mt-0.5 text-xs text-ui-faint">
           {item.signal_date} · {original} · {item.horizon_days} 日
           {item.status === "pending" && <span className="ml-1 text-ui-warning/80">待反思</span>}
         </div>
@@ -478,14 +478,14 @@ function CaseRow({ item }: { item: ReflectionCase }) {
 function AttributionBadge({ attribution, status }: { attribution: string; status: string }) {
   if (!attribution) {
     if (status === "pending") return null;
-    return <span className="rounded border border-ui-strong px-1.5 py-0.5 text-[10px] text-ui-muted">已复盘</span>;
+    return <span className="rounded border border-ui-strong px-1.5 py-0.5 text-xs text-ui-muted">已复盘</span>;
   }
   const meta = attributionMeta(attribution);
-  return <span className={`rounded border px-1.5 py-0.5 text-[10px] ${meta.cls}`}>{meta.label}</span>;
+  return <span className={`rounded border px-1.5 py-0.5 text-xs ${meta.cls}`}>{meta.label}</span>;
 }
 
 function ConfidenceBadge({ confidence }: { confidence: string }) {
-  return <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${confidenceCls(confidence)}`}>{confidence}</span>;
+  return <span className={`rounded border px-1.5 py-0.5 text-xs uppercase ${confidenceCls(confidence)}`}>{confidence}</span>;
 }
 
 function ScorecardSection({
@@ -504,7 +504,7 @@ function ScorecardSection({
           <span className="text-xs font-normal text-ui-faint">只读度量 · 近 {lookback} 天</span>
         </h3>
         {data?.available && (
-          <span className="text-[10px] text-ui-faint">
+          <span className="text-xs text-ui-faint">
             {data.n_evaluated} 条已评估 · as of {data.as_of}
           </span>
         )}
@@ -552,7 +552,7 @@ function ScorecardBody({ data }: { data: PredictionScorecard }) {
       {/* Quant-only vs fused comparison */}
       <div className="rounded border border-ui-line bg-ui-subtle p-3">
         <p className="mb-2 text-xs font-medium text-ui-body">纯量化 vs 融合（LLM 复核是否加分）</p>
-        <table className="w-full text-[11px]">
+        <table className="w-full text-xs">
           <thead>
             <tr className="text-ui-faint">
               <th className="text-left font-normal">模式</th>
@@ -567,7 +567,7 @@ function ScorecardBody({ data }: { data: PredictionScorecard }) {
           </tbody>
         </table>
         {delta.hasBoth && (
-          <p className="mt-2 text-[10px] text-ui-faint">
+          <p className="mt-2 text-xs text-ui-faint">
             融合相对纯量化：命中率{" "}
             <DeltaText value={delta.hitRate} digits={1} />，平均收益{" "}
             <DeltaText value={delta.avgReturn} digits={2} />
@@ -596,7 +596,7 @@ function AlphaSuggestionCard({ suggestion }: { suggestion: AlphaSuggestion }) {
       <div className="mb-2 flex items-center justify-between">
         <p className="text-xs font-medium text-ui-body">融合权重 α 建议（quant 权重）</p>
         <span
-          className={`rounded border px-1.5 py-0.5 text-[10px] ${
+          className={`rounded border px-1.5 py-0.5 text-xs ${
             alphaLive
               ? "border-ui-accent/40 bg-ui-accent/10 text-ui-accent"
               : "border-ui-strong text-ui-faint"
@@ -618,13 +618,13 @@ function AlphaSuggestionCard({ suggestion }: { suggestion: AlphaSuggestion }) {
           tone={applicable ? "teal" : undefined}
         />
         <div className="rounded border border-ui-line bg-ui-panel/40 p-2">
-          <p className="text-[10px] text-ui-faint">差值</p>
+          <p className="text-xs text-ui-faint">差值</p>
           <p className={`mt-0.5 font-mono text-lg ${alphaDeltaTone(applicable ? delta : 0)}`}>
             {applicable ? `${delta >= 0 ? "+" : ""}${formatAlpha(delta)}` : "—"}
           </p>
         </div>
       </div>
-      <p className="mt-2 text-[10px] text-ui-faint">
+      <p className="mt-2 text-xs text-ui-faint">
         {applicable ? suggestion.reason : "样本不足，维持静态权重。"}
       </p>
     </div>
@@ -655,9 +655,9 @@ function ScorecardBucketTable({ title, rows }: { title: string; rows: ScorecardB
     <div className="rounded border border-ui-line bg-ui-subtle p-3">
       <p className="mb-2 text-xs font-medium text-ui-body">{title}</p>
       {rows.length === 0 ? (
-        <p className="text-[10px] text-ui-faint">无数据</p>
+        <p className="text-xs text-ui-faint">无数据</p>
       ) : (
-        <table className="w-full text-[11px]">
+        <table className="w-full text-xs">
           <thead>
             <tr className="text-ui-faint">
               <th className="text-left font-normal">桶</th>

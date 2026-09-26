@@ -420,17 +420,17 @@ function DailyReviewArtifact({
       )}
 
       {lessons.length > 0 && (
-        <section className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3">
-          <div className="mb-2 text-sm font-semibold text-purple-100">本次使用的策略经验</div>
+        <section className="rounded-lg border border-ui-info/20 bg-ui-info/5 p-3">
+          <div className="mb-2 text-sm font-semibold text-ui-body">本次使用的策略经验</div>
           <div className="space-y-2">
             {lessons.map((lesson, index) => (
-              <div key={String(lesson.id ?? index)} className="rounded border border-purple-500/20 bg-ui-subtle p-2 text-sm text-purple-100">
-                <span className="mr-2 rounded border border-purple-500/30 px-1.5 py-0.5 text-xs">
+              <div key={String(lesson.id ?? index)} className="rounded border border-ui-info/20 bg-ui-subtle p-2 text-sm text-ui-body">
+                <span className="mr-2 rounded border border-ui-info/30 px-1.5 py-0.5 text-xs">
                   {String(lesson.confidence ?? "low")}
                 </span>
                 {String(lesson.finding ?? "")}
                 {Boolean(lesson.suggested_adjustment) && (
-                  <div className="mt-1 text-xs text-purple-200/80">建议：{String(lesson.suggested_adjustment)}</div>
+                  <div className="mt-1 text-xs text-ui-muted">建议：{String(lesson.suggested_adjustment)}</div>
                 )}
               </div>
             ))}
@@ -499,12 +499,12 @@ function ReflectionAndPlanArtifact({ payload }: { payload: Record<string, unknow
         </div>
       )}
       {lessons.length > 0 && (
-        <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3">
-          <div className="mb-2 text-sm font-medium text-purple-100">活跃策略经验</div>
+        <div className="rounded-lg border border-ui-info/20 bg-ui-info/5 p-3">
+          <div className="mb-2 text-sm font-medium text-ui-body">活跃策略经验</div>
           <div className="space-y-2">
             {lessons.map((lesson, index) => (
-              <div key={String(lesson.id ?? index)} className="text-sm text-purple-100">
-                <span className="mr-2 rounded border border-purple-500/30 px-1.5 py-0.5 text-xs text-purple-200">
+              <div key={String(lesson.id ?? index)} className="text-sm text-ui-body">
+                <span className="mr-2 rounded border border-ui-info/30 px-1.5 py-0.5 text-xs text-ui-info">
                   {String(lesson.confidence ?? "low")}
                 </span>
                 {String(lesson.finding ?? "")}

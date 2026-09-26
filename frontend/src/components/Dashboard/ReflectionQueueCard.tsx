@@ -51,14 +51,14 @@ export function ReflectionQueueCard() {
                   <div className="text-ui-body">
                     {displayNameOf(c.name, c.symbol)}
                     {c.name && c.name !== c.symbol && (
-                      <span className="ml-1 font-mono text-[10px] text-ui-faint">{c.symbol}</span>
+                      <span className="ml-1 font-mono text-xs text-ui-faint">{c.symbol}</span>
                     )}
                   </div>
-                  <div className="text-[10px] text-ui-faint">
+                  <div className="text-xs text-ui-faint">
                     {c.signal_date} · {scopeLabel(c.reflection_scope)} · {c.source_type}
                   </div>
                 </div>
-                <span className={`shrink-0 font-mono text-[11px] ${dueTone}`} title={c.due_date ?? undefined}>
+                <span className={`shrink-0 font-mono text-xs ${dueTone}`} title={c.due_date ?? undefined}>
                   {dueText}
                 </span>
               </li>

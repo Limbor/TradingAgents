@@ -41,23 +41,24 @@ export function CandlestickChart({ candles, plan = {}, days = 60, chipProfile }:
   const volumeY = (volume: number) => VOLUME_BOTTOM - (volume / maxVolume) * (VOLUME_BOTTOM - VOLUME_TOP);
 
   return (
-    <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={`最近 ${rows.length} 个交易日 K 线`} className="h-auto w-full overflow-visible">
-      <rect x="0" y="0" width={WIDTH} height={HEIGHT} rx="8" className="fill-stone-950" />
+    <div className="overflow-x-auto rounded-md border border-ui-line bg-ui-panel">
+    <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={`最近 ${rows.length} 个交易日 K 线`} className="block h-auto min-w-[860px] w-full">
+      <rect x="0" y="0" width={WIDTH} height={HEIGHT} className="fill-ui-panel" />
       {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
         const price = maxPrice - (maxPrice - minPrice) * ratio;
         const lineY = PRICE_TOP + (PRICE_BOTTOM - PRICE_TOP) * ratio;
         return (
           <g key={ratio}>
-            <line x1="0" y1={lineY} x2={WIDTH} y2={lineY} className="stroke-stone-800" strokeDasharray="3 5" />
-            <text x={WIDTH - 4} y={lineY - 3} textAnchor="end" className="fill-stone-600 text-[10px]">{price.toFixed(2)}</text>
+            <line x1="0" y1={lineY} x2={WIDTH} y2={lineY} className="stroke-ui-line" strokeDasharray="3 5" />
+            <text x={WIDTH - 4} y={lineY - 3} textAnchor="end" className="fill-ui-muted text-xs">{price.toFixed(2)}</text>
           </g>
         );
       })}
 
       {zone.length >= 2 && (
         <g>
-          <rect x="0" y={y(zone[zone.length - 1]!)} width={WIDTH} height={Math.max(2, y(zone[0]!) - y(zone[zone.length - 1]!))} className="fill-teal-500/10" />
-          <text x="5" y={y(zone[zone.length - 1]!) - 4} className="fill-teal-300 text-[10px]">行动区</text>
+          <rect x="0" y={y(zone[zone.length - 1]!)} width={WIDTH} height={Math.max(2, y(zone[0]!) - y(zone[zone.length - 1]!))} className="fill-ui-accent/10" />
+          <text x="5" y={y(zone[zone.length - 1]!) - 4} className="fill-ui-accent text-xs">行动区</text>
         </g>
       )}
       {invalidation !== undefined && <PriceLine value={invalidation} y={y(invalidation)} label="失效" tone="red" />}
@@ -65,46 +66,50 @@ export function CandlestickChart({ candles, plan = {}, days = 60, chipProfile }:
 
       <ChipBand points={chipRows} x={x} y={y} />
 
-      <Polyline rows={rows} field="ma5" x={x} y={y} className="stroke-amber-300" />
-      <Polyline rows={rows} field="ma10" x={x} y={y} className="stroke-sky-300" />
-      <Polyline rows={rows} field="ma20" x={x} y={y} className="stroke-purple-300" />
+      <Polyline rows={rows} field="ma5" x={x} y={y} className="stroke-ui-warning" />
+      <Polyline rows={rows} field="ma10" x={x} y={y} className="stroke-ui-info" />
+      <Polyline rows={rows} field="ma20" x={x} y={y} className="stroke-ui-body" />
       <ChipPolyline points={chipRows} x={x} y={y} />
 
       {rows.map((row, index) => {
         const open = row.open ?? row.close!;
         const close = row.close!;
         const rising = close >= open;
-        const color = rising ? "#f87171" : "#34d399";
+        const wickTone = rising ? "stroke-ui-danger" : "stroke-ui-success";
+        const bodyTone = rising ? "stroke-ui-danger fill-ui-danger" : "stroke-ui-success fill-ui-panel";
+        const volumeTone = rising ? "fill-ui-danger" : "fill-ui-success";
         const bodyTop = y(Math.max(open, close));
         const bodyHeight = Math.max(1.5, Math.abs(y(open) - y(close)));
         const volTop = volumeY(row.volume ?? 0);
         return (
           <g key={row.trade_date}>
             <title>{`${row.trade_date} O ${open.toFixed(2)} H ${row.high!.toFixed(2)} L ${row.low!.toFixed(2)} C ${close.toFixed(2)}`}</title>
-            <line x1={x(index)} y1={y(row.high!)} x2={x(index)} y2={y(row.low!)} stroke={color} strokeWidth="1" />
-            <rect x={x(index) - candleWidth / 2} y={bodyTop} width={candleWidth} height={bodyHeight} fill={rising ? color : "#0c0a09"} stroke={color} />
-            <rect x={x(index) - candleWidth / 2} y={volTop} width={candleWidth} height={VOLUME_BOTTOM - volTop} fill={color} opacity="0.35" />
+            <line x1={x(index)} y1={y(row.high!)} x2={x(index)} y2={y(row.low!)} className={wickTone} strokeWidth="1" />
+            <rect x={x(index) - candleWidth / 2} y={bodyTop} width={candleWidth} height={bodyHeight} className={bodyTone} />
+            <rect x={x(index) - candleWidth / 2} y={volTop} width={candleWidth} height={VOLUME_BOTTOM - volTop} className={volumeTone} opacity="0.35" />
           </g>
         );
       })}
 
-      <line x1="0" y1={PRICE_BOTTOM} x2={WIDTH} y2={PRICE_BOTTOM} className="stroke-stone-700" />
-      <line x1="0" y1={VOLUME_TOP} x2={WIDTH} y2={VOLUME_TOP} className="stroke-stone-800" />
-      <text x="5" y="14" className="fill-stone-500 text-[10px]">MA5</text>
-      <text x="35" y="14" className="fill-amber-300 text-[10px]">—</text>
-      <text x="55" y="14" className="fill-stone-500 text-[10px]">MA10</text>
-      <text x="92" y="14" className="fill-sky-300 text-[10px]">—</text>
-      <text x="112" y="14" className="fill-stone-500 text-[10px]">MA20</text>
-      <text x="149" y="14" className="fill-purple-300 text-[10px]">—</text>
+      <line x1="0" y1={PRICE_BOTTOM} x2={WIDTH} y2={PRICE_BOTTOM} className="stroke-ui-strong" />
+      <line x1="0" y1={VOLUME_TOP} x2={WIDTH} y2={VOLUME_TOP} className="stroke-ui-line" />
+      <text x="5" y="14" className="fill-ui-muted text-xs">MA5</text>
+      <text x="37" y="14" className="fill-ui-warning text-xs">—</text>
+      <text x="57" y="14" className="fill-ui-muted text-xs">MA10</text>
+      <text x="99" y="14" className="fill-ui-info text-xs">—</text>
+      <text x="119" y="14" className="fill-ui-muted text-xs">MA20</text>
+      <text x="161" y="14" className="fill-ui-body text-xs">—</text>
       {chipProfile?.status === "available" && (
         <>
-          <text x="170" y="14" className="fill-stone-500 text-[10px]">筹码成本</text>
-          <text x="216" y="14" className="fill-teal-300 text-[10px]">—</text>
+          <text x="183" y="14" className="fill-ui-muted text-xs">筹码成本</text>
+          <text x="245" y="14" className="fill-ui-accent text-xs">—</text>
         </>
       )}
-      <text x="4" y="346" className="fill-stone-600 text-[10px]">{rows[0]!.trade_date}</text>
-      <text x={WIDTH - 4} y="346" textAnchor="end" className="fill-stone-600 text-[10px]">{rows[rows.length - 1]!.trade_date}</text>
+      <text x="320" y="14" className="fill-ui-muted text-xs">红涨 · 绿跌</text>
+      <text x="4" y="346" className="fill-ui-muted text-xs">{rows[0]!.trade_date}</text>
+      <text x={WIDTH - 4} y="346" textAnchor="end" className="fill-ui-muted text-xs">{rows[rows.length - 1]!.trade_date}</text>
     </svg>
+    </div>
   );
 }
 
@@ -119,9 +124,9 @@ function ChipBand({ points, x, y }: {
   const lower = [...valid].reverse().map(({ point, index }) => `${x(index)},${y(point.cost_70_low)}`);
   return (
     <g>
-      <polygon points={[...upper, ...lower].join(" ")} className="fill-teal-400/10" />
-      <polyline points={upper.join(" ")} fill="none" className="stroke-teal-500/40" strokeWidth="1" />
-      <polyline points={[...lower].reverse().join(" ")} fill="none" className="stroke-teal-500/40" strokeWidth="1" />
+      <polygon points={[...upper, ...lower].join(" ")} className="fill-ui-accent/10" />
+      <polyline points={upper.join(" ")} fill="none" className="stroke-ui-accent/40" strokeWidth="1" />
+      <polyline points={[...lower].reverse().join(" ")} fill="none" className="stroke-ui-accent/40" strokeWidth="1" />
     </g>
   );
 }
@@ -132,15 +137,15 @@ function ChipPolyline({ points, x, y }: {
   y: (value: number) => number;
 }) {
   const line = points.flatMap((point, index) => point ? [`${x(index)},${y(point.avg_cost)}`] : []);
-  return line.length > 1 ? <polyline points={line.join(" ")} fill="none" className="stroke-teal-300" strokeWidth="1.4" opacity="0.9" /> : null;
+  return line.length > 1 ? <polyline points={line.join(" ")} fill="none" className="stroke-ui-accent" strokeWidth="1.4" opacity="0.9" /> : null;
 }
 
 function PriceLine({ value, y, label, tone }: { value: number; y: number; label: string; tone: "red" | "emerald" }) {
-  const className = tone === "red" ? "stroke-red-400 fill-red-300" : "stroke-emerald-400 fill-emerald-300";
+  const className = tone === "red" ? "stroke-ui-danger fill-ui-danger" : "stroke-ui-success fill-ui-success";
   return (
     <g>
       <line x1="0" y1={y} x2={WIDTH} y2={y} className={className} strokeDasharray="6 4" opacity="0.75" />
-      <text x="5" y={y - 4} className={`${className} text-[10px]`}>{label} {value.toFixed(2)}</text>
+      <text x="5" y={y - 4} className={`${className} text-xs`}>{label} {value.toFixed(2)}</text>
     </g>
   );
 }

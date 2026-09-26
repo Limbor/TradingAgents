@@ -40,24 +40,24 @@ export interface AttributionMeta {
 }
 
 const ATTRIBUTION_MAP: Record<string, AttributionMeta> = {
-  missed_upside: { label: "机会错失", cls: "border-amber-500/30 text-amber-300" },
-  validated_avoidance: { label: "规避有效", cls: "border-teal-500/30 text-teal-300" },
-  win: { label: "判断正确", cls: "border-emerald-500/30 text-emerald-300" },
-  loss: { label: "判断错误", cls: "border-red-500/30 text-red-300" },
+  missed_upside: { label: "机会错失", cls: "border-ui-warning/30 text-ui-warning" },
+  validated_avoidance: { label: "规避有效", cls: "border-ui-success/30 text-ui-success" },
+  win: { label: "判断正确", cls: "border-ui-success/30 text-ui-success" },
+  loss: { label: "判断错误", cls: "border-ui-danger/30 text-ui-danger" },
 };
 
 /** Map a raw attribution token to a badge label + tailwind classes. Unknown
  * tokens fall back to the raw token with neutral styling. */
 export function attributionMeta(attribution: string): AttributionMeta {
   return (
-    ATTRIBUTION_MAP[attribution] ?? { label: attribution, cls: "border-stone-700 text-stone-400" }
+    ATTRIBUTION_MAP[attribution] ?? { label: attribution, cls: "border-ui-strong text-ui-muted" }
   );
 }
 
 export function confidenceCls(confidence: string): string {
-  if (confidence === "high") return "border-emerald-500/40 text-emerald-300";
-  if (confidence === "medium") return "border-amber-500/40 text-amber-300";
-  return "border-stone-600 text-stone-400";
+  if (confidence === "high") return "border-ui-success/40 text-ui-success";
+  if (confidence === "medium") return "border-ui-warning/40 text-ui-warning";
+  return "border-ui-strong text-ui-muted";
 }
 
 /** Excess return prefers the attribution payload, then the raw outcome. */
@@ -213,7 +213,7 @@ export function formatAlpha(value: number | null): string {
  * toward LLM (negative) are amber. */
 export function alphaDeltaTone(delta: number | null): string {
   if (delta === null || !Number.isFinite(delta) || Math.abs(delta) < 0.02) {
-    return "text-stone-400";
+    return "text-ui-muted";
   }
-  return delta > 0 ? "text-emerald-300" : "text-amber-300";
+  return delta > 0 ? "text-ui-success" : "text-ui-warning";
 }

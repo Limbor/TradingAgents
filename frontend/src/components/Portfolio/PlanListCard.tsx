@@ -67,7 +67,7 @@ const PRICE_TONES: Record<PriceTone, string> = {
 function PriceBlock({ label, value, tone }: { label: string; value: string; tone: PriceTone }) {
   return (
     <div className={"rounded border px-2 py-1 " + PRICE_TONES[tone]}>
-      <div className="text-[10px] text-ui-faint">{label}</div>
+      <div className="text-xs text-ui-faint">{label}</div>
       <div className="font-mono text-xs">{value}</div>
     </div>
   );
@@ -146,24 +146,24 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {isTriggered ? (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ui-warning/15 px-2 py-0.5 text-[10px] font-medium text-ui-warning">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ui-warning/15 px-2 py-0.5 text-xs font-medium text-ui-warning">
               <Bell className="h-3 w-3" /> 已触发
             </span>
           ) : (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ui-success/15 px-2 py-0.5 text-[10px] font-medium text-ui-success">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ui-success/15 px-2 py-0.5 text-xs font-medium text-ui-success">
               <Activity className="h-3 w-3" /> 监控中
             </span>
           )}
           <span className="truncate font-medium text-ui-ink">{displayName}</span>
           {plan.name && plan.name !== plan.symbol && (
-            <span className="shrink-0 font-mono text-[11px] text-ui-faint">{plan.symbol}</span>
+            <span className="shrink-0 font-mono text-xs text-ui-faint">{plan.symbol}</span>
           )}
           {lifecycleLabel && (
-            <span className="shrink-0 rounded bg-ui-accent/10 px-1.5 py-0.5 text-[10px] text-ui-accent">{lifecycleLabel}</span>
+            <span className="shrink-0 rounded bg-ui-accent/10 px-1.5 py-0.5 text-xs text-ui-accent">{lifecycleLabel}</span>
           )}
         </div>
         {plan.rating && (
-          <span className="shrink-0 rounded bg-ui-hover px-1.5 py-0.5 font-mono text-[10px] text-ui-body">
+          <span className="shrink-0 rounded bg-ui-hover px-1.5 py-0.5 font-mono text-xs text-ui-body">
             {plan.rating}
           </span>
         )}
@@ -188,7 +188,7 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
       </div>
 
       {(plan.reliability_score !== null || plan.expires_at) && (
-        <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-ui-faint">
+        <div className="mt-2 flex flex-wrap gap-3 text-xs text-ui-faint">
           {plan.reliability_score !== null && <span>推荐可靠性 {Math.round(plan.reliability_score)}/100</span>}
           {plan.expires_at && <span>有效至 {plan.expires_at}</span>}
         </div>
@@ -199,7 +199,7 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
           {plan.conditions.map((c, i) => (
             <span
               key={i}
-              className="rounded border border-ui-strong bg-ui-hover/50 px-1.5 py-0.5 text-[10px] text-ui-body"
+              className="rounded border border-ui-strong bg-ui-hover/50 px-1.5 py-0.5 text-xs text-ui-body"
               title={c.description}
             >
               {conditionLabel(c.kind, direction, c.trigger_action)} · {c.description}
@@ -209,7 +209,7 @@ function PlanRow({ plan, onClose, onRemove }: { plan: Plan; onClose: () => void;
       )}
 
       <div className="mt-2.5 flex items-center justify-between border-t border-ui-line pt-2">
-        <span className="text-[10px] text-ui-faint" title={plan.last_checked_at ?? undefined}>
+        <span className="text-xs text-ui-faint" title={plan.last_checked_at ?? undefined}>
           上次检查: {lastCheckLabel(plan)}
         </span>
         <div className="flex gap-1.5">

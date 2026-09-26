@@ -43,18 +43,18 @@ export function ToolCard({ message, bare = false }: ToolCardProps) {
       }
     >
       <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-        <Wrench className="h-3.5 w-3.5 shrink-0 text-indigo-300/80" />
+        <Wrench className="h-3.5 w-3.5 shrink-0 text-ui-info" />
         <span className="text-xs font-medium text-ui-body">{toolLabel(tool)}</span>
         {headerChips.map(([k, v]) => (
           <span
             key={k}
-            className="rounded border border-ui-line bg-ui-panel/60 px-1.5 py-0.5 text-[11px] text-ui-muted"
+            className="rounded border border-ui-line bg-ui-panel/60 px-1.5 py-0.5 text-xs text-ui-muted"
           >
             <span className="text-ui-faint">{k}:</span> <span className="text-ui-body">{formatArg(v)}</span>
           </span>
         ))}
         {overflow > 0 && (
-          <span className="rounded border border-ui-line bg-ui-panel/60 px-1.5 py-0.5 text-[11px] text-ui-faint">
+          <span className="rounded border border-ui-line bg-ui-panel/60 px-1.5 py-0.5 text-xs text-ui-faint">
             +{overflow}
           </span>
         )}
@@ -65,7 +65,7 @@ export function ToolCard({ message, bare = false }: ToolCardProps) {
           <summary className="cursor-pointer text-xs text-ui-faint hover:text-ui-body">调用详情</summary>
           <div className="mt-1.5 space-y-1.5">
             {argEntries.length > 0 && (
-              <div className="flex flex-wrap gap-1 text-[11px] text-ui-muted">
+              <div className="flex flex-wrap gap-1 text-xs text-ui-muted">
                 {argEntries.map(([k, v]) => (
                   <span key={k} className="rounded border border-ui-strong bg-ui-panel/60 px-1.5 py-0.5">
                     <span className="text-ui-faint">{k}:</span> <span className="text-ui-body">{formatArg(v)}</span>
@@ -144,11 +144,11 @@ function ToolTable({ result }: { result: Record<string, unknown> }) {
       <div className="overflow-x-auto">
         <table className="min-w-full text-xs">
           <thead>
-            <tr className="border-b border-indigo-500/20">
+            <tr className="border-b border-ui-info/20">
               {columns.map((col) => (
                 <th
                   key={col}
-                  className="px-2 py-1 text-left font-medium text-indigo-300/80"
+                  className="px-2 py-1 text-left font-medium text-ui-info"
                 >
                   {col}
                 </th>
@@ -179,7 +179,7 @@ function ToolTable({ result }: { result: Record<string, unknown> }) {
         .filter(([k]) => k !== "warnings")
         .map(([key, val]) => (
           <div key={key} className="flex gap-2 text-xs">
-            <span className="font-medium text-indigo-300/70">{key}:</span>
+            <span className="font-medium text-ui-info">{key}:</span>
             <span className="text-ui-body">{formatCell(val)}</span>
           </div>
         ))}
@@ -201,7 +201,7 @@ function ToolCardBody({ result }: { result: Record<string, unknown> }) {
         .slice(0, 10)
         .map(([key, val]) => (
           <div key={key} className="flex gap-2 text-xs">
-            <span className="font-medium text-indigo-300/70 shrink-0">{key}:</span>
+            <span className="font-medium text-ui-info shrink-0">{key}:</span>
             <span className="text-ui-body truncate">{formatCell(val)}</span>
           </div>
         ))}
@@ -227,7 +227,7 @@ function Citations({
       <div className="text-xs text-ui-muted">
         数据来源：
         {citations.map((c, i) => (
-          <span key={i} className="ml-1 text-indigo-400/70">
+          <span key={i} className="ml-1 text-ui-info">
             {c.source || c.tool}
             {c.as_of_date ? ` · 基准日 ${c.as_of_date}` : ""}
             {c.summary ? ` (${c.summary})` : ""}

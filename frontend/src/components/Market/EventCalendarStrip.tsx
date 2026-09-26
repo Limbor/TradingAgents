@@ -27,7 +27,7 @@ export function EventCalendarStrip({ macro, unlocks, holdings }: EventCalendarSt
           >
             <span className="text-ui-faint">{item.name}</span>
             <span className="font-mono">{item.value ?? "--"}</span>
-            {item.date && <span className="text-[10px] text-ui-faint">{item.date}</span>}
+            {item.date && <span className="text-xs text-ui-faint">{item.date}</span>}
           </span>
         ))}
         {unlocks.map((event) => {

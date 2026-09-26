@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { mockAgentTasks } from "./agentMock";
 
 test("strategy paper workbench creates, reads, and advances a StockManager session", async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem("tradingagents.theme", "light"));
   let created = false;
   let advanced = false;
   let advanceBody: unknown = null;
@@ -23,7 +24,10 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
     } else if (pathname.endsWith("/status")) {
       body = { session: { initial_cash: 100000 }, snapshot: { as_of_date: "2026-01-02", equity: 102000, cash: 40000, positions: { "600519.SH": { name: "贵州茅台", shares: 40, avg_cost: 1000, last_price: 1550, value: 62000 } } }, trades_count: 1 };
     } else if (pathname.endsWith("/equity")) {
-      body = { daily_records: [{ date: "2026-01-02", equity: 102000, cash: 40000 }], benchmark_curve: [] };
+      body = { daily_records: [
+        { date: "2026-01-01", equity: 100000, cash: 100000 },
+        { date: "2026-01-02", equity: 102000, cash: 40000 },
+      ], benchmark_curve: [] };
     } else if (pathname.endsWith("/trades")) {
       body = [{ trade_date: "2026-01-02", code: "600519.SH", name: "贵州茅台", side: "BUY", shares: 40, price: 1550, amount: 62000 }];
     } else if (pathname.endsWith("/next-plan")) {
@@ -48,6 +52,13 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(page.getByText("¥102,000")).toBeVisible();
   await expect(page.getByText("贵州茅台").first()).toBeVisible();
+  const equityLine = page.locator(".recharts-line path").first();
+  await expect(equityLine).toHaveCSS("stroke", "rgb(8, 125, 104)");
+  await page.locator("main").evaluate((element) => { element.scrollTop = 380; });
+  if (process.env.CAPTURE_THEME_QA) await page.screenshot({ path: "test-results/theme-paper-equity-light.png", fullPage: true });
+  await page.getByRole("button", { name: "主题：浅色，点击切换" }).click();
+  await expect(equityLine).toHaveCSS("stroke", "rgb(45, 212, 191)");
+  if (process.env.CAPTURE_THEME_QA) await page.screenshot({ path: "test-results/theme-paper-equity-dark.png", fullPage: true });
   await page.getByLabel("推进至交易日").fill("2026-01-05");
   await page.getByRole("button", { name: "推进模拟盘" }).click();
   await expect.poll(() => advanced).toBe(true);

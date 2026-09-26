@@ -16,7 +16,7 @@ function NewsItemRow({ item, onAsk }: { item: TaggedNewsItem; onAsk: (item: Tagg
   const isHigh = item.impact_level === "high";
   return (
     <div className={`rounded-lg border p-3 ${isHigh ? "border-ui-warning/40 bg-ui-warning/5" : "border-ui-line bg-ui-subtle"}`}>
-      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
         {item.polarity && (
           <span className={`rounded border px-1.5 py-0.5 ${polarityClass(item.polarity)}`}>{POLARITY_CN[item.polarity]}</span>
         )}
@@ -32,7 +32,7 @@ function NewsItemRow({ item, onAsk }: { item: TaggedNewsItem; onAsk: (item: Tagg
       {item.interpretation && <p className="mt-1 text-xs text-ui-faint">{item.interpretation}</p>}
       <button
         onClick={() => onAsk(item)}
-        className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-ui-accent transition hover:text-ui-accent"
+        className="mt-1.5 inline-flex items-center gap-1 text-xs text-ui-accent transition hover:text-ui-accent"
       >
         <MessageCircleQuestion className="h-3 w-3" /> 问AI
       </button>

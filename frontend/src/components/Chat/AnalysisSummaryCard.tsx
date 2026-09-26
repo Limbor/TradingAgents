@@ -206,7 +206,7 @@ function PlanCard({ plan, title, tone, direction = "long" }: { plan: TradePlanSh
         </div>
       )}
       {isExit && hasLevels && (
-        <p className="mt-2 text-[11px] text-ui-faint">
+        <p className="mt-2 text-xs text-ui-faint">
           评级偏空：上方区间用于减仓/卖出，下方目标价用于继续减持、清仓或重新评估，不代表加仓。
         </p>
       )}
@@ -419,7 +419,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
         {symbol && (
           <button
             onClick={handleEnrollReflection}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-medium text-purple-300 transition hover:bg-purple-500/20"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-info/30 bg-ui-info/10 px-3 py-1.5 text-xs font-medium text-ui-info transition hover:bg-ui-info/20"
           >
             <Bell className="h-3.5 w-3.5" />
             加入反思

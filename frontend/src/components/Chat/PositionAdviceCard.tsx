@@ -59,7 +59,7 @@ export function PositionAdviceCard({ advice }: { advice: Advice }) {
               },
             },
           })}
-          className="mt-3 rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs font-medium text-indigo-200 transition hover:bg-indigo-500/20"
+          className="mt-3 rounded border border-ui-info/30 bg-ui-info/10 px-3 py-2 text-xs font-medium text-ui-info transition hover:bg-ui-info/20"
         >
           前往 Portfolio 确认{action === "ADD" ? "加仓" : action === "EXIT" ? "清仓" : "减仓"}
         </button>

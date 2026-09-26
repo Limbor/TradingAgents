@@ -26,7 +26,7 @@ export function CaseInspector({ messages, paperSessionId, running }: CaseInspect
   return (
     <aside aria-label="任务证据与方案" className="flex min-h-0 flex-col rounded-2xl border border-ui-line bg-ui-panel/80">
       <div className="flex items-center justify-between border-b border-ui-line px-4 py-4">
-        <div><p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-ui-accent">Case file</p><h3 className="mt-1 font-semibold">任务档案</h3></div>
+        <div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-ui-accent">Case file</p><h3 className="mt-1 font-semibold">任务档案</h3></div>
         <span className={`rounded-full px-2.5 py-1 text-xs ${running ? "bg-ui-warning/10 text-ui-warning" : "bg-ui-accent/10 text-ui-accent"}`}>{running ? "分析中" : "待命"}</span>
       </div>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">

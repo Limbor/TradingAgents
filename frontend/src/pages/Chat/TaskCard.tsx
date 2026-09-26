@@ -585,7 +585,7 @@ function StepRow({ step }: { step: ChatTaskStep }) {
       <div className="min-w-0">
         <span className="text-ui-body">{step.label}</span>
         {detail && (
-          <span className="ml-2 break-all font-mono text-[11px] text-ui-faint" title={detail}>
+          <span className="ml-2 break-all font-mono text-xs text-ui-faint" title={detail}>
             {truncated}
           </span>
         )}
@@ -645,7 +645,7 @@ export function StepTimeline({
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-ui-accent" />
           <span className="min-w-0 truncate text-ui-ink">{latest.label}</span>
           <span className="ml-auto shrink-0 font-mono text-ui-faint">{duration}</span>
-          <span className="shrink-0 rounded border border-ui-strong px-1.5 py-0.5 text-[10px] text-ui-muted">
+          <span className="shrink-0 rounded border border-ui-strong px-1.5 py-0.5 text-xs text-ui-muted">
             第 {steps.length} 步
           </span>
         </div>

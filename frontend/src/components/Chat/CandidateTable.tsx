@@ -108,7 +108,7 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
             <div className="min-w-0 flex-1">
               <span className="font-medium">数据窗口</span>
               {sessionState && (
-                <span className="ml-2 rounded bg-ui-info/20 px-1.5 py-0.5 font-mono text-[10px] text-ui-info">
+                <span className="ml-2 rounded bg-ui-info/20 px-1.5 py-0.5 font-mono text-xs text-ui-info">
                   {sessionLabel(sessionState)}
                 </span>
               )}
@@ -212,7 +212,7 @@ export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote,
                   )}
                   {row.strategyScores && (
                     <div
-                      className="mt-0.5 whitespace-nowrap text-[10px] text-ui-faint"
+                      className="mt-0.5 whitespace-nowrap text-xs text-ui-faint"
                       title={`当前采用${strategySleeveLabel(row.activeSleeve)}评分；括号内为因子覆盖率`}
                     >
                       进 {formatStrategyScore(row.strategyScores.attackScore, row.strategyScores.attackCoverage)}
@@ -356,7 +356,7 @@ function CandidateExpanded({
           tone="purple"
         />
         {row.lessonAdjustmentReason && (
-          <div className="rounded border border-purple-500/20 bg-purple-500/5 p-2 text-purple-200">
+          <div className="rounded border border-ui-info/20 bg-ui-info/5 p-2 text-ui-info">
             {row.lessonAdjustmentReason}
           </div>
         )}
@@ -611,7 +611,7 @@ function InfoBlock({ title, children, empty }: { title: string; children?: strin
 }
 
 function ListBlock({ title, items, empty, tone }: { title: string; items?: string[]; empty: string; tone: "emerald" | "amber" | "purple" }) {
-  const color = tone === "emerald" ? "text-ui-success" : tone === "amber" ? "text-ui-warning" : "text-purple-300";
+  const color = tone === "emerald" ? "text-ui-success" : tone === "amber" ? "text-ui-warning" : "text-ui-info";
   const values = (items ?? []).filter(Boolean);
   return (
     <div className="rounded border border-ui-line bg-ui-panel p-2">
