@@ -57,7 +57,11 @@ test("uncertain paper action can be reconciled without another approval", async 
   const proposal = () => ({ id: "proposal-2", task_id: "task-2", action_type: "advance_paper_day",
     session_id: "paper:one", args: { target_date: "2026-09-28" },
     baseline: { as_of_date: "2026-09-25", equity: 100000 }, status: "unknown",
-    result: checks ? { job_id: "job:lost", observed_date: "2026-09-28", job_error: "Job not found" } : { job_id: "job:lost" },
+    result: checks ? { job_id: "job:lost", observed_date: "2026-09-28", job_error: "Job not found",
+      child_ledgers: [
+        { session_id: "paper:child-one", as_of_date: "2026-09-28", equity: 110000, error: null },
+        { session_id: "paper:child-two", as_of_date: "2026-09-25", equity: 90000, error: "读取超时" },
+      ] } : { job_id: "job:lost" },
     expires_at: "2026-09-25T08:15:00Z" });
   const detail = () => ({ ...conversation,
     messages: [{ id: "m1", conversation_id: conversation.id, task_id: "task-2", role: "user",
@@ -82,6 +86,10 @@ test("uncertain paper action can be reconciled without another approval", async 
   await page.getByRole("button", { name: "核对执行结果" }).click();
   await expect.poll(() => checks).toBe(1);
   await expect(page.getByText("最近核对的账本日期：2026-09-28")).toBeVisible();
+  await expect(page.getByText("子策略账本核对")).toBeVisible();
+  await expect(page.getByText("基准日 2026-09-28")).toBeVisible();
+  await expect(page.getByText("读取超时")).toBeVisible();
+  await expect(page.getByRole("link", { name: "查看账本" }).first()).toHaveAttribute("href", "/paper?session=paper%3Achild-one");
   await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
 });
 

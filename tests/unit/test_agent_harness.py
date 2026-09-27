@@ -1413,26 +1413,54 @@ async def test_failed_composite_job_keeps_child_advance_uncertain(tmp_path, monk
     calls = []
 
     async def paper_request(config, method, path, payload=None):
-        calls.append(method)
+        calls.append((method, path))
         if method == "POST":
             return {"job_id": "job:composite-partial"}
         if path.startswith("/api/jobs/"):
             return {"state": "error", "message": "组合账户版本已变化"}
+        if path == "/api/v2/paper/paper:child-one/status":
+            return {"data": {"session": {"session_id": "paper:child-one", "last_date": "2026-09-26"},
+                             "snapshot": {"as_of_date": "2026-09-26", "equity": 110000}}}
+        if path == "/api/v2/paper/paper:child-two/status":
+            return {"data": {"session": {"session_id": "paper:child-two", "last_date": "2026-09-25"},
+                             "snapshot": {"as_of_date": "2026-09-25", "equity": 90000}}}
         ledger = _paper_status()["data"]
         ledger["kind"] = "composite"
+        if store.get_proposal(proposal["id"])["status"] != "executing":
+            ledger["session"]["params"] = {"child_session_ids": ["paper:child-one", "paper:child-two"]}
         return {"data": ledger}
 
     monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
     harness.approve(proposal["id"])
     await harness._active[task["id"]]
     result = store.get_proposal(proposal["id"])
-    assert calls.count("POST") == 1
+    assert sum(method == "POST" for method, _ in calls) == 1
     assert result["status"] == "unknown"
     assert result["result"]["job_id"] == "job:composite-partial"
     assert "子策略账本可能已推进" in result["result"]["error"]
+    assert [(item["session_id"], item["as_of_date"]) for item in result["result"]["child_ledgers"]] == [
+        ("paper:child-one", "2026-09-26"), ("paper:child-two", "2026-09-25")]
     assert store.get_task(task["id"])["status"] == "needs_review"
     assert (await harness.reconcile(proposal["id"]))["status"] == "unknown"
-    assert calls.count("POST") == 1
+    assert sum(method == "POST" for method, _ in calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_composite_child_audit_rejects_unsafe_account_ids(tmp_path, monkeypatch):
+    harness, _, _, _ = await _proposed_advance(tmp_path)
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append((method, path))
+        raise AssertionError("不应读取未经验证的子策略账户")
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    observed, error = await harness._read_composite_child_ledgers({
+        "session": {"params": {"child_session_ids": ["paper:child-one", "../other"]}}
+    }, "paper:advance")
+    assert observed == []
+    assert "未提供可核对" in error
+    assert calls == []
 
 
 @pytest.mark.asyncio

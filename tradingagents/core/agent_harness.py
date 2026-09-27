@@ -657,6 +657,10 @@ class TradingAgentHarness:
                 state = str(job.get("state") or "").lower() if job else None
                 composite_failed = bool(job and state in {"failed", "error", "cancelled"}
                                         and not ledger_error and ledger.get("kind") == "composite")
+                child_ledgers, child_audit_error = (
+                    await self._read_composite_child_ledgers(ledger, proposal["session_id"])
+                    if composite_failed else ([], None)
+                )
                 review_reason = ("组合模拟盘作业失败，但子策略账本可能已推进。请逐一核对组合账户与子策略账户，勿重复提交。"
                                  if composite_failed else "执行结果仍待核对")
                 result = {**proposal["result"], "observed_date": observed_date,
@@ -665,6 +669,8 @@ class TradingAgentHarness:
                 if composite_failed:
                     result["error"] = review_reason
                     result["job_message"] = str(job.get("message") or "")[:500]
+                    result["child_ledgers"] = child_ledgers
+                    result["child_audit_error"] = child_audit_error
                 self.store.set_proposal_status(proposal_id, "unknown", result)
                 self.store.set_status(task["id"], "needs_review", error=review_reason)
                 self.store.event(task["id"], "action_reconciled", {
@@ -672,8 +678,48 @@ class TradingAgentHarness:
                     "observed_date": observed_date, "job_error": job_error,
                     "ledger_error": ledger_error,
                     "review_reason": review_reason if composite_failed else None,
+                    "child_ledgers": child_ledgers if composite_failed else None,
+                    "child_audit_error": child_audit_error,
                 })
             return self.store.get_proposal(proposal_id) or proposal
+
+    async def _read_composite_child_ledgers(self, ledger: dict,
+                                            parent_id: str) -> tuple[list[dict], str | None]:
+        """Collect bounded, read-only child observations after a composite failure."""
+        from tradingagents.core.stockmanager_paper import PaperServiceError, paper_request
+
+        session = ledger.get("session") or {}
+        params = session.get("params") if isinstance(session, dict) else None
+        child_ids = params.get("child_session_ids") if isinstance(params, dict) else None
+        if (not isinstance(child_ids, list) or not 1 <= len(child_ids) <= 8 or
+                any(not isinstance(value, str) or not _PAPER_ID.fullmatch(value)
+                    or ".." in value or value == parent_id for value in child_ids) or
+                len(set(child_ids)) != len(child_ids)):
+            return [], "组合账户未提供可核对的子策略账户列表"
+
+        async def read(child_id: str) -> dict:
+            try:
+                response = await asyncio.wait_for(paper_request(
+                    self.config, "GET", f"/api/v2/paper/{child_id}/status"
+                ), timeout=10)
+                child = response.get("data") if isinstance(response.get("data"), dict) else {}
+                child_session = child.get("session") if isinstance(child.get("session"), dict) else {}
+                snapshot = child.get("snapshot") if isinstance(child.get("snapshot"), dict) else {}
+                returned_id = child_session.get("session_id")
+                conflicts = paper_ledger_conflicts(child_id, child)
+                if returned_id != child_id:
+                    conflicts.append("子策略账本账户与请求账户不一致")
+                as_of_date = snapshot.get("as_of_date") or child_session.get("last_date")
+                if not as_of_date:
+                    conflicts.append("子策略账本缺少基准日")
+                return {"session_id": child_id, "as_of_date": as_of_date,
+                        "equity": snapshot.get("equity"),
+                        "error": "；".join(conflicts) if conflicts else None}
+            except (PaperServiceError, TimeoutError) as exc:
+                return {"session_id": child_id, "as_of_date": None,
+                        "equity": None, "error": str(exc)}
+
+        return list(await asyncio.gather(*(read(child_id) for child_id in child_ids))), None
 
     def _finish_paper_action(self, proposal: dict, job: dict, ledger: dict) -> None:
         """Accept success only when the job receipt and this account's ledger agree."""

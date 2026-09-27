@@ -88,6 +88,8 @@ function ProposalCard({ task, busy, onApprove, onReject, onReconcile }: {
 }) {
   const proposal = task.proposal;
   if (!proposal) return null;
+  const childLedgers = Array.isArray(proposal.result.child_ledgers)
+    ? proposal.result.child_ledgers.map(asObject).filter((item) => typeof item.session_id === "string") : [];
   return <div className="mt-3 rounded-md border border-ui-strong bg-ui-panel p-4 text-sm">
     <div className="flex items-center justify-between"><strong>模拟盘动作预览</strong><span className="text-xs text-ui-muted">{proposalStatusText[proposal.status] ?? proposal.status}</span></div>
     <div className="mt-3 grid grid-cols-2 gap-3 text-xs"><div><span className="block text-ui-faint">目标账户</span><strong className="mt-1 block break-all font-medium">{proposal.session_id}</strong></div><div><span className="block text-ui-faint">目标日期</span><strong className="mt-1 block font-medium">{proposal.args.target_date}</strong></div><div><span className="block text-ui-faint">当前基准日</span><strong className="mt-1 block font-medium">{proposal.baseline.as_of_date}</strong></div><div><span className="block text-ui-faint">当前权益</span><strong className="mt-1 block font-medium">{proposal.baseline.equity == null ? "—" : `¥${Number(proposal.baseline.equity).toLocaleString("zh-CN")}`}</strong></div></div>
@@ -95,7 +97,23 @@ function ProposalCard({ task, busy, onApprove, onReject, onReconcile }: {
     {proposal.status === "pending" && <div className="mt-4 flex gap-2"><button disabled={busy} onClick={onApprove} className="rounded-md bg-ui-accent px-3 py-1.5 text-xs font-medium text-ui-onAccent disabled:opacity-50">确认推进</button><button disabled={busy} onClick={onReject} className="rounded-md border border-ui-strong px-3 py-1.5 text-xs text-ui-body disabled:opacity-50">取消提案</button></div>}
     {proposal.status === "no_change" && <p role="status" className="mt-3 text-xs leading-5 text-ui-warning">StockManager 作业已结束，但账本日期仍为 {String(proposal.result.as_of_date || proposal.baseline.as_of_date)}；目标日期 {proposal.args.target_date} 尚未达到。</p>}
     {proposal.status === "stale" && <p role="status" className="mt-3 text-xs leading-5 text-ui-warning">确认前账户账本已变化，原提案失效且未执行。请重新核对账户后提出请求。</p>}
-    {(proposal.status === "unknown" || task.status === "needs_review") && <div className="mt-3 space-y-2 text-xs text-ui-warning"><p>执行结果待核对{proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。</p>{typeof proposal.result?.observed_date === "string" && <p>最近核对的账本日期：{proposal.result.observed_date}</p>}{typeof proposal.result?.error === "string" && <p>{proposal.result.error}</p>}<button disabled={busy} onClick={onReconcile} className="rounded-md border border-ui-warning px-3 py-1.5 font-medium disabled:opacity-50">核对执行结果</button></div>}
+    {(proposal.status === "unknown" || task.status === "needs_review") && <div className="mt-3 space-y-2 text-xs text-ui-warning">
+      <p>执行结果待核对{proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。</p>
+      {typeof proposal.result?.observed_date === "string" && <p>最近核对的账本日期：{proposal.result.observed_date}</p>}
+      {typeof proposal.result?.error === "string" && <p>{proposal.result.error}</p>}
+      {(childLedgers.length > 0 || typeof proposal.result.child_audit_error === "string") && <div className="rounded border border-ui-warning/40 p-2">
+        <strong className="block font-medium">子策略账本核对</strong>
+        {childLedgers.map((item) => <div key={String(item.session_id)} className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="break-all">{String(item.session_id)}</span>
+          <span>{typeof item.as_of_date === "string" ? `基准日 ${item.as_of_date}` : "基准日未知"}</span>
+          {typeof item.equity === "number" && <span>权益 ¥{item.equity.toLocaleString("zh-CN")}</span>}
+          {typeof item.error === "string" && <span>{item.error}</span>}
+          <Link to={`/paper?session=${encodeURIComponent(String(item.session_id))}`} className="underline underline-offset-2">查看账本</Link>
+        </div>)}
+        {typeof proposal.result.child_audit_error === "string" && <p className="mt-2">{proposal.result.child_audit_error}</p>}
+      </div>}
+      <button disabled={busy} onClick={onReconcile} className="rounded-md border border-ui-warning px-3 py-1.5 font-medium disabled:opacity-50">核对执行结果</button>
+    </div>}
   </div>;
 }
 
