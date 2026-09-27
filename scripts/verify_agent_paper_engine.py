@@ -125,7 +125,53 @@ async def wait_task(client: httpx.AsyncClient, task_id: str, statuses: set[str])
     raise RuntimeError(f"Agent task {task_id} did not reach {statuses}")
 
 
-async def main(*, with_model: bool = False) -> None:
+async def verify_browser(trading_port: int, session_id: str, equity: float,
+                         screenshot: Path | None) -> None:
+    frontend_root = Path(__file__).resolve().parents[1] / "frontend"
+    frontend_port = free_local_port()
+    frontend_env = {key: value for key, value in os.environ.items()
+                    if key in {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"}}
+    frontend_env["VITE_BACKEND_PROXY_TARGET"] = f"http://127.0.0.1:{trading_port}"
+    vite = subprocess.Popen(
+        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port",
+         str(frontend_port), "--strictPort"], cwd=frontend_root, env=frontend_env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        await wait_http(f"http://127.0.0.1:{frontend_port}/")
+        browser_env = {**frontend_env,
+                       "REAL_PAPER_URL": f"http://127.0.0.1:{frontend_port}",
+                       "REAL_PAPER_SESSION": session_id,
+                       "REAL_PAPER_EQUITY": f"{equity:,.2f}"}
+        if screenshot:
+            browser_env["REAL_PAPER_SCREENSHOT"] = str(screenshot)
+        browser = await asyncio.create_subprocess_exec(
+            "node", str(frontend_root / "e2e/real-paper-check.mjs"),
+            cwd=frontend_root, env=browser_env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(browser.communicate(), timeout=90)
+        except asyncio.TimeoutError:
+            browser.kill()
+            await browser.communicate()
+            raise RuntimeError("real browser paper check timed out") from None
+        if browser.returncode:
+            raise RuntimeError(f"real browser paper check failed:\n{stderr.decode()[-4000:]}")
+        print(stdout.decode().strip())
+    finally:
+        vite.terminate()
+        try:
+            _, stderr = vite.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            vite.kill()
+            _, stderr = vite.communicate()
+        if vite.returncode not in {0, -15}:
+            print(stderr[-3000:], file=sys.stderr)
+
+
+async def main(*, with_model: bool = False, with_browser: bool = False,
+               screenshot: Path | None = None) -> None:
     if not (STOCK_SOURCE / "stockmanager").is_dir() or not STOCK_PYTHON.is_file():
         raise RuntimeError(f"StockManager checkout and virtualenv required: {STOCK_SOURCE}")
     config_path = STOCK_SOURCE / "config" / f"{CONFIG_NAME}.json"
@@ -267,6 +313,9 @@ async def main(*, with_model: bool = False) -> None:
                     print(json.dumps({"model_task_status": read_task["status"],
                                       "plan_source": plan_events[0]["payload"]["source"],
                                       "model_answer": answer}, ensure_ascii=False))
+                if with_browser:
+                    await verify_browser(trading_port, session_id,
+                                         after["snapshot"]["equity"], screenshot)
         finally:
             if trading_server and trading_task:
                 trading_server.should_exit = True
@@ -286,4 +335,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--with-model", action="store_true",
                         help="Also check a read-only Agent answer using DeepSeek on synthetic data")
-    asyncio.run(main(with_model=parser.parse_args().with_model))
+    parser.add_argument("--with-browser", action="store_true",
+                        help="Also check the real Paper and Agent UI in a local browser")
+    parser.add_argument("--screenshot", type=Path,
+                        help="Save a browser screenshot; implies --with-browser")
+    args = parser.parse_args()
+    asyncio.run(main(with_model=args.with_model,
+                     with_browser=args.with_browser or args.screenshot is not None,
+                     screenshot=args.screenshot.resolve() if args.screenshot else None))

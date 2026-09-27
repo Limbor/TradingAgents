@@ -950,8 +950,10 @@ class TradingAgentHarness:
             self.store.event(task_id, "action_no_change", result)
             return
         self.store.set_proposal_status(proposal["id"], "completed", result)
+        equity_text = (f"¥{result['equity']:,.2f}"
+                       if isinstance(result["equity"], (int, float)) else "未知")
         content = (f"模拟盘推进任务已完成。账本基准日：{observed_date}；"
-                   f"账户权益：{result['equity'] if result['equity'] is not None else '未知'}。"
+                   f"账户权益：{equity_text}。"
                    "请以 StockManager 账本中的成交和持仓为准。")
         self.store.set_status(task_id, "completed", result={"content": content, "action": result})
         self.store.add_message(self.store.get_task(task_id)["conversation_id"], "assistant", content, task_id)

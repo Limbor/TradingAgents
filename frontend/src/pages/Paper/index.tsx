@@ -17,6 +17,8 @@ const money = (value: number | null | undefined) =>
   value == null ? "—" : `¥${Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
 const percent = (value: number | null | undefined) =>
   value == null ? "—" : `${(value * 100).toFixed(2)}%`;
+const chartDate = (value: string | number) => String(value).slice(0, 10);
+const axisDate = (value: string | number) => chartDate(value).slice(5);
 const card = "rounded-xl border border-ui-line bg-ui-panel p-4";
 type ActiveJob = PaperJob & { sessionId: string };
 
@@ -305,7 +307,7 @@ export default function Paper() {
 
         <section className={card}>
           <div className="mb-3 flex items-center justify-between"><h2 className="font-medium">净值曲线</h2><span className="text-xs text-ui-faint">{daily.length} 个交易日</span></div>
-          {daily.length > 0 ? <div className="h-56"><ResponsiveContainer width="100%" height="100%"><LineChart data={daily}><CartesianGrid stroke="rgb(var(--ui-line))" strokeDasharray="3 3" /><XAxis dataKey="date" tick={{ fill: "rgb(var(--ui-muted))", fontSize: 12 }} minTickGap={28} /><YAxis tick={{ fill: "rgb(var(--ui-muted))", fontSize: 12 }} domain={["auto", "auto"]} width={75} /><Tooltip contentStyle={{ backgroundColor: "rgb(var(--ui-panel))", color: "rgb(var(--ui-ink))", border: "1px solid rgb(var(--ui-strong))", borderRadius: 6 }} formatter={(value) => money(Number(value))} /><Line type="monotone" dataKey="equity" stroke="rgb(var(--ui-accent))" strokeWidth={2} dot={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div> : <p className="py-8 text-center text-sm text-ui-faint">推进到交易日后显示净值曲线</p>}
+          {daily.length > 0 ? <div className="h-56"><ResponsiveContainer width="100%" height="100%"><LineChart data={daily}><CartesianGrid stroke="rgb(var(--ui-line))" strokeDasharray="3 3" /><XAxis dataKey="date" tick={{ fill: "rgb(var(--ui-muted))", fontSize: 12 }} tickFormatter={axisDate} minTickGap={48} /><YAxis tick={{ fill: "rgb(var(--ui-muted))", fontSize: 12 }} domain={["auto", "auto"]} width={75} /><Tooltip contentStyle={{ backgroundColor: "rgb(var(--ui-panel))", color: "rgb(var(--ui-ink))", border: "1px solid rgb(var(--ui-strong))", borderRadius: 6 }} labelFormatter={chartDate} formatter={(value) => money(Number(value))} /><Line type="monotone" dataKey="equity" stroke="rgb(var(--ui-accent))" strokeWidth={2} dot={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div> : <p className="py-8 text-center text-sm text-ui-faint">推进到交易日后显示净值曲线</p>}
         </section>
 
         <div className="grid gap-4 2xl:grid-cols-2">
