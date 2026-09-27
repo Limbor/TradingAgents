@@ -646,22 +646,32 @@ class TradingAgentHarness:
 
             if job and str(job.get("state") or "").lower() in {"success", "completed"} and not ledger_error:
                 self._finish_paper_action(proposal, job, ledger)
-            elif job and str(job.get("state") or "").lower() in {"failed", "error", "cancelled"} and not ledger_error and observed_date == proposal["baseline"].get("as_of_date"):
+            elif (job and str(job.get("state") or "").lower() in {"failed", "error", "cancelled"}
+                  and not ledger_error and observed_date == proposal["baseline"].get("as_of_date")
+                  and ledger.get("kind") != "composite"):
                 message = str(job.get("message") or job.get("state"))[:500]
                 self.store.set_proposal_status(proposal_id, "failed", {**proposal["result"], "error": message, "observed_date": observed_date})
                 self.store.set_status(task["id"], "failed", error=message)
                 self.store.event(task["id"], "action_failed", {"job_id": job_id, "message": message})
             else:
                 state = str(job.get("state") or "").lower() if job else None
+                composite_failed = bool(job and state in {"failed", "error", "cancelled"}
+                                        and not ledger_error and ledger.get("kind") == "composite")
+                review_reason = ("组合模拟盘作业失败，但子策略账本可能已推进。请逐一核对组合账户与子策略账户，勿重复提交。"
+                                 if composite_failed else "执行结果仍待核对")
                 result = {**proposal["result"], "observed_date": observed_date,
                           "job_state": state, "job_error": job_error, "ledger_error": ledger_error,
                           "checked_at": _now()}
+                if composite_failed:
+                    result["error"] = review_reason
+                    result["job_message"] = str(job.get("message") or "")[:500]
                 self.store.set_proposal_status(proposal_id, "unknown", result)
-                self.store.set_status(task["id"], "needs_review", error="执行结果仍待核对")
+                self.store.set_status(task["id"], "needs_review", error=review_reason)
                 self.store.event(task["id"], "action_reconciled", {
                     "proposal_id": proposal_id, "job_state": state,
                     "observed_date": observed_date, "job_error": job_error,
                     "ledger_error": ledger_error,
+                    "review_reason": review_reason if composite_failed else None,
                 })
             return self.store.get_proposal(proposal_id) or proposal
 

@@ -1408,6 +1408,34 @@ async def test_failed_job_with_changed_ledger_needs_review(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_failed_composite_job_keeps_child_advance_uncertain(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append(method)
+        if method == "POST":
+            return {"job_id": "job:composite-partial"}
+        if path.startswith("/api/jobs/"):
+            return {"state": "error", "message": "组合账户版本已变化"}
+        ledger = _paper_status()["data"]
+        ledger["kind"] = "composite"
+        return {"data": ledger}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    result = store.get_proposal(proposal["id"])
+    assert calls.count("POST") == 1
+    assert result["status"] == "unknown"
+    assert result["result"]["job_id"] == "job:composite-partial"
+    assert "子策略账本可能已推进" in result["result"]["error"]
+    assert store.get_task(task["id"])["status"] == "needs_review"
+    assert (await harness.reconcile(proposal["id"]))["status"] == "unknown"
+    assert calls.count("POST") == 1
+
+
+@pytest.mark.asyncio
 async def test_successful_non_trading_target_uses_receipt_date(tmp_path, monkeypatch):
     harness, store, task, proposal = await _proposed_advance(tmp_path)
 
