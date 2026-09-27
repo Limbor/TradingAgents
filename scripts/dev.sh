@@ -340,6 +340,10 @@ start_stockmanager_web() {
     return 0
   fi
   if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
+    if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1; then
+      error "现有 StockManager Web 进程缺少新版模拟盘接口；请先重启该进程，再启动 TradingAgents"
+      return 1
+    fi
     info "StockManager Web 已就绪，复用现有服务 → $STOCKMANAGER_WEB_URL"
     if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/allocator-configs" >/dev/null 2>&1; then
       warn "现有 StockManager Web 进程未加载组合配置接口；请重启该进程后使用组合会话创建"
@@ -347,12 +351,12 @@ start_stockmanager_web() {
     return 0
   fi
   if port_in_use "$STOCKMANAGER_WEB_PORT"; then
-    warn "StockManager Web 端口 $STOCKMANAGER_WEB_PORT 已被其他服务占用，但健康检查失败"
-    return 0
+    error "StockManager Web 端口 $STOCKMANAGER_WEB_PORT 已被其他服务占用，但健康检查失败"
+    return 1
   fi
   if [ ! -x "$STOCKMANAGER_ROOT/.venv/bin/python" ]; then
-    warn "未找到 StockManager 虚拟环境: $STOCKMANAGER_ROOT/.venv/bin/python"
-    return 0
+    error "未找到 StockManager 虚拟环境: $STOCKMANAGER_ROOT/.venv/bin/python"
+    return 1
   fi
 
   info "启动 StockManager Web → $STOCKMANAGER_WEB_URL"
@@ -368,19 +372,25 @@ start_stockmanager_web() {
   local i=0
   while [ $i -lt 120 ]; do
     if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
+      if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1; then
+        error "StockManager Web 已启动但缺少新版模拟盘接口；请检查 $STOCKMANAGER_LOG"
+        stop_stockmanager_web
+        return 1
+      fi
       info "StockManager Web 就绪 ✓ (PID: $pid)"
       return 0
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
-      warn "StockManager Web 启动失败，查看日志: $STOCKMANAGER_LOG"
+      error "StockManager Web 启动失败，查看日志: $STOCKMANAGER_LOG"
       tail -20 "$STOCKMANAGER_LOG" 2>/dev/null || true
       rm -f "$STOCKMANAGER_PID_FILE"
-      return 0
+      return 1
     fi
     sleep 0.5
     i=$((i + 1))
   done
-  warn "StockManager Web 启动超时，查看日志: $STOCKMANAGER_LOG"
+  error "StockManager Web 启动超时，查看日志: $STOCKMANAGER_LOG"
+  return 1
 }
 
 stop_stockmanager_web() {
@@ -546,7 +556,11 @@ cmd_status() {
     echo -e "  ${RED}○${NC} 前端  未运行"
   fi
   if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
-    echo -e "  ${GREEN}●${NC} StockManager Web  $STOCKMANAGER_WEB_URL  状态: healthy"
+    if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1; then
+      echo -e "  ${GREEN}●${NC} StockManager Web  $STOCKMANAGER_WEB_URL  状态: healthy"
+    else
+      echo -e "  ${YELLOW}●${NC} StockManager Web  $STOCKMANAGER_WEB_URL  状态: 旧进程，需重启"
+    fi
   else
     echo -e "  ${RED}○${NC} StockManager Web  $STOCKMANAGER_WEB_URL  未连接"
   fi

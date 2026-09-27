@@ -153,6 +153,9 @@ async def main() -> None:
 
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{trading_port}", timeout=10) as ta, \
                     httpx.AsyncClient(base_url=f"http://127.0.0.1:{stock_port}", timeout=10) as sm:
+                capabilities = await sm.get("/api/v2/paper/capabilities")
+                assert capabilities.status_code == 200, capabilities.text
+                assert capabilities.json()["proposal_receipts"] is True
                 created = await ta.post("/api/v1/agent/conversations", json={
                     "paper_session_id": "paper:synthetic"})
                 assert created.status_code == 201, created.text
