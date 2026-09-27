@@ -87,7 +87,7 @@ class TestLightweightToolHandlers:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("plan, expected_current", [
-        ({"signal_date": "2026-09-25", "items": []}, None),
+        ({"signal_date": "2026-09-25", "items": []}, True),
         ({"signal_date": "2026-09-24", "items": []}, False),
         ({"signal_date": None, "items": [], "error": "engine build failed"}, False),
         (None, False),
@@ -136,6 +136,7 @@ class TestLightweightToolHandlers:
         monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
         result = await make_get_paper_session({})("paper:mine")
         assert result["freshness"]["is_active_plan_current"] is False
+        assert any("不是最新版本" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio
     async def test_get_portfolio_summary_with_holdings(self):

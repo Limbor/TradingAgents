@@ -100,9 +100,14 @@ def make_get_paper_session(config: dict[str, Any]):
         ledger_date = snapshot.get("as_of_date") or status.get("session", {}).get("last_date")
         freshness = status.get("freshness")
         freshness = dict(freshness) if isinstance(freshness, dict) else {}
-        if not _paper_plan_current(plan, ledger_date):
+        plan_current = _paper_plan_current(plan, ledger_date)
+        if not plan_current:
             freshness["is_active_plan_current"] = False
             warnings.append("下一日计划缺失、出错或基准日与账本不一致，不能作为当前交易依据")
+        elif freshness.get("is_active_plan_current") is False:
+            warnings.append("StockManager 标记下一日计划不是最新版本，不能作为当前交易依据")
+        else:
+            freshness["is_active_plan_current"] = True
         if status.get("caveat"):
             warnings.append(status["caveat"])
         return {
