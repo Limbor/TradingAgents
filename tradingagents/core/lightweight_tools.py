@@ -111,6 +111,7 @@ def make_get_paper_session(config: dict[str, Any]):
             "source": "StockManager strategy paper ledger",
             "session": status.get("session"),
             "snapshot": snapshot,
+            "state_fingerprint": status.get("state_fingerprint"),
             "decision": status.get("decision"),
             "recent_decisions": (status.get("decisions") or [])[-5:],
             "readiness": status.get("readiness"),

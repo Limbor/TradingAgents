@@ -1062,12 +1062,14 @@ async def test_model_plan_allows_one_registered_analysis_skill(tmp_path):
 
 async def _proposed_advance(tmp_path):
     async def paper(session_id):
-        return {"session_id": session_id, "source": "StockManager ledger",
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
                 "as_of_date": "2026-09-25",
                 "session": {"session_id": session_id, "strategy_hash": "strategy:v1",
                             "config_hash": "config:v1"},
                 "snapshot": {"as_of_date": "2026-09-25", "equity": 100000,
                              "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
 
     harness, store = _harness(tmp_path, paper_handler=paper)
     conversation = store.create_conversation("推进测试", "paper:advance")
@@ -1081,12 +1083,14 @@ async def _proposed_advance(tmp_path):
 
 def _paper_status(as_of_date="2026-09-25", *, equity=100000, cash=100000,
                   positions=None, strategy_hash="strategy:v1"):
-    return {"data": {
+    ledger = {
         "session": {"session_id": "paper:advance", "last_date": as_of_date,
                     "strategy_hash": strategy_hash, "config_hash": "config:v1"},
         "snapshot": {"as_of_date": as_of_date, "equity": equity, "cash": cash,
                      "positions": positions if positions is not None else {}},
-    }}
+    }
+    ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+    return {"data": ledger}
 
 
 def test_paper_fingerprint_ignores_display_enrichment_but_detects_account_change():

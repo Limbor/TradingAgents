@@ -49,18 +49,22 @@ store.put_snapshot(session_id, as_of_date="2026-09-24", equity=100000,
 store.put_next_plan(session_id, {"signal_date": "2026-09-24", "items": []})
 calls = []
 
-def synthetic_advance(self, session_id, *, target_date, skip_next_plan=False):
+def synthetic_advance(self, session_id, *, target_date, skip_next_plan=False,
+                      expected_state_fingerprint=None):
     calls.append((session_id, target_date))
     assert session_id == "paper:synthetic"
+    assert isinstance(expected_state_fingerprint, str) and len(expected_state_fingerprint) == 64
+    self.store.require_paper_state_fingerprint(session_id, expected_state_fingerprint)
     if target_date == "2026-09-26":
         assert self.store.get_session(session_id).last_date == "2026-09-25"
         return PaperAdvanceResult(session_id=session_id, advanced_days=0,
             last_date="2026-09-25", equity=101000, cash=101000,
             positions_count=0, new_trades=0)
     assert target_date == "2026-09-25"
-    self.store.set_last_date(session_id, target_date)
-    self.store.put_snapshot(session_id, as_of_date=target_date, equity=101000,
-        cash=101000, positions={}, engine_state={})
+    self.store.commit_paper_advance(session_id, expected_last_date="2026-09-24",
+        expected_state_fingerprint=expected_state_fingerprint,
+        as_of_date=target_date, equity=101000, cash=101000,
+        positions={}, engine_state={})
     self.store.put_next_plan(session_id, {"signal_date": target_date, "items": []})
     return PaperAdvanceResult(session_id=session_id, advanced_days=1,
         last_date=target_date, equity=101000, cash=101000,

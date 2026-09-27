@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tradingagents.api.app import create_app
+from tradingagents.core.agent_harness import _paper_state_fingerprint
 from tradingagents.core.stockmanager_paper import PaperServiceError
 from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -248,11 +249,13 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
     writes = []
 
     async def tool(session_id):
-        return {"session_id": session_id, "source": "StockManager ledger",
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
                 "as_of_date": "2026-09-25",
                 "session": {"session_id": session_id, "last_date": "2026-09-25"},
                 "snapshot": {"as_of_date": "2026-09-25", "equity": 100000,
                              "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
 
     async def paper_request(config, method, path, payload=None):
         if method == "POST":
@@ -260,11 +263,13 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
             return {"job_id": "job:api"}
         if path.endswith("/status"):
             as_of = "2026-09-28" if writes else "2026-09-25"
-            return {"data": {"session": {"session_id": "paper:api", "last_date": as_of},
-                             "snapshot": {"as_of_date": as_of,
-                                          "equity": 101000 if writes else 100000,
-                                          "cash": 101000 if writes else 100000,
-                                          "positions": {}}}}
+            ledger = {"session": {"session_id": "paper:api", "last_date": as_of},
+                      "snapshot": {"as_of_date": as_of,
+                                   "equity": 101000 if writes else 100000,
+                                   "cash": 101000 if writes else 100000,
+                                   "positions": {}}}
+            ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+            return {"data": ledger}
         return {"state": "success", "result": {"data": {
             "session_id": "paper:api", "last_date": "2026-09-28", "advanced_days": 1}}}
 
@@ -296,9 +301,10 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
                 break
             time.sleep(0.01)
         assert task["status"] == "completed"
-        assert writes == [{"target_date": "2026-09-28"}]
+        assert writes == [{"target_date": "2026-09-28",
+                           "expected_state_fingerprint": task["proposal"]["baseline"]["state_fingerprint"]}]
         checked = client.post(f"/api/v1/agent/proposals/{pid}/reconcile")
         assert checked.status_code == 200
         assert checked.json()["status"] == "completed"
-        assert writes == [{"target_date": "2026-09-28"}]
+        assert len(writes) == 1
         assert client.post("/api/v1/agent/proposals/missing/reconcile").status_code == 404

@@ -926,10 +926,12 @@ class TradingAgentHarness:
                         return
                     baseline = {"as_of_date": baseline_date,
                                 "equity": (evidence[0]["result"].get("snapshot") or {}).get("equity")}
-                    fingerprint = _paper_state_fingerprint(evidence[0]["result"])
-                    if not fingerprint:
-                        content = ("模拟盘账本缺少账户、资金或持仓快照，无法安全准备推进提案。"
-                                   "请先核对 StockManager 账本。")
+                    fingerprint = evidence[0]["result"].get("state_fingerprint")
+                    if (not isinstance(fingerprint, str) or
+                            not re.fullmatch(r"[0-9a-f]{64}", fingerprint) or
+                            fingerprint != _paper_state_fingerprint(evidence[0]["result"])):
+                        content = ("StockManager 账本缺少可核对的账户状态版本，无法安全准备推进提案。"
+                                   "请先检查模拟盘服务版本和账本。")
                         self.store.add_message(conversation["id"], "assistant", content, task_id)
                         self.store.set_status(task_id, "completed", result={"content": content,
                                                                               "read_only": True})
@@ -1454,7 +1456,8 @@ class TradingAgentHarness:
                 self.store.event(task_id, "action_stale", {"current_date": current_date})
                 return
             fingerprint = proposal["baseline"].get("state_fingerprint")
-            if not fingerprint or _paper_state_fingerprint(current) != fingerprint:
+            if (not fingerprint or current.get("state_fingerprint") != fingerprint or
+                    _paper_state_fingerprint(current) != fingerprint):
                 reason = "account_state_changed" if fingerprint else "missing_baseline"
                 self.store.set_proposal_status(proposal_id, "stale", {"current_date": current_date,
                                                                        "reason": reason})
@@ -1468,7 +1471,8 @@ class TradingAgentHarness:
                 return
             post_attempted = True
             response = await paper_request(
-                self.config, "POST", root + "/advance", proposal["args"]
+                self.config, "POST", root + "/advance",
+                {**proposal["args"], "expected_state_fingerprint": fingerprint},
             )
             job_id = str(response.get("job_id") or "")
             if not job_id or not _PAPER_ID.fullmatch(job_id) or ".." in job_id:
