@@ -1445,6 +1445,39 @@ async def test_reconcile_missing_job_keeps_unknown_and_reports_ledger(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_lost_post_response_recovers_durable_receipt_without_reposting(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "unknown")
+    store.set_status(task["id"], "needs_review")
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append((method, path))
+        assert method == "GET"
+        if path.endswith(f"/advance_requests/{proposal['id']}"):
+            return {"data": {
+                "client_request_id": proposal["id"], "session_id": "paper:advance",
+                "job_id": "job:recovered", "target_date": "2026-09-28",
+                "state": "completed", "result": {
+                    "session_id": "paper:advance", "last_date": "2026-09-28",
+                    "advanced_days": 1,
+                },
+            }}
+        return _paper_status("2026-09-28", equity=101_000, cash=101_000)
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    result = await harness.reconcile(proposal["id"])
+    assert result["status"] == "completed"
+    assert result["result"]["job_id"] == "job:recovered"
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert calls == [
+        ("GET", f"/api/v2/paper/paper:advance/advance_requests/{proposal['id']}"),
+        ("GET", "/api/v2/paper/paper:advance/status"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_success_receipt_must_match_account_ledger(tmp_path, monkeypatch):
     harness, store, task, proposal = await _proposed_advance(tmp_path)
 

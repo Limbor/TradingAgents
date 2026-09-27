@@ -645,11 +645,38 @@ class TradingAgentHarness:
             job_id = str(proposal["result"].get("job_id") or "")
             job = None
             job_error = None
+            receipt_state = None
             if job_id:
                 try:
                     job = await paper_request(self.config, "GET", f"/api/jobs/{job_id}")
                 except PaperServiceError as exc:
                     job_error = str(exc)
+            if not job:
+                try:
+                    receipt_response = await paper_request(
+                        self.config, "GET",
+                        f"/api/v2/paper/{proposal['session_id']}/advance_requests/{proposal_id}",
+                    )
+                except PaperServiceError:
+                    receipt_response = {}
+                receipt = receipt_response.get("data")
+                if (isinstance(receipt, dict)
+                        and receipt.get("client_request_id") == proposal_id
+                        and receipt.get("session_id") == proposal["session_id"]
+                        and receipt.get("target_date") == proposal["args"]["target_date"]
+                        and (not job_id or receipt.get("job_id") == job_id)
+                        and isinstance(receipt.get("job_id"), str)
+                        and _PAPER_ID.fullmatch(receipt["job_id"])):
+                    job_id = receipt["job_id"]
+                    receipt_state = receipt.get("state")
+                    if receipt_state == "completed" and isinstance(receipt.get("result"), dict):
+                        job = {"job_id": job_id, "state": "success",
+                               "result": {"data": receipt["result"]}}
+                    elif not proposal["result"].get("job_id"):
+                        try:
+                            job = await paper_request(self.config, "GET", f"/api/jobs/{job_id}")
+                        except PaperServiceError as exc:
+                            job_error = str(exc)
             try:
                 ledger = (await paper_request(
                     self.config, "GET", f"/api/v2/paper/{proposal['session_id']}/status"
@@ -696,7 +723,8 @@ class TradingAgentHarness:
                 )
                 review_reason = ("组合模拟盘作业失败，但子策略账本可能已推进。请逐一核对组合账户与子策略账户，勿重复提交。"
                                  if composite_failed else "执行结果仍待核对")
-                result = {**proposal["result"], "observed_date": observed_date,
+                result = {**proposal["result"], "job_id": job_id or None,
+                          "receipt_state": receipt_state, "observed_date": observed_date,
                           "observed_state_fingerprint": observed_fingerprint,
                           "baseline_state_unchanged": unchanged_account,
                           "job_state": state, "job_error": job_error, "ledger_error": ledger_error,
@@ -1631,7 +1659,8 @@ class TradingAgentHarness:
             post_attempted = True
             response = await paper_request(
                 self.config, "POST", root + "/advance",
-                {**proposal["args"], "expected_state_fingerprint": fingerprint},
+                {**proposal["args"], "expected_state_fingerprint": fingerprint,
+                 "client_request_id": proposal_id},
             )
             job_id = str(response.get("job_id") or "")
             if not job_id or not _PAPER_ID.fullmatch(job_id) or ".." in job_id:

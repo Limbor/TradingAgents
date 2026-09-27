@@ -302,7 +302,8 @@ def test_agent_proposal_api_requires_confirm_before_paper_write(tmp_path, monkey
             time.sleep(0.01)
         assert task["status"] == "completed"
         assert writes == [{"target_date": "2026-09-28",
-                           "expected_state_fingerprint": task["proposal"]["baseline"]["state_fingerprint"]}]
+                           "expected_state_fingerprint": task["proposal"]["baseline"]["state_fingerprint"],
+                           "client_request_id": pid}]
         checked = client.post(f"/api/v1/agent/proposals/{pid}/reconcile")
         assert checked.status_code == 200
         assert checked.json()["status"] == "completed"

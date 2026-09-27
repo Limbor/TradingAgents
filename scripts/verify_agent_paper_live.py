@@ -218,6 +218,23 @@ async def main() -> None:
                 calls = (await sm.get("/__test/advance_calls")).json()["calls"]
                 assert calls == [["paper:synthetic", "2026-09-25"],
                                  ["paper:synthetic", "2026-09-26"]], calls
+                receipt = await sm.get(
+                    f"/api/v2/paper/paper:synthetic/advance_requests/{proposal_id}"
+                )
+                assert receipt.status_code == 200, receipt.text
+                recorded = receipt.json()["data"]
+                assert recorded["job_id"] == task["proposal"]["result"]["job_id"]
+                assert recorded["state"] == "completed"
+                assert recorded["result"]["advanced_days"] == 1
+                replay = await sm.post("/api/v2/paper/paper:synthetic/advance", json={
+                    "target_date": "2026-09-25",
+                    "expected_state_fingerprint": task["proposal"]["baseline"]["state_fingerprint"],
+                    "client_request_id": proposal_id,
+                })
+                assert replay.status_code == 202, replay.text
+                assert replay.json()["job_id"] == recorded["job_id"]
+                assert replay.json()["replayed"] is True
+                assert (await sm.get("/__test/advance_calls")).json()["calls"] == calls
                 stale = await ta.post(f"/api/v1/agent/conversations/{cid}/tasks", json={
                     "message": "推进模拟盘到 2026-09-29"})
                 assert stale.status_code == 202, stale.text
