@@ -181,7 +181,7 @@ function EvidenceCard({ item }: { item: AgentEvidence }) {
   const failed = Boolean(item.result.error);
   const retrieved = new Date(item.retrieved_at);
   const status = failed ? "读取失败" : item.warnings.length ? "有数据提示" : "已取证";
-  const skillRunId = item.tool_name.startsWith("skill:") && typeof item.result.run_id === "string"
+  const skillRunId = (item.tool_name === "skill" || item.tool_name.startsWith("skill:")) && typeof item.result.run_id === "string"
     ? item.result.run_id : null;
   return <article className={`rounded-md border p-3 ${failed ? "border-ui-danger/40 bg-ui-danger/5" : "border-ui-line bg-ui-subtle"}`}>
     <div className="flex items-start gap-2">{failed ? <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-danger" /> : <Database className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-accent" />}<p className="min-w-0 flex-1 text-xs leading-5 text-ui-body">{item.summary}</p><span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${failed ? "bg-ui-danger/10 text-ui-danger" : item.warnings.length ? "bg-ui-warning/10 text-ui-warning" : "bg-ui-accentSoft text-ui-accent"}`}>{status}</span></div>

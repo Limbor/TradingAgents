@@ -379,7 +379,10 @@ class RunManager:
         run = self._runs.get(run_id)
         if run and run._task and not run._task.done():
             if run._skill is not None:
-                await run._skill.cancel()
+                # A broken cooperative hook must not prevent cancellation of
+                # the owning asyncio task.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(run._skill.cancel(), timeout=2.0)
             run._task.cancel()
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await asyncio.wait_for(run._task, timeout=2.0)

@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import uuid
@@ -1189,7 +1190,8 @@ class TradingAgentHarness:
                     return
                 if evidence:
                     content = await self._synthesize(goal, conversation["id"], evidence,
-                                                     tickers=tickers)
+                                                     tickers=tickers,
+                                                     required_skill_id=(intent_hint or {}).get("skill_id"))
                 else:
                     self.store.event(task_id, "step_started", plan[0])
                     content = await self._delegate_chat(task_id, goal, conversation)
@@ -1501,7 +1503,8 @@ class TradingAgentHarness:
         return plan
 
     async def _synthesize(self, goal: str, conversation_id: str, evidence: list[dict], *,
-                          tickers: list[str] | None = None) -> str:
+                          tickers: list[str] | None = None,
+                          required_skill_id: str | None = None) -> str:
         evidence = _latest_evidence(evidence)
         selected_tickers = tickers if tickers is not None else self._goal_tickers(goal)
         conversation = self.store.get_conversation(conversation_id) or {}
@@ -1516,6 +1519,16 @@ class TradingAgentHarness:
         if self._asks_announcements(goal):
             required_tools.extend(("get_mcp_risk_announcements", ticker)
                                   for ticker in selected_tickers)
+        if required_skill_id in _SAFE_ANALYSIS_SKILLS:
+            required_tools.append(("skill", None))
+        if self._asks_trade_decision(goal):
+            failed_skill = next((item for item in evidence
+                                 if (item["tool_name"] == "skill" or
+                                     item["tool_name"].startswith("skill:")) and
+                                 item["result"].get("error")), None)
+            if failed_skill:
+                return (f"分析子任务未完成：{failed_skill['summary']}。"
+                        "本轮没有生成交易判断，请检查该运行后重试。")
         missing = None
         for tool_name, ticker in required_tools:
             item = next((e for e in evidence if e["tool_name"] == tool_name and
@@ -1770,11 +1783,40 @@ class TradingAgentHarness:
             seen = run._event_seq
 
         try:
+            timeout = float(self.config.get("agent_skill_timeout_seconds", 1800.0))
+        except (TypeError, ValueError):
+            timeout = 1800.0
+        if not math.isfinite(timeout):
+            timeout = 1800.0
+        timeout = max(0.05, min(timeout, 7200.0))
+
+        async def observe_run():
             while run._task is not None and not run._task.done():
                 relay_progress()
                 await asyncio.sleep(0.2)
-            completed = await self.run_manager.wait_for_run(run.id)
+            completed_run = await self.run_manager.wait_for_run(run.id)
             relay_progress()
+            return completed_run
+
+        try:
+            completed = await asyncio.wait_for(observe_run(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.run_manager.cancel_run(run.id)
+            relay_progress()
+            completed = self.run_manager.get_run(run.id) or run
+            if completed.status.value != "completed":
+                self.store.event(task_id, "skill_timed_out", {
+                    "run_id": run.id, "skill_id": skill_id,
+                    "timeout_seconds": timeout, "run_status": completed.status.value,
+                })
+                self.store.event(task_id, "skill_completed", {
+                    "run_id": run.id, "status": completed.status.value,
+                    "reason": "timeout",
+                })
+                state = ("已取消运行" if completed.status.value == "cancelled"
+                         else "已请求取消，运行终态待核对")
+                return {"error": f"分析子任务超过 {timeout:g} 秒未完成；{state}",
+                        "run_id": run.id, "source": f"TradingAgents Skill: {skill_id}"}
         except asyncio.CancelledError:
             await self.run_manager.cancel_run(run.id)
             raise

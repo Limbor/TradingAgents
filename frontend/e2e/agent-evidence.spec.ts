@@ -167,7 +167,7 @@ test("Agent Skill progress and result links survive conversation reload", async 
         payload: { stage_id: "report", stage_label: "整理研究报告", status: "completed" } }),
       event(4, "step_completed", { id: "research", status: "completed" }),
     ],
-    evidence: [{ id: "e-research", task_id: taskId, tool_name: "skill:stock_analysis",
+    evidence: [{ id: "e-research", task_id: taskId, tool_name: "skill",
       source: "TradingAgents Skill: stock_analysis", as_of_date: now.slice(0, 10),
       retrieved_at: now, summary: "股票分析完成", warnings: [], result: { run_id: "run-123" } }],
   };

@@ -13,6 +13,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
     "TRADINGAGENTS_AGENT_MODEL_PLANNING_ENABLED": "agent_model_planning_enabled",
     "TRADINGAGENTS_AGENT_MODEL_PLANNING_TIMEOUT": "agent_model_planning_timeout",
+    "TRADINGAGENTS_AGENT_SKILL_TIMEOUT": "agent_skill_timeout_seconds",
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
@@ -87,6 +88,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "quick_think_llm": "gpt-5.4-mini",
     "agent_model_planning_enabled": True,
     "agent_model_planning_timeout": 8.0,
+    "agent_skill_timeout_seconds": 1800.0,
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a

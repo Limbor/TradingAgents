@@ -504,6 +504,111 @@ async def test_same_skill_in_two_conversations_has_independent_cancel_and_final_
 
 
 @pytest.mark.asyncio
+async def test_agent_skill_timeout_cancels_run_and_records_recoverable_failure(tmp_path):
+    class Params(BaseModel):
+        value: str = "same"
+
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    class StalledAnalysis(BaseSkill):
+        @property
+        def metadata(self):
+            return SkillMetadata(id="stock_analysis", name="Stalled analysis",
+                                 description="test", version="1")
+
+        @property
+        def input_schema(self):
+            return Params
+
+        @property
+        def output_schema(self):
+            return Params
+
+        async def execute(self, _params, _config):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+                yield SkillEvent(event_type="skill_complete", data={
+                    "status": "success", "value": "never",
+                })
+            finally:
+                stopped.set()
+
+        async def cancel(self):
+            raise RuntimeError("cooperative cancellation hook failed")
+
+    class Skills:
+        def get(self, skill_id):
+            return skill if skill_id == "stock_analysis" else None
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config.update(agent_model_planning_enabled=False,
+                          agent_skill_timeout_seconds=0.05)
+    harness.run_manager = RunManager(db=store.db)
+    skill = StalledAnalysis()
+    harness.skills = Skills()
+    conversation = store.create_conversation("超时研究", None)
+    task = harness.submit(conversation["id"], "进行深度研究", {
+        "skill_id": "stock_analysis", "params": {"value": "same"},
+    })
+    await asyncio.wait_for(started.wait(), timeout=2)
+    await asyncio.wait_for(harness._active[task["id"]], timeout=2)
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    run_id = next(event["payload"]["run_id"] for event in detail["events"]
+                  if event["event_type"] == "skill_started")
+    assert stopped.is_set()
+    assert harness.run_manager.get_run(run_id).status == RunStatus.CANCELLED
+    assert store.db.get_run(run_id)["status"] == "cancelled"
+    assert detail["status"] == "completed"
+    assert "超过 0.05 秒" in detail["evidence"][0]["result"]["error"]
+    assert "没有生成交易判断" in detail["result"]["content"]
+    assert any(event["event_type"] == "skill_timed_out" and
+               event["payload"]["run_id"] == run_id for event in detail["events"])
+    assert any(event["event_type"] == "step_completed" and
+               event["payload"]["status"] == "failed" for event in detail["events"])
+
+
+@pytest.mark.asyncio
+async def test_requested_skill_failure_cannot_be_replaced_by_paper_ledger_answer(
+    tmp_path, monkeypatch,
+):
+    async def paper(session_id):
+        return {"session_id": session_id, "as_of_date": "2026-09-25",
+                "source": "StockManager ledger", "snapshot": {"equity": 100000}}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "stock_analysis" else None)
+
+    async def failed_skill(*_args, **_kwargs):
+        return {"error": "分析子任务超过时限", "run_id": "run:timeout",
+                "source": "TradingAgents Skill: stock_analysis"}
+
+    harness._run_skill = failed_skill
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("必需的分析 Skill 失败后不得调用模型")))
+    conversation = store.create_conversation("模拟盘研究", "paper:mine")
+    task = harness.submit(conversation["id"], "分析当前模拟盘的策略", {
+        "skill_id": "stock_analysis", "params": {},
+    })
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert [item["tool_name"] for item in detail["evidence"]] == [
+        "get_paper_session", "skill",
+    ]
+    assert detail["status"] == "completed"
+    assert "分析子任务超过时限" in detail["result"]["content"]
+    assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_marks_read_task_interrupted_for_explicit_retry(tmp_path):
     started = asyncio.Event()
 
