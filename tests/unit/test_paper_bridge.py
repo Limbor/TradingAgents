@@ -23,6 +23,8 @@ def client(tmp_path, monkeypatch):
 
 
 def test_paper_routes_use_stockmanager_ledger(client):
+    request_id = "123e4567-e89b-12d3-a456-426614174000"
+
     async def fake_request(_config, method, path, payload=None):
         if path == "/api/v2/allocator-configs":
             return {"ok": True, "items": [{"path": "config/allocators/demo.json"}]}
@@ -39,8 +41,14 @@ def test_paper_routes_use_stockmanager_ledger(client):
             assert payload in (
                 {"target_date": "2026-01-05"},
                 {"target_date": "2026-01-05", "expected_state_fingerprint": "a" * 64},
+                {"target_date": "2026-01-05", "expected_state_fingerprint": "a" * 64,
+                 "client_request_id": request_id},
             )
             return {"ok": True, "job_id": "job-1"}
+        if path == f"/api/v2/paper/paper:one/advance_requests/{request_id}":
+            assert method == "GET"
+            return {"ok": True, "data": {"client_request_id": request_id,
+                                           "job_id": "job-1", "state": "running"}}
         if path == "/api/v2/paper/paper:one/advance_review":
             assert payload == {"job_id": "job-1", "observed_state_fingerprint": "a" * 64,
                                "confirmed": True}
@@ -60,6 +68,13 @@ def test_paper_routes_use_stockmanager_ledger(client):
         assert client.post("/api/v1/paper/sessions/paper:one/advance", json={
             "target_date": "2026-01-05", "expected_state_fingerprint": "a" * 64,
         }).json()["job_id"] == "job-1"
+        assert client.post("/api/v1/paper/sessions/paper:one/advance", json={
+            "target_date": "2026-01-05", "expected_state_fingerprint": "a" * 64,
+            "client_request_id": request_id,
+        }).json()["job_id"] == "job-1"
+        assert client.get(f"/api/v1/paper/sessions/paper:one/advance-requests/{request_id}").json()[
+            "state"] == "running"
+        assert client.get("/api/v1/paper/sessions/paper:one/advance-requests/invalid").status_code == 400
         assert client.post("/api/v1/paper/sessions/paper:one/advance", json={
             "target_date": "2026-01-05", "expected_state_fingerprint": "invalid",
         }).status_code == 422

@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { MessageSquareText, RefreshCw } from "lucide-react";
 import {
-  acknowledgePaperAdvanceReview, advancePaper, createPaperSession, getPaperCurve, getPaperJob, getPaperPlan,
+  acknowledgePaperAdvanceReview, advancePaper, createPaperSession, getPaperAdvanceReceipt, getPaperCurve, getPaperJob, getPaperPlan,
   getPaperStatus, getPaperTrades, listPaperAllocators, listPaperConfigs, listPaperSessions,
   listPaperStrategies, type PaperJob,
 } from "@/api/paper";
@@ -70,11 +70,30 @@ export default function Paper() {
     if (!id || (job && job.sessionId === id)) return;
     const key = `paper-advance-job:${id}`;
     const stored = window.localStorage.getItem(key) || window.sessionStorage.getItem(key);
-    if (stored) {
+    const requestId = window.localStorage.getItem(`paper-advance-request:${id}`);
+    let cancelled = false;
+    if (requestId) {
+      void getPaperAdvanceReceipt(id, requestId).then((receipt) => {
+        if (cancelled) return;
+        window.localStorage.setItem(key, receipt.job_id);
+        const pending = receipt.state === "queued" || receipt.state === "running";
+        setJob({ job_id: receipt.job_id, sessionId: id, state: pending ? "queued" : "error",
+          progress: 0, message: pending ? "已找回推进作业" : "已找回作业回执，请核对账本", result: null });
+        setBusy(pending);
+      }).catch(() => {
+        if (cancelled) return;
+        setJob({ job_id: stored || "submission-unknown", sessionId: id,
+          state: stored && stored !== "submission-unknown" ? "queued" : "error", progress: 0,
+          message: stored && stored !== "submission-unknown" ? "正在恢复任务状态" : "提交结果待核对", result: null });
+        setBusy(!!stored && stored !== "submission-unknown");
+      });
+    } else if (stored) {
       window.localStorage.setItem(key, stored);
       window.sessionStorage.removeItem(key);
-      setJob({ job_id: stored, sessionId: id, state: "queued", progress: 0, message: "正在恢复任务状态", result: null });
-      setBusy(true);
+      const pending = stored !== "submission-unknown";
+      setJob({ job_id: stored, sessionId: id, state: pending ? "queued" : "error", progress: 0,
+        message: pending ? "正在恢复任务状态" : "提交结果待核对", result: null });
+      setBusy(pending);
     } else if (serverOperation && ["queued", "running", "needs_review"].includes(serverOperation.state)) {
       const needsReview = serverOperation.state === "needs_review";
       setJob({ job_id: serverOperation.job_id, sessionId: id,
@@ -82,6 +101,7 @@ export default function Paper() {
         progress: 0, message: needsReview ? "作业结果待核对" : "正在恢复账户推进作业", result: null });
       setBusy(!needsReview);
     }
+    return () => { cancelled = true; };
   }, [id, job, serverOperation]);
 
   useEffect(() => {
@@ -93,6 +113,7 @@ export default function Paper() {
         if (next.state === "success") {
           setBusy(false);
           window.localStorage.removeItem(`paper-advance-job:${job.sessionId}`);
+          window.localStorage.removeItem(`paper-advance-request:${job.sessionId}`);
           void client.invalidateQueries({ queryKey: queryKeys.paperSessions() });
           void client.invalidateQueries({ queryKey: queryKeys.paperSession(job.sessionId) });
         } else if (next.state === "error") {
@@ -135,6 +156,7 @@ export default function Paper() {
   const advance = async () => {
     if (!id || !targetDate) return;
     const reviewKey = `paper-advance-job:${id}`;
+    const requestKey = `paper-advance-request:${id}`;
     if ((job?.sessionId === id && job.state === "error") ||
         (window.localStorage.getItem(reviewKey) && (!job || job.sessionId !== id || job.state === "error"))) {
       setError("上一次推进仍需核对账本，请先完成核对");
@@ -153,16 +175,28 @@ export default function Paper() {
     if (!window.confirm(`将模拟盘 ${id} 从账本日期 ${ledgerDate} 推进到 ${targetDate}？StockManager 会按策略计算并写入成交。`)) return;
     setError("");
     setBusy(true);
+    const requestId = crypto.randomUUID();
     try {
       window.localStorage.setItem(reviewKey, "submission-unknown");
-      const ack = await advancePaper(id, targetDate, fingerprint);
+      window.localStorage.setItem(requestKey, requestId);
+      const ack = await advancePaper(id, targetDate, fingerprint, requestId);
       window.localStorage.setItem(reviewKey, ack.job_id);
       setJob({ job_id: ack.job_id, sessionId: id, state: "queued", progress: 0, message: "任务已提交", result: null });
     } catch (cause) {
-      setBusy(false);
-      setJob({ job_id: "submission-unknown", sessionId: id, state: "error", progress: 0,
-        message: "提交结果待核对", result: null });
-      setError(`${cause instanceof Error ? cause.message : "提交结果未知"}。请求可能已到达 StockManager，请先核对账本。`);
+      try {
+        const receipt = await getPaperAdvanceReceipt(id, requestId);
+        window.localStorage.setItem(reviewKey, receipt.job_id);
+        const pending = receipt.state === "queued" || receipt.state === "running";
+        setJob({ job_id: receipt.job_id, sessionId: id, state: pending ? "queued" : "error",
+          progress: 0, message: pending ? "已找回推进作业" : "已找回作业回执，请核对账本", result: null });
+        setBusy(pending);
+        if (!pending) setError("已找回作业回执，请先核对账本再继续推进。");
+      } catch {
+        setBusy(false);
+        setJob({ job_id: "submission-unknown", sessionId: id, state: "error", progress: 0,
+          message: "提交结果待核对", result: null });
+        setError(`${cause instanceof Error ? cause.message : "提交结果未知"}。请求可能已到达 StockManager，请先核对账本。`);
+      }
       void client.invalidateQueries({ queryKey: queryKeys.paperSession(id) });
     }
   };
@@ -186,6 +220,7 @@ export default function Paper() {
         });
       }
       window.localStorage.removeItem(`paper-advance-job:${id}`);
+      window.localStorage.removeItem(`paper-advance-request:${id}`);
       setJob(null);
       setError("");
       void client.invalidateQueries({ queryKey: queryKeys.paperSessions() });

@@ -12,6 +12,7 @@ from tradingagents.core.stockmanager_paper import PaperServiceError, paper_reque
 
 router = APIRouter(prefix="/paper")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
+_REQUEST_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 
 
 def _id(value: str) -> str:
@@ -41,6 +42,7 @@ class CreatePaperSession(BaseModel):
 class AdvancePaper(BaseModel):
     target_date: date
     expected_state_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    client_request_id: str | None = Field(default=None, pattern=_REQUEST_ID.pattern)
 
 
 class AdvancePaperReview(BaseModel):
@@ -112,8 +114,19 @@ async def advance(request: Request, session_id: str, body: AdvancePaper):
         request, "POST", f"/api/v2/paper/{_id(session_id)}/advance",
         {"target_date": body.target_date.isoformat(),
          **({"expected_state_fingerprint": body.expected_state_fingerprint}
-            if body.expected_state_fingerprint is not None else {})},
+            if body.expected_state_fingerprint is not None else {}),
+         **({"client_request_id": body.client_request_id}
+            if body.client_request_id is not None else {})},
     )
+
+
+@router.get("/sessions/{session_id}/advance-requests/{client_request_id}")
+async def advance_receipt(request: Request, session_id: str, client_request_id: str):
+    if not _REQUEST_ID.fullmatch(client_request_id):
+        raise HTTPException(400, "无效的模拟盘请求编号")
+    return (await _call(request, "GET", f"/api/v2/paper/{_id(session_id)}/advance_requests/{client_request_id}"))[
+        "data"
+    ]
 
 
 @router.post("/sessions/{session_id}/advance-review")

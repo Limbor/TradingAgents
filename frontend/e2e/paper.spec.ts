@@ -62,7 +62,8 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
   await page.getByLabel("推进至交易日").fill("2026-01-05");
   await page.getByRole("button", { name: "推进模拟盘" }).click();
   await expect.poll(() => advanced).toBe(true);
-  expect(advanceBody).toEqual({ target_date: "2026-01-05", expected_state_fingerprint: "a".repeat(64) });
+  expect(advanceBody).toMatchObject({ target_date: "2026-01-05", expected_state_fingerprint: "a".repeat(64) });
+  expect((advanceBody as { client_request_id: string }).client_request_id).toMatch(/^[0-9a-f-]{36}$/);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("link", { name: "在工作台继续" })).toBeVisible();
   const agentHeader = page.getByRole("region", { name: "交易 Agent 对话" }).locator("header");
@@ -137,6 +138,7 @@ test("an advancing paper job can be observed again after page reload", async ({ 
   let advanceFails = false;
   let reviewed = false;
   let reviewAcks = 0;
+  let lastRequestId = "";
   await page.route("**/api/v1/**", async (route) => {
     const { pathname } = new URL(route.request().url());
     let body: unknown = {};
@@ -148,11 +150,20 @@ test("an advancing paper job can be observed again after page reload", async ({ 
     else if (pathname.endsWith("/trades")) body = [];
     else if (pathname.endsWith("/next-plan")) body = null;
     else if (pathname.endsWith("/advance")) {
+      lastRequestId = route.request().postDataJSON().client_request_id;
       if (advanceFails) {
         await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Connection lost" }) });
         return;
       }
       body = { job_id: "job-running" };
+    } else if (pathname.includes("/advance-requests/")) {
+      if (advanceFails) {
+        await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "Receipt not found" }) });
+        return;
+      }
+      expect(pathname.endsWith(lastRequestId)).toBe(true);
+      body = { client_request_id: lastRequestId, session_id: "paper:demo",
+        job_id: "job-running", target_date: "2026-01-05", state: "running", result: null };
     } else if (pathname.endsWith("/advance-review")) {
       expect(route.request().postDataJSON()).toMatchObject({ job_id: "job-running",
         observed_state_fingerprint: "b".repeat(64), confirmed: true });
@@ -199,6 +210,51 @@ test("an advancing paper job can be observed again after page reload", async ({ 
   await page.reload();
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "核对账本后解除锁定" })).toBeVisible();
+});
+
+test("lost paper submission response recovers the original job by receipt", async ({ page }) => {
+  let submissions = 0;
+  let receiptReads = 0;
+  let jobReads = 0;
+  let requestId = "";
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/paper/sessions") body = [{ session_id: "paper:recover", mode: "paper",
+      strategy: "demo", config_name: "", initial_cash: 100000, last_date: "2026-01-02", params: {} }];
+    else if (path.endsWith("/status")) body = { session: { initial_cash: 100000 },
+      state_fingerprint: "d".repeat(64), snapshot: { as_of_date: "2026-01-02", equity: 100000,
+        cash: 100000, positions: {} }, trades_count: 0 };
+    else if (path.endsWith("/equity")) body = { daily_records: [], benchmark_curve: [] };
+    else if (path.endsWith("/trades")) body = [];
+    else if (path.endsWith("/next-plan")) body = null;
+    else if (path.endsWith("/advance")) {
+      submissions += 1;
+      requestId = route.request().postDataJSON().client_request_id;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Response lost" }) });
+      return;
+    } else if (path.includes("/advance-requests/")) {
+      receiptReads += 1;
+      expect(path.endsWith(requestId)).toBe(true);
+      body = { client_request_id: requestId, session_id: "paper:recover", job_id: "job-recovered",
+        target_date: "2026-01-05", state: "running", result: null };
+    } else if (path.endsWith("/jobs/job-recovered")) {
+      jobReads += 1;
+      body = { job_id: "job-recovered", state: "running", progress: 25, message: "计算中", result: null };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await mockAgentTasks(page);
+  await page.goto("/paper");
+  await page.getByLabel("推进至交易日").fill("2026-01-05");
+  await page.getByRole("button", { name: "推进模拟盘" }).click();
+  await expect.poll(() => jobReads).toBeGreaterThan(0);
+  await page.reload();
+  await expect.poll(() => receiptReads).toBeGreaterThan(1);
+  await expect.poll(() => jobReads).toBeGreaterThan(1);
+  expect(submissions).toBe(1);
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
 });
 
 test("server-side paper review lock appears without local browser state", async ({ page }) => {

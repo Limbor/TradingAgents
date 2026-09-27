@@ -124,6 +124,15 @@ export interface PaperJob {
   result: { ok: boolean; data?: unknown } | null;
 }
 
+export interface PaperAdvanceReceipt {
+  client_request_id: string;
+  session_id: string;
+  job_id: string;
+  target_date: string;
+  state: "queued" | "running" | "completed" | "needs_review" | "reviewed";
+  result: Record<string, unknown> | null;
+}
+
 const root = paperApiBase;
 const sessionUrl = (id: string) => `${root}/sessions/${encodeURIComponent(id)}`;
 const postJson = (body: unknown): RequestInit => ({
@@ -142,8 +151,10 @@ export const getPaperStatus = (id: string) => fetchJson<PaperStatus>(`${sessionU
 export const getPaperCurve = (id: string) => fetchJson<PaperCurve>(`${sessionUrl(id)}/equity`);
 export const getPaperTrades = (id: string) => fetchJson<PaperTrade[]>(`${sessionUrl(id)}/trades`);
 export const getPaperPlan = (id: string) => fetchJson<PaperPlan | null>(`${sessionUrl(id)}/next-plan`);
-export const advancePaper = (id: string, target_date: string, expected_state_fingerprint: string) =>
-  fetchJson<{ job_id: string }>(`${sessionUrl(id)}/advance`, postJson({ target_date, expected_state_fingerprint }));
+export const advancePaper = (id: string, target_date: string, expected_state_fingerprint: string, client_request_id: string) =>
+  fetchJson<{ job_id: string }>(`${sessionUrl(id)}/advance`, postJson({ target_date, expected_state_fingerprint, client_request_id }));
+export const getPaperAdvanceReceipt = (id: string, requestId: string) =>
+  fetchJson<PaperAdvanceReceipt>(`${sessionUrl(id)}/advance-requests/${encodeURIComponent(requestId)}`);
 export const acknowledgePaperAdvanceReview = (id: string, job_id: string, observed_state_fingerprint: string) =>
   fetchJson<{ state: string }>(`${sessionUrl(id)}/advance-review`,
     postJson({ job_id, observed_state_fingerprint, confirmed: true }));

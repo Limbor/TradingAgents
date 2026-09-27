@@ -238,6 +238,34 @@ async def main() -> None:
                 assert replay.json()["job_id"] == recorded["job_id"]
                 assert replay.json()["replayed"] is True
                 assert (await sm.get("/__test/advance_calls")).json()["calls"] == calls
+                direct_request_id = "123e4567-e89b-42d3-a456-426614174000"
+                direct_path = "/api/v1/paper/sessions/paper:synthetic"
+                direct_payload = {
+                    "target_date": "2026-09-26",
+                    "expected_state_fingerprint": no_day_ledger["state_fingerprint"],
+                    "client_request_id": direct_request_id,
+                }
+                direct = await ta.post(f"{direct_path}/advance", json=direct_payload)
+                assert direct.status_code == 200, direct.text
+                direct_job = direct.json()["job_id"]
+                direct_receipt = None
+                for _ in range(100):
+                    response = await ta.get(
+                        f"{direct_path}/advance-requests/{direct_request_id}"
+                    )
+                    assert response.status_code == 200, response.text
+                    direct_receipt = response.json()
+                    if direct_receipt["state"] == "completed":
+                        break
+                    await asyncio.sleep(0.1)
+                assert direct_receipt and direct_receipt["state"] == "completed"
+                assert direct_receipt["job_id"] == direct_job
+                assert direct_receipt["result"]["advanced_days"] == 0
+                repeated = await ta.post(f"{direct_path}/advance", json=direct_payload)
+                assert repeated.status_code == 200 and repeated.json()["job_id"] == direct_job
+                assert repeated.json()["replayed"] is True
+                calls = (await sm.get("/__test/advance_calls")).json()["calls"]
+                assert len(calls) == 3, calls
                 stale = await ta.post(f"/api/v1/agent/conversations/{cid}/tasks", json={
                     "message": "推进模拟盘到 2026-09-29"})
                 assert stale.status_code == 202, stale.text
