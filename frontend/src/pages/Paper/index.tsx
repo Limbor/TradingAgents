@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { MessageSquareText, RefreshCw } from "lucide-react";
 import {
@@ -47,13 +47,22 @@ export default function Paper() {
   const strategyOptions = Array.isArray(strategies.data) ? strategies.data : [];
   const configOptions = Array.isArray(configs.data) ? configs.data : [];
   const allocatorOptions = Array.isArray(allocators.data) ? allocators.data : [];
-  const active = selected ? rows.find((row) => row.session_id === selected) : rows[0];
+  const listed = selected ? rows.find((row) => row.session_id === selected) : undefined;
+  const requestedId = selected || rows[0]?.session_id || "";
+  const status = useQuery({ queryKey: [...queryKeys.paperSession(requestedId), "status"], queryFn: () => getPaperStatus(requestedId), enabled: !!requestedId, retry: false });
+  const direct = selected && !listed && status.data?.session?.session_id === selected
+    ? status.data.session : undefined;
+  const active = selected ? listed ?? direct : rows[0];
   const id = active?.session_id ?? "";
-  const missingSession = !!selected && !sessions.isLoading && !sessions.isError && !active;
+  const missingSession = !!selected && !listed && !sessions.isLoading && !sessions.isError &&
+    !status.isLoading && !status.isFetching && !direct &&
+    (!(status.error instanceof ApiHttpError) || status.error.status === 404);
+  const isCompositeChild = active?.params?.composite_child === true;
+  const parentId = typeof active?.params?.parent_composite_id === "string"
+    ? active.params.parent_composite_id : "";
   useEffect(() => {
     setAgentPrompt(undefined);
   }, [id]);
-  const status = useQuery({ queryKey: [...queryKeys.paperSession(id), "status"], queryFn: () => getPaperStatus(id), enabled: !!id, retry: false });
   const serverOperation = status.data?.advance_operation;
   const serverLocked = !!serverOperation && ["queued", "running", "needs_review"].includes(serverOperation.state);
   const curve = useQuery({ queryKey: [...queryKeys.paperSession(id), "equity"], queryFn: () => getPaperCurve(id), enabled: !!id, retry: false });
@@ -250,7 +259,7 @@ export default function Paper() {
   const initialCash = status.data?.session?.initial_cash ?? active?.initial_cash ?? 0;
   const returnPct = snapshot && initialCash > 0 ? snapshot.equity / initialCash - 1 : null;
   const connectionError = sessions.error instanceof Error ? sessions.error.message : "";
-  const sectionError = [status, curve, trades, plan]
+  const sectionError = [...(missingSession ? [] : [status]), curve, trades, plan]
     .map((query) => query.error instanceof Error ? query.error.message : "")
     .find(Boolean);
   const selectedAllocator = allocatorOptions.find((item) => item.path === allocatorPath);
@@ -260,7 +269,7 @@ export default function Paper() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-ui-accent">Paper trading</p><h1 className="mt-1 text-2xl font-semibold">模拟盘工作台</h1><p className="mt-1 text-sm text-ui-muted">策略账本由 StockManager 维护，Agent 解释策略行为并跟踪判断。</p></div>
         <div className="flex flex-wrap items-center gap-2">
-          {rows.length > 0 && <label className="text-xs text-ui-muted">当前会话<select aria-label="当前模拟盘会话" value={id} onChange={(event) => setParams({ session: event.target.value })} className="ml-2 max-w-64 rounded-xl border border-ui-strong bg-ui-panel px-3 py-2 text-sm text-ui-ink">{missingSession && <option value="" disabled>所请求会话不存在</option>}{rows.map((row) => <option key={row.session_id} value={row.session_id}>{row.params?.kind === "composite" ? "组合" : row.strategy} · {row.session_id}</option>)}</select></label>}
+          {(rows.length > 0 || selected) && <label className="text-xs text-ui-muted">当前会话<select aria-label="当前模拟盘会话" value={requestedId} onChange={(event) => setParams({ session: event.target.value })} className="ml-2 max-w-64 rounded-xl border border-ui-strong bg-ui-panel px-3 py-2 text-sm text-ui-ink">{selected && !listed && <option value={selected}>{direct ? "子策略" : missingSession ? "未找到" : "验证中"} · {selected}</option>}{rows.map((row) => <option key={row.session_id} value={row.session_id}>{row.params?.kind === "composite" ? "组合" : row.strategy} · {row.session_id}</option>)}</select></label>}
           <button className="rounded-lg border border-ui-strong px-3 py-2 text-sm hover:bg-ui-hover" onClick={refreshAll}><RefreshCw className="inline h-4 w-4" /> 刷新</button>
           <button className="rounded-lg bg-ui-accent px-3 py-2 text-sm font-medium text-ui-onAccent hover:bg-ui-accent" onClick={() => setCreateOpen(!createOpen)}>新建会话</button>
         </div>
@@ -294,6 +303,7 @@ export default function Paper() {
       {!id && !selected && !sessions.isLoading && !connectionError && <div className={`${card} text-sm text-ui-muted`}>还没有策略模拟会话。创建会话后，可以查看净值、持仓、成交和下一日计划。</div>}
 
       {id && <>
+        {isCompositeChild && <div role="status" className={`${card} text-sm text-ui-muted`}>当前为组合子策略账本，可查看持仓、成交和 Agent 取证；请在所属组合账户推进交易日。{parentId && <Link to={`/paper?session=${encodeURIComponent(parentId)}`} className="ml-2 font-medium text-ui-accent underline underline-offset-2">查看组合账户</Link>}</div>}
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(310px,0.82fr)_minmax(0,1.5fr)]">
         <div className="h-[620px] min-w-0 xl:sticky xl:top-0 xl:h-[calc(100vh-170px)]"><Chat key={id} paperSessionId={id} embedded promptRequest={agentPrompt?.sessionId === id ? agentPrompt : undefined} /></div>
         <div className="min-w-0 space-y-4">
@@ -319,7 +329,7 @@ export default function Paper() {
 
         <section className={card}><h2 className="mb-3 font-medium">最近成交</h2>{trades.data?.length ? <div className="max-h-72 overflow-auto"><table className="w-full text-left text-sm"><thead className="text-xs text-ui-faint"><tr><th>日期</th><th>标的</th><th>方向</th><th>数量</th><th>价格</th></tr></thead><tbody>{trades.data.slice(0, 30).map((trade, index) => <tr key={index} className="border-t border-ui-line"><td className="py-2">{trade.trade_date}</td><td>{trade.name || trade.code}</td><td>{trade.side}</td><td>{trade.shares}</td><td>{money(trade.price)}</td></tr>)}</tbody></table></div> : <p className="text-sm text-ui-faint">暂无成交</p>}</section>
 
-        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
+        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}>{!isCompositeChild && <><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}</>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
         </div>
         </div>
       </>}

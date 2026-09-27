@@ -1191,6 +1191,15 @@ class TradingAgentHarness:
                 self.store.event(task_id, "review_started", {"evidence_count": len(evidence)})
                 advance_target = self._advance_target(goal, conversation.get("paper_session_id"))
                 if advance_target and evidence and not evidence[0]["result"].get("error"):
+                    session = evidence[0]["result"].get("session") or {}
+                    if (session.get("params") or {}).get("composite_child") is True:
+                        content = ("该账户是组合模拟盘的子策略账本，只能随所属组合推进。"
+                                   "可以查看和讨论子策略账本；如需推进，请打开所属组合账户。")
+                        self.store.add_message(conversation["id"], "assistant", content, task_id)
+                        self.store.set_status(task_id, "completed", result={"content": content,
+                                                                              "read_only": True})
+                        self.store.event(task_id, "action_blocked", {"reason": "composite_child"})
+                        return
                     baseline_date = evidence[0]["as_of_date"]
                     if not baseline_date or advance_target <= baseline_date:
                         content = ("无法准备推进操作：当前账本基准日未知或目标日期没有晚于基准日。"
@@ -1734,6 +1743,14 @@ class TradingAgentHarness:
                 self.store.set_status(task_id, "completed", result={"content": content, "read_only": True})
                 self.store.add_message(self.store.get_task(task_id)["conversation_id"], "assistant", content, task_id)
                 self.store.event(task_id, "action_stale", {"reason": "ledger_conflict", "conflicts": conflicts})
+                return
+            if ((current.get("session") or {}).get("params") or {}).get("composite_child") is True:
+                self.store.set_proposal_status(proposal_id, "stale", {"reason": "composite_child"})
+                content = "该账户是组合子策略账本，不能单独推进。请在所属组合账户发起推进。"
+                self.store.set_status(task_id, "completed", result={"content": content,
+                                                                       "read_only": True})
+                self.store.add_message(self.store.get_task(task_id)["conversation_id"], "assistant", content, task_id)
+                self.store.event(task_id, "action_blocked", {"reason": "composite_child"})
                 return
             current_date = ((current.get("snapshot") or {}).get("as_of_date")
                             or (current.get("session") or {}).get("last_date"))

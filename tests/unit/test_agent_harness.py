@@ -1469,6 +1469,52 @@ async def test_incomplete_paper_ledger_cannot_create_advance_proposal(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_composite_child_cannot_create_direct_advance_proposal(tmp_path):
+    async def paper(session_id):
+        return {"session_id": session_id, "as_of_date": "2026-09-25",
+                "session": {"session_id": session_id,
+                            "params": {"composite_child": True,
+                                       "parent_composite_id": "paper:group"}},
+                "snapshot": {"as_of_date": "2026-09-25", "equity": 100000,
+                             "cash": 100000, "positions": {}}}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    conversation = store.create_conversation("子策略", "paper:sleeve")
+    task = harness.submit(conversation["id"], "推进模拟盘到 2026-09-28")
+    await harness._active[task["id"]]
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "completed"
+    assert detail["result"]["read_only"] is True
+    assert detail["proposal"] is None
+    assert "只能随所属组合推进" in detail["result"]["content"]
+    assert any(event["event_type"] == "action_blocked" and
+               event["payload"]["reason"] == "composite_child"
+               for event in detail["events"])
+
+
+@pytest.mark.asyncio
+async def test_existing_child_proposal_is_blocked_before_post(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    ledger = _paper_status()["data"]
+    ledger["session"]["params"] = {"composite_child": True,
+                                   "parent_composite_id": "paper:group"}
+    ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+
+    async def paper_request(_config, method, _path, _payload=None):
+        assert method == "GET", "子策略旧提案不得提交推进请求"
+        return {"data": ledger}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    harness.approve(proposal["id"])
+    await harness._active[task["id"]]
+    assert store.get_proposal(proposal["id"])["status"] == "stale"
+    assert store.get_task(task["id"])["result"]["read_only"] is True
+    assert any(event["event_type"] == "action_blocked" and
+               event["payload"]["reason"] == "composite_child"
+               for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
 async def test_unresolved_paper_advance_blocks_other_conversations_for_same_account(tmp_path):
     harness, store, _task, first = await _proposed_advance(tmp_path)
     assert store.claim_proposal(first["id"])

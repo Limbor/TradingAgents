@@ -12,6 +12,11 @@ test("unknown paper deep link does not switch to another account", async ({ page
     }];
     else if (path.startsWith("/api/v1/paper/sessions/paper")) {
       ledgerRequests.push(path);
+      if (path.includes("missing") && path.endsWith("/status")) {
+        await route.fulfill({ status: 404, contentType: "application/json",
+          body: JSON.stringify({ detail: "Session not found" }) });
+        return;
+      }
       if (path.endsWith("/status")) body = { session: { initial_cash: 100000 },
         snapshot: { as_of_date: "2026-01-02", equity: 100000, cash: 100000, positions: {} },
         trades_count: 0 };
@@ -27,11 +32,49 @@ test("unknown paper deep link does not switch to another account", async ({ page
   await expect(page.getByRole("alert")).toContainText("未找到模拟盘会话 paper:missing");
   await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toHaveCount(0);
-  expect(ledgerRequests).toHaveLength(0);
+  expect(ledgerRequests).toHaveLength(1);
+  expect(ledgerRequests[0]).toContain("missing");
   await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption("paper:existing");
   await expect(page).toHaveURL(/\/paper\?session=paper%3Aexisting$/);
   await expect(page.getByText("¥100,000").first()).toBeVisible();
-  await expect.poll(() => ledgerRequests.some((path) => path.endsWith("/status"))).toBe(true);
+  await expect.poll(() => ledgerRequests.some((path) => path.includes("existing") &&
+    path.endsWith("/status"))).toBe(true);
+});
+
+test("composite child deep link opens its ledger without direct advance", async ({ page }) => {
+  const parent = "paper:parent";
+  const child = "paper:child";
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/paper/sessions") body = [{
+      session_id: parent, mode: "paper", strategy: "allocator", config_name: "demo",
+      initial_cash: 100000, last_date: "2026-09-25", params: { kind: "composite" },
+    }];
+    else if (path.endsWith("/status")) {
+      const isChild = path.includes("child");
+      body = { session: { session_id: isChild ? child : parent, mode: "paper",
+        strategy: isChild ? "sleeve" : "allocator", config_name: "demo",
+        initial_cash: 100000, last_date: "2026-09-25",
+        params: isChild ? { composite_child: true, parent_composite_id: parent } : { kind: "composite" } },
+      snapshot: { as_of_date: "2026-09-25", equity: isChild ? 105000 : 110000,
+        cash: 100000, positions: {} }, trades_count: 0 };
+    } else if (path.endsWith("/equity")) body = { daily_records: [], benchmark_curve: [] };
+    else if (path.endsWith("/trades")) body = [];
+    else if (path.endsWith("/next-plan")) body = null;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await mockAgentTasks(page);
+
+  await page.goto(`/paper?session=${encodeURIComponent(child)}`);
+  await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(child);
+  await expect(page.getByText("¥105,000").first()).toBeVisible();
+  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toContainText(child);
+  await expect(page.getByRole("status")).toContainText("组合子策略账本");
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toHaveCount(0);
+  await page.getByRole("link", { name: "查看组合账户" }).click();
+  await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(parent);
+  await expect(page.getByText("¥110,000").first()).toBeVisible();
 });
 
 test("strategy paper workbench creates, reads, and advances a StockManager session", async ({ page }) => {
