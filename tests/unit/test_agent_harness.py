@@ -1603,7 +1603,7 @@ async def test_failed_composite_job_keeps_child_advance_uncertain(tmp_path, monk
     assert sum(method == "POST" for method, _ in calls) == 1
     assert result["status"] == "unknown"
     assert result["result"]["job_id"] == "job:composite-partial"
-    assert "子策略账本可能已推进" in result["result"]["error"]
+    assert "组合模拟盘作业结果待核对" in result["result"]["error"]
     assert [(item["session_id"], item["as_of_date"]) for item in result["result"]["child_ledgers"]] == [
         ("paper:child-one", "2026-09-26"), ("paper:child-two", "2026-09-25")]
     assert store.get_task(task["id"])["status"] == "needs_review"

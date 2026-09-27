@@ -721,7 +721,7 @@ class TradingAgentHarness:
                     await self._read_composite_child_ledgers(ledger, proposal["session_id"])
                     if composite_failed else ([], None)
                 )
-                review_reason = ("组合模拟盘作业失败，但子策略账本可能已推进。请逐一核对组合账户与子策略账户，勿重复提交。"
+                review_reason = ("组合模拟盘作业结果待核对。请逐一核对组合账户与子策略账户，勿重复提交。"
                                  if composite_failed else "执行结果仍待核对")
                 result = {**proposal["result"], "job_id": job_id or None,
                           "receipt_state": receipt_state, "observed_date": observed_date,
