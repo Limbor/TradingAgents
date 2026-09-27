@@ -135,7 +135,9 @@ async def test_unscoped_trade_decision_asks_for_symbol_before_legacy_chat(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_code_reply_continues_previous_trade_decision_with_fresh_evidence(tmp_path):
+async def test_code_reply_continues_previous_trade_decision_with_fresh_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
+                        lambda *_args, **_kwargs: SimpleNamespace(market_asof_date="2026-09-25"))
     async def unused_paper(session_id):
         raise AssertionError(f"没有绑定模拟盘时不得读取 {session_id}")
 
@@ -176,7 +178,9 @@ async def test_code_reply_continues_previous_trade_decision_with_fresh_evidence(
 
 
 @pytest.mark.asyncio
-async def test_manual_holdings_cannot_support_current_trade_decision(tmp_path):
+async def test_manual_holdings_cannot_support_current_trade_decision(tmp_path, monkeypatch):
+    monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
+                        lambda *_args, **_kwargs: SimpleNamespace(market_asof_date="2026-09-25"))
     async def unused_paper(session_id):
         raise AssertionError(f"没有绑定模拟盘时不得读取 {session_id}")
 
@@ -719,6 +723,129 @@ async def test_paper_factor_date_conflict_recovers_with_one_read_only_retry(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("first_result", ["stale", "tool_error"])
+async def test_current_trade_decision_rechecks_stale_factor_before_model(
+    tmp_path, monkeypatch, recover, first_result,
+):
+    monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
+                        lambda *_args, **_kwargs: SimpleNamespace(market_asof_date="2026-09-25"))
+    model_inputs = []
+
+    class FakeLLM:
+        async def ainvoke(self, messages):
+            model_inputs.append(messages)
+            return SimpleNamespace(content="按已核对日期评估。")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=FakeLLM))
+    calls = []
+
+    async def factor(ts_code):
+        calls.append(ts_code)
+        if first_result == "tool_error" and len(calls) == 1:
+            return {"ts_code": ts_code, "source": "StockManager MCP",
+                    "error": "因子快照基准日与请求交易日不一致"}
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-25" if recover and len(calls) == 2 else "2026-09-24",
+                "snapshot": {"rows": []}}
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={}, handler=factor,
+    ))
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "现在要不要买入 600519.SH？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert calls == ["600519.SH"] * 2
+    assert [item["as_of_date"] for item in detail["evidence"]] == [
+        None if first_result == "tool_error" else "2026-09-24",
+        "2026-09-25" if recover else "2026-09-24",
+    ]
+    assert detail["evidence"][0]["result"]["error"]
+    if first_result == "tool_error":
+        assert detail["evidence"][0]["result"]["source_error"] == "因子快照基准日与请求交易日不一致"
+    assert len([event for event in detail["events"]
+                if event["event_type"] == "plan_revised"]) == 1
+    assert any(event["event_type"] == "market_time_bound" and
+               event["payload"]["market_asof_date"] == "2026-09-25"
+               for event in detail["events"])
+    if recover:
+        assert len(model_inputs) == 1
+        model_evidence = json.loads(model_inputs[0][1].content.split("证据 JSON：\n", 1)[1])
+        assert len(model_evidence) == 1
+        assert model_evidence[0]["as_of_date"] == "2026-09-25"
+        assert detail["result"]["content"].startswith("按已核对日期评估。")
+    else:
+        assert not model_inputs
+        assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_current_trade_decision_rechecks_stale_announcement_and_abstains(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
+                        lambda *_args, **_kwargs: SimpleNamespace(market_asof_date="2026-09-25"))
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("过期公告不得交给模型生成交易判断")))
+    calls = []
+
+    async def announcements(ts_code, end_date=""):
+        calls.append(ts_code)
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-24", "rows": [], "count": 0}
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_risk_announcements", description="risk", parameters={},
+        handler=announcements,
+    ))
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "600519.SH 公告后现在还能卖出吗？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert calls == ["600519.SH"] * 2
+    assert all(item["result"].get("error") for item in detail["evidence"])
+    assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_current_trade_decision_without_market_date_stops_before_tools(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
+                        lambda *_args, **_kwargs: SimpleNamespace(market_asof_date=""))
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "现在要不要买入 600519.SH？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "completed"
+    assert detail["evidence"] == []
+    assert "市场基准日无法核定" in detail["result"]["content"]
+    assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
 async def test_two_explicit_stocks_each_get_a_bound_factor_snapshot(tmp_path):
     async def paper(session_id):
         raise AssertionError(f"不应读取模拟盘 {session_id}")
@@ -853,7 +980,9 @@ async def test_paper_announcement_cutoff_is_bound_to_ledger_and_conflict_abstain
     task = harness.submit(conversation["id"], "模拟盘 600519.SH 的问询公告如何？")
     await harness._active[task["id"]]
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
-    assert calls == [("600519.SH", "2026-09-25")]
+    assert calls == [("600519.SH", "2026-09-25")] * 2
+    assert len([event for event in detail["events"]
+                if event["event_type"] == "plan_revised"]) == 1
     assert detail["evidence"][1]["result"]["error"] == "风险公告查询截止日与模拟盘账本不一致"
     assert "没有生成交易判断" in detail["result"]["content"]
 

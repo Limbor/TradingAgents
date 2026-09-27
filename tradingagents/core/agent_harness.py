@@ -965,6 +965,26 @@ class TradingAgentHarness:
             async with self._slots:
                 self.store.set_status(task_id, "planning")
                 paper_session_id = conversation.get("paper_session_id")
+                market_asof_date = None
+                if tickers and not paper_session_id and self._asks_trade_decision(goal):
+                    from tradingagents.core.trading_time import get_temporal_context
+
+                    try:
+                        temporal = get_temporal_context(self.config, market="cn_a")
+                        market_asof_date = temporal.market_asof_date
+                    except Exception as exc:
+                        logger.warning("Agent market date unavailable: %s", exc)
+                    self.store.event(task_id, "market_time_bound", {
+                        "market_asof_date": market_asof_date,
+                    })
+                    if not market_asof_date:
+                        content = ("当前市场基准日无法核定，不能把行情或公告当作即时交易依据。"
+                                   "本轮没有生成交易判断，请稍后重试。")
+                        self.store.add_message(conversation["id"], "assistant", content, task_id)
+                        self.store.set_status(task_id, "completed", result={"content": content,
+                                                                              "read_only": True})
+                        self.store.event(task_id, "task_completed", {"content": content})
+                        return
                 plan, plan_source = await self._build_plan(goal, paper_session_id, intent_hint,
                                                            tickers=tickers)
                 self.store.event(task_id, "plan_created", {"steps": plan, "source": plan_source})
@@ -972,7 +992,7 @@ class TradingAgentHarness:
                 evidence: list[dict] = []
                 step_index = 0
                 replanned = False
-                factor_retried: set[str] = set()
+                date_retried: set[tuple[str, str]] = set()
                 while step_index < len(plan):
                     step = plan[step_index]
                     step_index += 1
@@ -994,7 +1014,7 @@ class TradingAgentHarness:
                                 date_arg = ("trade_date" if step["tool"] == "get_mcp_factor_snapshot"
                                             else "end_date")
                                 step = {**step, "args": {**step["args"], date_arg: trade_date}}
-                    factor_date_conflict = False
+                    date_conflict = False
                     self.store.event(task_id, "step_started", step)
                     if (step["tool"] == "get_mcp_risk_announcements" and paper_session_id and
                             "end_date" not in step["args"]):
@@ -1023,18 +1043,30 @@ class TradingAgentHarness:
                                            if item["tool_name"] == "get_paper_session" and
                                            not item["result"].get("error")), None)
                             ledger_date = ledger["as_of_date"] if ledger else None
-                            factor_date_conflict = bool(
+                            date_conflict = bool(
                                 ledger_date and (
                                     "基准日与请求交易日不一致" in str(result.get("error") or "") or
                                     (not result.get("error") and result.get("as_of_date") != ledger_date)
                                 )
                             )
-                            if factor_date_conflict:
+                            if date_conflict:
                                 result["warnings"] = [*(result.get("warnings") or []),
                                     "因子快照与模拟盘账本基准日不一致，不能合并为同一时点的交易判断"]
                                 if result.get("error"):
                                     result["source_error"] = result["error"]
                                 result["error"] = "因子快照基准日与模拟盘账本不一致"
+                        elif market_asof_date:
+                            date_conflict = (
+                                "基准日与请求交易日不一致" in str(result.get("error") or "") or
+                                (not result.get("error") and
+                                 result.get("as_of_date") != market_asof_date)
+                            )
+                            if date_conflict:
+                                result["warnings"] = [*(result.get("warnings") or []),
+                                    f"因子快照日期与当前市场基准日 {market_asof_date} 不一致"]
+                                if result.get("error"):
+                                    result["source_error"] = result["error"]
+                                result["error"] = "因子快照不是当前交易时点的数据"
                     if step["tool"] == "get_mcp_risk_announcements":
                         result.setdefault("ts_code", step["args"]["ts_code"])
                         if paper_session_id:
@@ -1044,9 +1076,15 @@ class TradingAgentHarness:
                             ledger_date = ledger["as_of_date"] if ledger else None
                             if (ledger_date and not result.get("error") and
                                     result.get("as_of_date") != ledger_date):
+                                date_conflict = True
                                 result["warnings"] = [*(result.get("warnings") or []),
                                     "风险公告查询截止日与模拟盘账本基准日不一致"]
                                 result["error"] = "风险公告查询截止日与模拟盘账本不一致"
+                        elif market_asof_date and not result.get("error") and result.get("as_of_date") != market_asof_date:
+                            date_conflict = True
+                            result["warnings"] = [*(result.get("warnings") or []),
+                                f"风险公告查询截止日与当前市场基准日 {market_asof_date} 不一致"]
+                            result["error"] = "风险公告查询不是当前交易时点的数据"
                     if step["tool"] == "skill":
                         result.setdefault("source", f"TradingAgents Skill: {step['skill_id']}")
                     if step["tool"] == "get_paper_session" and not result.get("error"):
@@ -1074,15 +1112,15 @@ class TradingAgentHarness:
                     self.store.event(task_id, "step_completed", {
                         "id": step["id"], "status": "failed" if result.get("error") else "completed"
                     })
-                    if (factor_date_conflict and
-                            step["args"]["ts_code"] not in factor_retried and
+                    retry_key = (step["tool"], step["args"].get("ts_code", ""))
+                    if (date_conflict and retry_key not in date_retried and
                             len(plan) < _MAX_PLAN_STEPS):
-                        factor_retried.add(step["args"]["ts_code"])
+                        date_retried.add(retry_key)
                         retry = {**step, "id": f"{step['id']}-verify",
-                                 "label": f"复核 {step['args']['ts_code']} 因子快照日期"}
+                                 "label": f"复核 {step['args']['ts_code']} 证据日期"}
                         plan.insert(step_index, retry)
                         self.store.event(task_id, "plan_revised", {
-                            "steps": [retry], "reason": "因子快照日期与模拟盘账本冲突，按账本日期重读一次",
+                            "steps": [retry], "reason": "证据日期与账户或当前市场基准日冲突，只读重试一次",
                         })
                     if (step_index == len(plan) and not replanned and
                             not self._advance_target(goal, paper_session_id) and
