@@ -1749,20 +1749,32 @@ class TradingAgentHarness:
         skill = self.skills.get(skill_id)
         if skill is None:
             return {"error": f"找不到分析能力：{skill_id}"}
-        run = await self.run_manager.create_run(skill, params, self.config)
+        # This task owns its cancellation and evidence. Reusing another task's
+        # active Skill run would let one conversation cancel the other's work.
+        run = await self.run_manager.create_run(skill, params, self.config,
+                                                deduplicate=False)
         self.store.event(task_id, "skill_started", {"run_id": run.id, "skill_id": skill_id})
         seen = 0
+
+        def relay_progress() -> None:
+            nonlocal seen
+            # RunManager retains a bounded tail of events. Translate the
+            # cumulative sequence into the current tail before reading it.
+            offset = run._event_seq - len(run.events)
+            for event in run.events[max(0, seen - offset):]:
+                if event.event_type in {"skill_progress", "progress_update", "agent_status"}:
+                    self.store.event(task_id, "skill_progress", {
+                        "run_id": run.id, "event_type": event.event_type,
+                        "payload": event.data,
+                    })
+            seen = run._event_seq
+
         try:
             while run._task is not None and not run._task.done():
-                for event in run.events[seen:]:
-                    if event.event_type in {"skill_progress", "progress_update", "agent_status"}:
-                        self.store.event(task_id, "skill_progress", {
-                            "run_id": run.id, "event_type": event.event_type,
-                            "payload": event.data,
-                        })
-                seen = len(run.events)
+                relay_progress()
                 await asyncio.sleep(0.2)
             completed = await self.run_manager.wait_for_run(run.id)
+            relay_progress()
         except asyncio.CancelledError:
             await self.run_manager.cancel_run(run.id)
             raise

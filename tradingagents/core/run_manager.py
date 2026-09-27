@@ -81,21 +81,25 @@ class RunManager:
         skill: BaseSkill,
         params: dict[str, Any],
         config: dict[str, Any],
+        *,
+        deduplicate: bool = True,
     ) -> Run:
-        """Create and start a new run."""
-        fingerprint = hashlib.sha256(
-            json.dumps(
-                {"skill_id": skill.metadata.id, "params": params},
-                sort_keys=True,
-                ensure_ascii=False,
-                default=str,
-            ).encode()
-        ).hexdigest()
-        existing_id = self._active_fingerprints.get(fingerprint)
-        if existing_id:
-            existing = self._runs.get(existing_id)
-            if existing and existing.status in {RunStatus.PENDING, RunStatus.RUNNING}:
-                return existing
+        """Create and start a run; callers with independent cancellation may opt out of reuse."""
+        fingerprint = None
+        if deduplicate:
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    {"skill_id": skill.metadata.id, "params": params},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    default=str,
+                ).encode()
+            ).hexdigest()
+            existing_id = self._active_fingerprints.get(fingerprint)
+            if existing_id:
+                existing = self._runs.get(existing_id)
+                if existing and existing.status in {RunStatus.PENDING, RunStatus.RUNNING}:
+                    return existing
         run = Run(
             id=str(uuid.uuid4()),
             skill_id=skill.metadata.id,
@@ -104,8 +108,9 @@ class RunManager:
         )
         self._runs[run.id] = run
         self._prune_memory()
-        self._active_fingerprints[fingerprint] = run.id
-        self._run_fingerprints[run.id] = fingerprint
+        if fingerprint is not None:
+            self._active_fingerprints[fingerprint] = run.id
+            self._run_fingerprints[run.id] = fingerprint
         self._subscribers[run.id] = []
         await self._save_run(run)
 
@@ -128,9 +133,7 @@ class RunManager:
         finally:
             # Admission deduplication must never remain stuck after an
             # unexpected infrastructure error or cancellation.
-            fingerprint = self._run_fingerprints.pop(run.id, None)
-            if fingerprint and self._active_fingerprints.get(fingerprint) == run.id:
-                self._active_fingerprints.pop(fingerprint, None)
+            self._release_fingerprint(run.id)
             duration_ms = (
                 int((run.completed_at - run.started_at).total_seconds() * 1000)
                 if run.started_at and run.completed_at else None
@@ -139,6 +142,26 @@ class RunManager:
                 "run_finished skill=%s run_id=%s status=%s duration_ms=%s events=%d",
                 run.skill_id, run.id, run.status.value, duration_ms, len(run.events),
             )
+
+    def _release_fingerprint(self, run_id: str) -> None:
+        fingerprint = self._run_fingerprints.pop(run_id, None)
+        if fingerprint and self._active_fingerprints.get(fingerprint) == run_id:
+            self._active_fingerprints.pop(fingerprint, None)
+
+    async def _finalize_prestart_cancellation(self, run: Run) -> None:
+        # asyncio does not enter _execute when its task is cancelled before
+        # its first instruction. Persist the terminal state ourselves.
+        if (not isinstance(run, Run) or run._task is None or not run._task.done() or
+                not run._task.cancelled() or run.status != RunStatus.PENDING):
+            return
+        run.status = RunStatus.CANCELLED
+        run.completed_at = datetime.now(timezone.utc)
+        self._release_fingerprint(run.id)
+        await self._update_run(run)
+        await self._record_event(
+            run, run.id,
+            SkillEvent(event_type="run_cancelled", data={"status": run.status.value}),
+        )
 
     async def _execute_in_slot(
         self,
@@ -228,11 +251,11 @@ class RunManager:
         """Persist an event in memory, to subscribers, and (best-effort) to the
         DB so a reconnecting client can replay progress after a server restart."""
         run.events.append(event)
+        run._event_seq += 1
         if len(run.events) > self._max_events_per_run:
             del run.events[: len(run.events) - self._max_events_per_run]
         # Persist for replay-on-reconnect. Best-effort; never block the pipeline.
         if self._db is not None and hasattr(self._db, "save_run_event"):
-            run._event_seq += 1
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(
                     self._db.save_run_event,
@@ -360,6 +383,7 @@ class RunManager:
             run._task.cancel()
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await asyncio.wait_for(run._task, timeout=2.0)
+            await self._finalize_prestart_cancellation(run)
             return True
         return False
 
@@ -372,6 +396,7 @@ class RunManager:
         SQLite rows or report files.
         """
         tasks: list[asyncio.Task] = []
+        cancelled_runs: list[Run] = []
         for run in self._runs.values():
             if run._task and not run._task.done():
                 if run._skill is not None:
@@ -379,11 +404,14 @@ class RunManager:
                         await run._skill.cancel()
                 run._task.cancel()
                 tasks.append(run._task)
+                cancelled_runs.append(run)
         if tasks:
             await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
                 timeout=5.0,
             )
+            for run in cancelled_runs:
+                await self._finalize_prestart_cancellation(run)
 
     def _run_from_record(self, record: dict[str, Any]) -> Run:
         """Convert a persisted SQLite row into a Run object."""

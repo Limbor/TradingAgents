@@ -154,6 +154,29 @@ def test_cancel_run():
     asyncio.run(run())
 
 
+def test_deduplication_can_be_disabled_for_independently_cancelled_runs(tmp_path):
+    async def run():
+        db = Database(tmp_path / "independent-runs.db")
+        manager = RunManager(db=db)
+        skill = RunTestSkill()
+        first = await manager.create_run(skill, {"value": "same"}, {}, deduplicate=False)
+        await manager.cancel_run(first.id)
+        assert db.get_run(first.id)["status"] == RunStatus.CANCELLED.value
+        assert db.list_run_events(first.id)[-1]["event_type"] == "run_cancelled"
+
+        second = await manager.create_run(skill, {"value": "same"}, {}, deduplicate=False)
+        shared = await manager.create_run(skill, {"value": "shared"}, {})
+        reused = await manager.create_run(skill, {"value": "shared"}, {})
+
+        assert first.id != second.id
+        assert shared.id == reused.id
+        await manager.wait_for_run(second.id)
+        assert manager.get_run(first.id).status == RunStatus.CANCELLED
+        assert manager.get_run(second.id).status == RunStatus.COMPLETED
+
+    asyncio.run(run())
+
+
 def test_run_manager_persists_run_lifecycle(tmp_path):
     async def run():
         db = Database(tmp_path / "runs.db")

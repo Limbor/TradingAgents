@@ -7,6 +7,7 @@ from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel
 
 from tradingagents.core.agent_harness import (
     AgentStore,
@@ -16,8 +17,10 @@ from tradingagents.core.agent_harness import (
 )
 from tradingagents.core.chat_agent import ChatResponse
 from tradingagents.core.persistence import Database
+from tradingagents.core.run_manager import RunManager, RunStatus
 from tradingagents.core.stockmanager_paper import PaperServiceError
 from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
+from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata
 
 
 class _Chat:
@@ -414,6 +417,90 @@ async def test_cancel_stops_task_and_rejects_concurrent_submission(tmp_path):
     assert await harness.cancel(task["id"])
     await harness._active[task["id"]]
     assert store.get_task(task["id"])["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_same_skill_in_two_conversations_has_independent_cancel_and_final_progress(tmp_path):
+    class Params(BaseModel):
+        value: str = "same"
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    runs_started = 0
+
+    class SlowAnalysis(BaseSkill):
+        @property
+        def metadata(self):
+            return SkillMetadata(id="stock_analysis", name="Test analysis",
+                                 description="test", version="1")
+
+        @property
+        def input_schema(self):
+            return Params
+
+        @property
+        def output_schema(self):
+            return Params
+
+        async def execute(self, params, config):
+            nonlocal runs_started
+            runs_started += 1
+            if runs_started == 2:
+                started.set()
+            yield SkillEvent(event_type="agent_status", data={"run_id": config["run_id"]})
+            await finish.wait()
+            yield SkillEvent(event_type="skill_progress", data={
+                "stage_id": "done", "stage_label": "分析完成", "status": "completed",
+            })
+            yield SkillEvent(event_type="skill_complete", data={
+                "status": "success", "value": params.value,
+            })
+
+        async def cancel(self):
+            return None
+
+    class Skills:
+        def get(self, skill_id):
+            return skill if skill_id == "stock_analysis" else None
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.run_manager = RunManager(db=store.db)
+    skill = SlowAnalysis()
+    harness.skills = Skills()
+
+    async def synthesize(*_args, **_kwargs):
+        return "分析已完成。"
+
+    harness._synthesize = synthesize
+    conversations = [store.create_conversation(f"测试 {index}", None) for index in range(2)]
+    hint = {"skill_id": "stock_analysis", "params": {"value": "same"}}
+    tasks = [harness.submit(conversation["id"], "进行深度研究", hint)
+             for conversation in conversations]
+    active = [harness._active[task["id"]] for task in tasks]
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    run_ids = [next(event["payload"]["run_id"] for event in store.list_events(task["id"])
+                    if event["event_type"] == "skill_started") for task in tasks]
+    assert run_ids[0] != run_ids[1]
+    assert await harness.cancel(tasks[0]["id"])
+    await active[0]
+    assert harness.run_manager.get_run(run_ids[0]).status == RunStatus.CANCELLED
+    assert store.get_task(tasks[0]["id"])["status"] == "cancelled"
+
+    finish.set()
+    await asyncio.wait_for(active[1], timeout=2)
+    assert harness.run_manager.get_run(run_ids[1]).status == RunStatus.COMPLETED
+    assert store.get_task(tasks[1]["id"])["status"] == "completed"
+    progress = [event for event in store.list_events(tasks[1]["id"])
+                if event["event_type"] == "skill_progress"]
+    assert [event["payload"]["event_type"] for event in progress] == [
+        "agent_status", "skill_progress",
+    ]
+    assert store.list_evidence(tasks[1]["id"])[0]["result"]["run_id"] == run_ids[1]
 
 
 @pytest.mark.asyncio

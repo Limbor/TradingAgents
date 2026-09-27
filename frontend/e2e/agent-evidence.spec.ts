@@ -149,3 +149,48 @@ test("announcement evidence shows the query window and its limits", async ({ pag
   await expect(inspector.getByText("2026-09-20")).toBeVisible();
   await expect(inspector.getByText("仅返回关键词命中日期，不含公告标题或原文")).toBeVisible();
 });
+
+test("Agent Skill progress and result links survive conversation reload", async ({ page }) => {
+  const now = "2026-09-25T08:00:00Z";
+  const conversation = { id: "research-1", title: "策略研究", paper_session_id: null,
+    created_at: now, updated_at: now, latest_status: "completed" };
+  const taskId = "task-research";
+  const event = (seq: number, event_type: string, payload: Record<string, unknown>) =>
+    ({ task_id: taskId, seq, event_type, payload, created_at: now });
+  const task = { id: taskId, conversation_id: conversation.id, goal: "分析策略表现",
+    status: "completed", result: { content: "研究完成。" }, error: null,
+    created_at: now, updated_at: now, proposal: null,
+    events: [
+      event(1, "plan_created", { steps: [{ id: "research", label: "运行策略研究" }] }),
+      event(2, "skill_started", { run_id: "run-123", skill_id: "stock_analysis" }),
+      event(3, "skill_progress", { run_id: "run-123", event_type: "skill_progress",
+        payload: { stage_id: "report", stage_label: "整理研究报告", status: "completed" } }),
+      event(4, "step_completed", { id: "research", status: "completed" }),
+    ],
+    evidence: [{ id: "e-research", task_id: taskId, tool_name: "skill:stock_analysis",
+      source: "TradingAgents Skill: stock_analysis", as_of_date: now.slice(0, 10),
+      retrieved_at: now, summary: "股票分析完成", warnings: [], result: { run_id: "run-123" } }],
+  };
+  const detail = { ...conversation, tasks: [task], messages: [
+    { id: "m-research-user", conversation_id: conversation.id, task_id: taskId,
+      role: "user", content: task.goal, created_at: now },
+    { id: "m-research-answer", conversation_id: conversation.id, task_id: taskId,
+      role: "assistant", content: task.result.content, created_at: now },
+  ] };
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path === "/api/v1/agent/conversations" ? [conversation]
+      : path === "/api/v1/agent/conversations/research-1" ? detail : {};
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/chat");
+  await expect(page.getByLabel("分析子任务进度").getByText("整理研究报告 · 已完成")).toBeVisible();
+  const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
+  await expect(inspector.getByRole("link", { name: "查看分析过程" })).toHaveAttribute("href", "/analysis/run-123");
+  await expect(inspector.getByRole("link", { name: "查看研究产物" })).toHaveAttribute("href", "/library?run_id=run-123");
+  await page.reload();
+  await expect(page.getByLabel("分析子任务进度").getByText("整理研究报告 · 已完成")).toBeVisible();
+  await inspector.getByRole("link", { name: "查看研究产物" }).click();
+  await expect(page).toHaveURL(/\/library\?run_id=run-123$/);
+});

@@ -59,6 +59,15 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   const revisionReasons = task.events.filter((event) => event.event_type === "plan_revised")
     .map((event) => event.payload.reason).filter((reason): reason is string => typeof reason === "string");
   const revisionReason = revisionReasons[revisionReasons.length - 1];
+  const stages = new Map<string, { label: string; status: string }>();
+  for (const event of task.events) {
+    if (event.event_type !== "skill_progress" || event.payload.event_type !== "skill_progress") continue;
+    const payload = asObject(event.payload.payload);
+    if (typeof payload.stage_id !== "string" || typeof payload.stage_label !== "string") continue;
+    const key = `${String(event.payload.run_id || "")}:${payload.stage_id}`;
+    stages.set(key, { label: payload.stage_label, status: String(payload.status || "running") });
+  }
+  const skillStages = Array.from(stages.values()).slice(-5);
   return <div className="agent-card mt-3 overflow-hidden">
     <div className="flex items-center justify-between border-b border-ui-line px-4 py-3 text-xs">
       <span className="font-semibold text-ui-ink">执行过程{revised ? " · 已调整计划" : ""}</span>
@@ -73,6 +82,9 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
           <Clock3 className="h-4 w-4 text-ui-faint" />}
         <span>{step.label}</span><span className="ml-auto text-ui-faint">{step.status === "completed" ? "已完成" : step.status === "failed" ? "失败" : step.status === "running" ? "进行中" : "待执行"}</span>
       </div>) : <p className="text-xs text-ui-muted">{activeStatuses.has(task.status) ? "正在解析任务目标…" : "本任务没有可展示的执行步骤。"}</p>}
+      {skillStages.length > 0 && <div className="space-y-1 border-l border-ui-line pl-3 text-xs text-ui-muted" aria-label="分析子任务进度">
+        {skillStages.map((stage, index) => <p key={index}>{stage.label} · {statusText[stage.status] ?? stage.status}</p>)}
+      </div>}
       {task.status === "reviewing" && <p className="pl-6 text-xs text-ui-muted">正在核对证据并形成回答…</p>}
       {task.status === "failed" && <p role="alert" className="text-xs text-ui-danger">{task.error || "任务执行失败"}</p>}
       {task.status === "interrupted" && <div className="space-y-2"><p role="alert" className="text-xs text-ui-warning">服务重启中断了本次任务；原有记录仍保留。</p><button disabled={retryDisabled} onClick={onRetry} className="rounded-md border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body disabled:opacity-50">重新运行任务</button></div>}
@@ -169,6 +181,8 @@ function EvidenceCard({ item }: { item: AgentEvidence }) {
   const failed = Boolean(item.result.error);
   const retrieved = new Date(item.retrieved_at);
   const status = failed ? "读取失败" : item.warnings.length ? "有数据提示" : "已取证";
+  const skillRunId = item.tool_name.startsWith("skill:") && typeof item.result.run_id === "string"
+    ? item.result.run_id : null;
   return <article className={`rounded-md border p-3 ${failed ? "border-ui-danger/40 bg-ui-danger/5" : "border-ui-line bg-ui-subtle"}`}>
     <div className="flex items-start gap-2">{failed ? <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-danger" /> : <Database className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-accent" />}<p className="min-w-0 flex-1 text-xs leading-5 text-ui-body">{item.summary}</p><span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${failed ? "bg-ui-danger/10 text-ui-danger" : item.warnings.length ? "bg-ui-warning/10 text-ui-warning" : "bg-ui-accentSoft text-ui-accent"}`}>{status}</span></div>
     {facts.length > 0 && <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 pl-5">{facts.map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-ui-faint">{label}</dt><dd className="truncate text-sm font-medium tabular-nums text-ui-ink" title={value}>{value}</dd></div>)}</dl>}
@@ -178,6 +192,10 @@ function EvidenceCard({ item }: { item: AgentEvidence }) {
       {!Number.isNaN(retrieved.getTime()) && <div className="flex gap-2"><dt className="w-12 shrink-0 text-ui-faint">获取于</dt><dd>{retrieved.toLocaleString("zh-CN")}</dd></div>}
     </dl>
     {item.warnings.map((warning, index) => <p key={index} className="mt-2 flex gap-1.5 text-xs leading-5 text-ui-warning"><CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{warning}</p>)}
+    {skillRunId && <div className="mt-3 flex gap-3 border-t border-ui-line pt-2 text-xs text-ui-accent">
+      <Link to={`/analysis/${encodeURIComponent(skillRunId)}`} className="underline underline-offset-2">查看分析过程</Link>
+      <Link to={`/library?run_id=${encodeURIComponent(skillRunId)}`} className="underline underline-offset-2">查看研究产物</Link>
+    </div>}
   </article>;
 }
 
