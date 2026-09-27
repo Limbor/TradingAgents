@@ -119,6 +119,7 @@ def make_get_paper_session(config: dict[str, Any]):
             "sleeves": status.get("sleeves"),
             "summary": status.get("summary"),
             "next_plan": plan,
+            "trades_count": status.get("trades_count"),
             "recent_trades": trades[:30],
             "equity_tail": (curve.get("daily_records") or [])[-30:] if isinstance(curve, dict) else [],
             "warnings": warnings,

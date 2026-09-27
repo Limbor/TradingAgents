@@ -4,6 +4,7 @@ All market bars, accounts, databases and service roots are synthetic and live
 in one temporary directory. No vendor token or LLM call is needed.
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -124,12 +125,21 @@ async def wait_task(client: httpx.AsyncClient, task_id: str, statuses: set[str])
     raise RuntimeError(f"Agent task {task_id} did not reach {statuses}")
 
 
-async def main() -> None:
+async def main(*, with_model: bool = False) -> None:
     if not (STOCK_SOURCE / "stockmanager").is_dir() or not STOCK_PYTHON.is_file():
         raise RuntimeError(f"StockManager checkout and virtualenv required: {STOCK_SOURCE}")
     config_path = STOCK_SOURCE / "config" / f"{CONFIG_NAME}.json"
     if not config_path.is_file():
         raise RuntimeError(f"StockManager strategy config missing: {config_path}")
+    if with_model:
+        from dotenv import dotenv_values
+
+        key = os.environ.get("DEEPSEEK_API_KEY") or dotenv_values(
+            Path(__file__).resolve().parents[1] / ".env"
+        ).get("DEEPSEEK_API_KEY")
+        if not key:
+            raise RuntimeError("--with-model requires DEEPSEEK_API_KEY")
+        os.environ["DEEPSEEK_API_KEY"] = key
     with tempfile.TemporaryDirectory(prefix="agent-paper-engine-") as folder:
         temporary = Path(folder)
         original_cwd = Path.cwd()
@@ -160,8 +170,11 @@ async def main() -> None:
                                   scheduler_enabled=False,
                                   stockmanager_mcp_enabled=False,
                                   ticker_name_backfill_enabled=False,
-                                  agent_model_planning_enabled=False,
+                                  agent_model_planning_enabled=with_model,
                                   stockmanager_web_url=f"http://127.0.0.1:{stock_port}")
+            if with_model:
+                DEFAULT_CONFIG.update(llm_provider="deepseek",
+                                      quick_think_llm="deepseek-v4-flash")
             app = create_app()
             trading_server = uvicorn.Server(uvicorn.Config(
                 app, host="127.0.0.1", port=trading_port, log_level="error"))
@@ -222,6 +235,38 @@ async def main() -> None:
                     "equity_before": before["snapshot"]["equity"],
                     "equity_after": after["snapshot"]["equity"],
                 }, ensure_ascii=False))
+                if with_model:
+                    read = await ta.post(f"/api/v1/agent/conversations/{cid}/tasks", json={
+                        "message": "总结这个模拟盘当前的账本日期、权益、现金和近期成交。只报告已核对的事实。",
+                    })
+                    assert read.status_code == 202, read.text
+                    read_task = await wait_task(ta, read.json()["id"],
+                                                {"completed", "failed", "needs_input"})
+                    assert read_task["status"] == "completed", read_task
+                    assert read_task["proposal"] is None, read_task
+                    assert read_task["evidence"] and all(
+                        item["tool_name"] == "get_paper_session"
+                        for item in read_task["evidence"]
+                    ), read_task
+                    assert read_task["evidence"][0]["as_of_date"] == context["target"]
+                    answer = read_task["result"]["content"]
+                    assert "模型暂时不可用" not in answer, answer
+                    assert context["target"] in answer, answer
+                    normalized_answer = answer.replace(",", "").replace(" ", "")
+                    assert f"{after['snapshot']['equity']:.2f}" in normalized_answer, answer
+                    assert f"{after['snapshot']['cash']:.2f}" in normalized_answer, answer
+                    assert not any(field in answer for field in (
+                        "state_fingerprint", "pending_stock", "phase39_signal_rebalance"
+                    )), answer
+                    plan_events = [item for item in read_task["events"]
+                                   if item["event_type"] == "plan_created"]
+                    assert len(plan_events) == 1, read_task
+                    assert plan_events[0]["payload"]["source"] == "model", read_task
+                    reread = (await sm.get(path)).json()["data"]
+                    assert reread["state_fingerprint"] == after["state_fingerprint"]
+                    print(json.dumps({"model_task_status": read_task["status"],
+                                      "plan_source": plan_events[0]["payload"]["source"],
+                                      "model_answer": answer}, ensure_ascii=False))
         finally:
             if trading_server and trading_task:
                 trading_server.should_exit = True
@@ -238,4 +283,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--with-model", action="store_true",
+                        help="Also check a read-only Agent answer using DeepSeek on synthetic data")
+    asyncio.run(main(with_model=parser.parse_args().with_model))

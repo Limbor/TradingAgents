@@ -246,6 +246,34 @@ def test_unusable_paper_plan_is_masked_only_in_model_input():
         "next_plan"] == plan
 
 
+def test_paper_model_input_preserves_account_facts_without_internal_ledger_fields():
+    result = {
+        "session_id": "paper:mine", "as_of_date": "2026-09-25",
+        "state_fingerprint": "a" * 64,
+        "session": {"strategy": "demo", "initial_cash": 100000,
+                    "last_date": "2026-09-25", "params": {"private": "internal"}},
+        "snapshot": {"as_of_date": "2026-09-25", "equity": 101000,
+                     "cash": 50000, "updated_at": "internal", "positions": {
+                         "600519.SH": {"shares": 10, "value": 51000,
+                                       "pending_stock": 5, "last_price": 5100},
+                     }},
+        "trades_count": 1,
+        "recent_trades": [{"trade_date": "2026-09-24", "code": "600519.SH",
+                           "side": "BUY", "shares": 10, "source": "paper",
+                           "note": "internal rebalance state"}],
+        "equity_tail": [{"date": "2026-09-25", "equity": 101000,
+                         "debug": "internal"}],
+    }
+    projected = _answer_evidence_result({"tool_name": "get_paper_session", "result": result})
+    assert projected["snapshot"]["equity"] == 101000
+    assert projected["snapshot"]["position_count"] == 1
+    assert projected["trades_count"] == 1
+    assert projected["recent_trades"][0]["source"] == "paper"
+    assert "internal" not in json.dumps(projected)
+    assert "state_fingerprint" not in projected
+    assert result["snapshot"]["positions"]["600519.SH"]["pending_stock"] == 5
+
+
 def _harness(tmp_path, *, paper_handler, chat=None):
     db = Database(tmp_path / "agent.db")
     store = AgentStore(db)
