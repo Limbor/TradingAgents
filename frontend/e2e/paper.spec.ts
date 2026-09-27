@@ -135,11 +135,15 @@ test("an advancing paper job can be observed again after page reload", async ({ 
   let polls = 0;
   let jobLost = false;
   let advanceFails = false;
+  let reviewed = false;
+  let reviewAcks = 0;
   await page.route("**/api/v1/**", async (route) => {
     const { pathname } = new URL(route.request().url());
     let body: unknown = {};
     if (pathname === "/api/v1/paper/sessions") body = [{ session_id: "paper:demo", mode: "paper", strategy: "demo", config_name: "", initial_cash: 100000, last_date: "2026-01-02", params: {} }];
-    else if (pathname.endsWith("/status")) body = { session: { initial_cash: 100000 }, state_fingerprint: "b".repeat(64), snapshot: null, trades_count: 0 };
+    else if (pathname.endsWith("/status")) body = { session: { initial_cash: 100000 }, state_fingerprint: "b".repeat(64), snapshot: null, trades_count: 0,
+      advance_operation: jobLost ? { job_id: "job-running", target_date: "2026-01-05",
+        state: reviewed ? "reviewed" : "needs_review", updated_at: "2026-01-05T00:00:00Z" } : null };
     else if (pathname.endsWith("/equity")) body = { daily_records: [], benchmark_curve: [] };
     else if (pathname.endsWith("/trades")) body = [];
     else if (pathname.endsWith("/next-plan")) body = null;
@@ -149,6 +153,12 @@ test("an advancing paper job can be observed again after page reload", async ({ 
         return;
       }
       body = { job_id: "job-running" };
+    } else if (pathname.endsWith("/advance-review")) {
+      expect(route.request().postDataJSON()).toMatchObject({ job_id: "job-running",
+        observed_state_fingerprint: "b".repeat(64), confirmed: true });
+      reviewed = true;
+      reviewAcks += 1;
+      body = { ok: true, state: "reviewed" };
     }
     else if (pathname.endsWith("/jobs/job-running")) {
       polls += 1;
@@ -179,6 +189,7 @@ test("an advancing paper job can be observed again after page reload", async ({ 
   await page.reload();
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
   await page.getByRole("button", { name: "核对账本后解除锁定" }).click();
+  await expect.poll(() => reviewAcks).toBe(1);
   await page.getByLabel("推进至交易日").fill("2026-01-05");
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeEnabled();
   advanceFails = true;
@@ -188,4 +199,38 @@ test("an advancing paper job can be observed again after page reload", async ({ 
   await page.reload();
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "核对账本后解除锁定" })).toBeVisible();
+});
+
+test("server-side paper review lock appears without local browser state", async ({ page }) => {
+  let reviewed = false;
+  let reviewAcks = 0;
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/paper/sessions") body = [{ session_id: "paper:server-lock", mode: "paper",
+      strategy: "demo", config_name: "", initial_cash: 100000, last_date: "2026-01-02", params: {} }];
+    else if (path.endsWith("/status")) body = { session: { initial_cash: 100000 },
+      state_fingerprint: "c".repeat(64), snapshot: null, trades_count: 0,
+      advance_operation: { job_id: "job:other-client", target_date: "2026-01-05",
+        state: reviewed ? "reviewed" : "needs_review", updated_at: "2026-01-05T00:00:00Z" } };
+    else if (path.endsWith("/equity")) body = { daily_records: [], benchmark_curve: [] };
+    else if (path.endsWith("/trades")) body = [];
+    else if (path.endsWith("/next-plan")) body = null;
+    else if (path.endsWith("/advance-review")) {
+      expect(route.request().postDataJSON()).toMatchObject({ job_id: "job:other-client",
+        observed_state_fingerprint: "c".repeat(64), confirmed: true });
+      reviewed = true;
+      reviewAcks += 1;
+      body = { ok: true, state: "reviewed" };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await mockAgentTasks(page);
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/paper");
+  await page.getByLabel("推进至交易日").fill("2026-01-05");
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
+  await page.getByRole("button", { name: "核对账本后解除锁定" }).click();
+  await expect.poll(() => reviewAcks).toBe(1);
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeEnabled();
 });

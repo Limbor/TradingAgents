@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { MessageSquareText, RefreshCw } from "lucide-react";
 import {
-  advancePaper, createPaperSession, getPaperCurve, getPaperJob, getPaperPlan,
+  acknowledgePaperAdvanceReview, advancePaper, createPaperSession, getPaperCurve, getPaperJob, getPaperPlan,
   getPaperStatus, getPaperTrades, listPaperAllocators, listPaperConfigs, listPaperSessions,
   listPaperStrategies, type PaperJob,
 } from "@/api/paper";
@@ -51,6 +51,8 @@ export default function Paper() {
     setAgentPrompt(undefined);
   }, [id]);
   const status = useQuery({ queryKey: [...queryKeys.paperSession(id), "status"], queryFn: () => getPaperStatus(id), enabled: !!id, retry: false });
+  const serverOperation = status.data?.advance_operation;
+  const serverLocked = !!serverOperation && ["queued", "running", "needs_review"].includes(serverOperation.state);
   const curve = useQuery({ queryKey: [...queryKeys.paperSession(id), "equity"], queryFn: () => getPaperCurve(id), enabled: !!id, retry: false });
   const trades = useQuery({ queryKey: [...queryKeys.paperSession(id), "trades"], queryFn: () => getPaperTrades(id), enabled: !!id, retry: false });
   const plan = useQuery({ queryKey: [...queryKeys.paperSession(id), "plan"], queryFn: () => getPaperPlan(id), enabled: !!id, retry: false });
@@ -73,8 +75,14 @@ export default function Paper() {
       window.sessionStorage.removeItem(key);
       setJob({ job_id: stored, sessionId: id, state: "queued", progress: 0, message: "正在恢复任务状态", result: null });
       setBusy(true);
+    } else if (serverOperation && ["queued", "running", "needs_review"].includes(serverOperation.state)) {
+      const needsReview = serverOperation.state === "needs_review";
+      setJob({ job_id: serverOperation.job_id, sessionId: id,
+        state: needsReview ? "error" : serverOperation.state === "running" ? "running" : "queued",
+        progress: 0, message: needsReview ? "作业结果待核对" : "正在恢复账户推进作业", result: null });
+      setBusy(!needsReview);
     }
-  }, [id, job]);
+  }, [id, job, serverOperation]);
 
   useEffect(() => {
     if (!job || (job.state !== "queued" && job.state !== "running")) return;
@@ -132,6 +140,10 @@ export default function Paper() {
       setError("上一次推进仍需核对账本，请先完成核对");
       return;
     }
+    if (serverLocked) {
+      setError("账户已有推进作业或结果待核对，请先完成核对");
+      return;
+    }
     const fingerprint = status.data?.state_fingerprint;
     if (!fingerprint) {
       setError("当前账本缺少状态指纹，请刷新账本后再推进");
@@ -161,8 +173,18 @@ export default function Paper() {
       const current = await getPaperStatus(id);
       client.setQueryData([...queryKeys.paperSession(id), "status"], current);
       const ledgerDate = current.snapshot?.as_of_date ?? "尚未推进";
-      const jobLabel = job.job_id === "submission-unknown" ? "提交请求" : `作业 ${job.job_id}`;
+      const operation = current.advance_operation;
+      const reviewJobId = operation && ["queued", "running", "needs_review"].includes(operation.state)
+        ? operation.job_id : job.job_id;
+      const jobLabel = reviewJobId === "submission-unknown" ? "提交请求" : `作业 ${reviewJobId}`;
       if (!window.confirm(`${jobLabel}的结果不确定。当前账本日期：${ledgerDate}。请先核对持仓和成交；确认已完成核对并解除推进锁定？`)) return;
+      if (operation && ["queued", "running", "needs_review"].includes(operation.state)) {
+        if (!current.state_fingerprint) throw new Error("当前账本缺少状态指纹");
+        await acknowledgePaperAdvanceReview(id, reviewJobId, current.state_fingerprint);
+        client.setQueryData([...queryKeys.paperSession(id), "status"], {
+          ...current, advance_operation: { ...operation, state: "reviewed" },
+        });
+      }
       window.localStorage.removeItem(`paper-advance-job:${id}`);
       setJob(null);
       setError("");
@@ -258,7 +280,7 @@ export default function Paper() {
 
         <section className={card}><h2 className="mb-3 font-medium">最近成交</h2>{trades.data?.length ? <div className="max-h-72 overflow-auto"><table className="w-full text-left text-sm"><thead className="text-xs text-ui-faint"><tr><th>日期</th><th>标的</th><th>方向</th><th>数量</th><th>价格</th></tr></thead><tbody>{trades.data.slice(0, 30).map((trade, index) => <tr key={index} className="border-t border-ui-line"><td className="py-2">{trade.trade_date}</td><td>{trade.name || trade.code}</td><td>{trade.side}</td><td>{trade.shares}</td><td>{money(trade.price)}</td></tr>)}</tbody></table></div> : <p className="text-sm text-ui-faint">暂无成交</p>}</section>
 
-        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
+        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
         </div>
         </div>
       </>}

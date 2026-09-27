@@ -5,11 +5,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowRight, Check, CircleAlert, CircleCheck, Clock3, Database, LoaderCircle, MessageSquarePlus, PanelRightClose, PanelRightOpen, Send, Square, X } from "lucide-react";
 import {
-  approveAgentProposal, cancelAgentTask, createAgentConversation, getAgentConversation,
+  approveAgentProposal, cancelAgentTask, closeAgentProposalReview, createAgentConversation, getAgentConversation,
   importLegacyAgentConversation, listAgentConversations, submitAgentTask,
   readAgentTaskStream, reconcileAgentProposal, rejectAgentProposal,
   type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask,
 } from "@/api/agent";
+import { getPaperStatus } from "@/api/paper";
 import type { ChatNavState, IntentHint } from "@/lib/chatNav";
 import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyChatImport";
 
@@ -31,7 +32,7 @@ const statusText: Record<string, string> = {
 const proposalStatusText: Record<string, string> = {
   pending: "等待确认", executing: "模拟盘执行中", submitted: "等待作业回执",
   completed: "账本已推进", no_change: "账本未推进", stale: "提案已失效",
-  unknown: "执行结果待核对", rejected: "已取消", expired: "已过期", failed: "执行失败",
+  unknown: "执行结果待核对", reviewed: "已人工核对", rejected: "已取消", expired: "已过期", failed: "执行失败",
 };
 
 function taskSteps(task: AgentTask) {
@@ -79,12 +80,13 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   </div>;
 }
 
-function ProposalCard({ task, busy, onApprove, onReject, onReconcile }: {
+function ProposalCard({ task, busy, onApprove, onReject, onReconcile, onCloseReview }: {
   task: AgentTask;
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
   onReconcile: () => void;
+  onCloseReview: () => void;
 }) {
   const proposal = task.proposal;
   if (!proposal) return null;
@@ -113,7 +115,9 @@ function ProposalCard({ task, busy, onApprove, onReject, onReconcile }: {
         {typeof proposal.result.child_audit_error === "string" && <p className="mt-2">{proposal.result.child_audit_error}</p>}
       </div>}
       <button disabled={busy} onClick={onReconcile} className="rounded-md border border-ui-warning px-3 py-1.5 font-medium disabled:opacity-50">核对执行结果</button>
+      <button disabled={busy} onClick={onCloseReview} className="ml-2 rounded-md border border-ui-warning px-3 py-1.5 font-medium disabled:opacity-50">已核对账本，关闭提案</button>
     </div>}
+    {proposal.status === "reviewed" && <p role="status" className="mt-3 text-xs text-ui-muted">人工核对已记录。账本日期：{String(proposal.result.reviewed_date || "未知")}。此记录不代表作业成功。</p>}
   </div>;
 }
 
@@ -386,14 +390,26 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     try { await cancelAgentTask(latestTask.id); await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] }); }
     catch (exc) { setError(exc instanceof Error ? exc.message : "取消失败"); }
   };
-  const decideProposal = async (decision: "approve" | "reject" | "reconcile", task: AgentTask) => {
+  const decideProposal = async (decision: "approve" | "reject" | "reconcile" | "close_review", task: AgentTask) => {
     if (!task.proposal) return;
     setBusy(true);
     setError("");
     try {
       if (decision === "approve") await approveAgentProposal(task.proposal.id);
       else if (decision === "reject") await rejectAgentProposal(task.proposal.id);
-      else await reconcileAgentProposal(task.proposal.id);
+      else if (decision === "reconcile") await reconcileAgentProposal(task.proposal.id);
+      else {
+        const status = await getPaperStatus(task.proposal.session_id);
+        const fingerprint = status.state_fingerprint;
+        if (!fingerprint) throw new Error("当前账本缺少状态指纹，请先查看模拟盘页面");
+        const operation = status.advance_operation;
+        if (!operation || !["completed", "reviewed"].includes(operation.state)) {
+          throw new Error("模拟盘作业仍待核对，请先在模拟盘页面完成核对");
+        }
+        const date = status.snapshot?.as_of_date || status.session.last_date || "未知";
+        if (!window.confirm(`请确认已核对账户 ${task.proposal.session_id} 的模拟盘账本。\n当前日期：${date}\n当前权益：¥${status.snapshot?.equity?.toLocaleString("zh-CN") ?? "未知"}\n组合账户还需逐一核对子策略账本。\n\n关闭后仅记录人工核对，不认定执行成功。`)) return;
+        await closeAgentProposalReview(task.proposal.id, fingerprint);
+      }
       await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] });
       await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
     } catch (exc) { setError(exc instanceof Error ? exc.message : "操作失败"); }
@@ -422,7 +438,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
                 {message.role === "assistant" && task?.result.citations?.length ? <button onClick={() => inspectTask(task.id)} className="mt-2 flex items-center gap-1 text-xs text-ui-muted hover:text-ui-accent"><Check className="h-3.5 w-3.5 text-ui-accent" />已关联 {task.evidence.length} 项证据 · 查看任务档案</button> : null}
               </div>
             </div>
-            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} /></div>}
+            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} onCloseReview={() => void decideProposal("close_review", task)} /></div>}
           </div>;
         })}
       </div></div>

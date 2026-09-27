@@ -1147,6 +1147,36 @@ async def test_unresolved_paper_advance_blocks_other_conversations_for_same_acco
 
 
 @pytest.mark.asyncio
+async def test_manual_review_closes_uncertain_proposal_only_after_ledger_check(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "unknown", {"job_id": "job:lost"})
+    store.set_status(task["id"], "needs_review")
+    ledger = _paper_status("2026-09-26")["data"]
+    ledger["advance_operation"] = {"job_id": "job:lost", "target_date": "2026-09-28",
+                                   "state": "needs_review"}
+
+    async def paper_request(config, method, path, payload=None):
+        assert method == "GET" and path == "/api/v2/paper/paper:advance/status"
+        return {"data": ledger}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    with pytest.raises(ValueError, match="仍未核对完成"):
+        await harness.close_review(proposal["id"], ledger["state_fingerprint"])
+    ledger["advance_operation"]["state"] = "reviewed"
+    with pytest.raises(ValueError, match="账本在确认期间已变化"):
+        await harness.close_review(proposal["id"], "0" * 64)
+    result = await harness.close_review(proposal["id"], ledger["state_fingerprint"])
+    assert result["status"] == "reviewed"
+    assert result["result"]["reviewed_job_id"] == "job:lost"
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert store.unresolved_paper_action("paper:advance") is None
+    assert any(event["event_type"] == "action_reviewed" for event in store.list_events(task["id"]))
+    with pytest.raises(ValueError, match="只有待核对"):
+        await harness.close_review(proposal["id"], ledger["state_fingerprint"])
+
+
+@pytest.mark.asyncio
 async def test_advance_requires_one_time_approval_and_reconciles_ledger(tmp_path, monkeypatch):
     harness, store, task, proposal = await _proposed_advance(tmp_path)
     calls = []

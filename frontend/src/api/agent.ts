@@ -170,3 +170,10 @@ export const rejectAgentProposal = (id: string) =>
 
 export const reconcileAgentProposal = (id: string) =>
   fetchJson<{ status: string }>(`${agentApiBase}/proposals/${encodeURIComponent(id)}/reconcile`, { method: "POST" });
+
+export const closeAgentProposalReview = (id: string, observedStateFingerprint: string) =>
+  fetchJson<{ status: string }>(`${agentApiBase}/proposals/${encodeURIComponent(id)}/close-review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ observed_state_fingerprint: observedStateFingerprint, confirmed: true }),
+  });

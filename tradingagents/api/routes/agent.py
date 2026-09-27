@@ -39,6 +39,11 @@ class LegacyImport(BaseModel):
     messages: list[LegacyMessage] = Field(min_length=1, max_length=100)
 
 
+class CloseProposalReview(BaseModel):
+    observed_state_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmed: bool
+
+
 @router.get("/conversations")
 def list_conversations(request: Request,
                        paper_session_id: str | None = Query(default=None, max_length=160),
@@ -198,3 +203,19 @@ async def reconcile_proposal(request: Request, proposal_id: str):
         raise HTTPException(404, "提案不存在") from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/proposals/{proposal_id}/close-review")
+async def close_proposal_review(request: Request, proposal_id: str, body: CloseProposalReview):
+    if not body.confirmed:
+        raise HTTPException(422, "请确认已核对当前模拟盘账本")
+    try:
+        return await request.app.state.agent_harness.close_review(
+            proposal_id, body.observed_state_fingerprint
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "提案不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PaperServiceError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc

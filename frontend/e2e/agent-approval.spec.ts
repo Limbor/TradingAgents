@@ -93,6 +93,48 @@ test("uncertain paper action can be reconciled without another approval", async 
   await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
 });
 
+test("reviewed ledger can close an uncertain Agent proposal", async ({ page }) => {
+  const time = "2026-09-25T08:00:00Z";
+  let closed = false;
+  let submittedFingerprint = "";
+  const conversation = { id: "review-conversation", title: "模拟盘", paper_session_id: "paper:one",
+    created_at: time, updated_at: time, latest_status: closed ? "completed" : "needs_review" };
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/agent/conversations") body = [conversation];
+    else if (path === "/api/v1/agent/conversations/review-conversation") body = {
+      ...conversation,
+      messages: [{ id: "m1", conversation_id: conversation.id, task_id: "t1", role: "user",
+        content: "推进模拟盘到 2026-09-28", created_at: time }],
+      tasks: [{ id: "t1", conversation_id: conversation.id, goal: "推进模拟盘到 2026-09-28",
+        status: closed ? "completed" : "needs_review", result: {}, error: null, created_at: time,
+        updated_at: time, events: [], evidence: [], proposal: {
+          id: "p1", task_id: "t1", action_type: "advance_paper_day", session_id: "paper:one",
+          args: { target_date: "2026-09-28" }, baseline: { as_of_date: "2026-09-25" },
+          status: closed ? "reviewed" : "unknown", result: { job_id: "job:lost", reviewed_date: "2026-09-28" },
+          expires_at: time,
+        } }],
+    };
+    else if (path === "/api/v1/paper/sessions/paper%3Aone/status" || path.endsWith("/paper:one/status")) body = {
+      session: { session_id: "paper:one", last_date: "2026-09-28" },
+      snapshot: { as_of_date: "2026-09-28", equity: 100000 }, state_fingerprint: "a".repeat(64),
+      advance_operation: { job_id: "job:lost", target_date: "2026-09-28", state: "reviewed" },
+    };
+    else if (path === "/api/v1/agent/proposals/p1/close-review") {
+      submittedFingerprint = String((route.request().postDataJSON() as { observed_state_fingerprint: string }).observed_state_fingerprint);
+      closed = true;
+      body = { status: "reviewed" };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/chat?paper_session=paper%3Aone");
+  await page.getByRole("button", { name: "已核对账本，关闭提案" }).click();
+  await expect.poll(() => submittedFingerprint).toBe("a".repeat(64));
+  await expect(page.getByText("已人工核对", { exact: true })).toBeVisible();
+});
+
 test("completed paper job without ledger advance is shown as no change", async ({ page }) => {
   const time = "2026-09-26T08:00:00Z";
   const conversation = { id: "conversation-no-day", title: "模拟盘 · paper:one", paper_session_id: "paper:one",

@@ -32,6 +32,12 @@ export interface PaperPosition {
 export interface PaperStatus {
   session: PaperSession;
   state_fingerprint: string | null;
+  advance_operation?: {
+    job_id: string;
+    target_date: string;
+    state: "queued" | "running" | "needs_review" | "completed" | "reviewed";
+    updated_at: string;
+  } | null;
   snapshot: {
     as_of_date: string | null;
     equity: number;
@@ -138,4 +144,7 @@ export const getPaperTrades = (id: string) => fetchJson<PaperTrade[]>(`${session
 export const getPaperPlan = (id: string) => fetchJson<PaperPlan | null>(`${sessionUrl(id)}/next-plan`);
 export const advancePaper = (id: string, target_date: string, expected_state_fingerprint: string) =>
   fetchJson<{ job_id: string }>(`${sessionUrl(id)}/advance`, postJson({ target_date, expected_state_fingerprint }));
+export const acknowledgePaperAdvanceReview = (id: string, job_id: string, observed_state_fingerprint: string) =>
+  fetchJson<{ state: string }>(`${sessionUrl(id)}/advance-review`,
+    postJson({ job_id, observed_state_fingerprint, confirmed: true }));
 export const getPaperJob = (id: string) => fetchJson<PaperJob>(`${root}/jobs/${encodeURIComponent(id)}`);

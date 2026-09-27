@@ -405,6 +405,25 @@ class AgentStore:
                 (status, _json(result) if result is not None else None, _now(), proposal_id),
             )
 
+    def close_reviewed_proposal(self, proposal_id: str, result: dict,
+                                content: str) -> bool:
+        """Release an uncertain account action exactly once after explicit review."""
+        with self.db._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE agent_proposals SET status='reviewed', result_json=?, updated_at=? "
+                "WHERE id=? AND status='unknown' AND EXISTS ("
+                "SELECT 1 FROM agent_tasks WHERE id=agent_proposals.task_id AND status='needs_review')",
+                (_json(result), _now(), proposal_id),
+            )
+            if cursor.rowcount == 1:
+                conn.execute(
+                    "UPDATE agent_tasks SET status='completed', result_json=?, error=NULL, "
+                    "updated_at=? WHERE id=(SELECT task_id FROM agent_proposals WHERE id=?)",
+                    (_json({"content": content, "read_only": True}), _now(), proposal_id),
+                )
+        return cursor.rowcount == 1
+
     def reject_proposal(self, proposal_id: str) -> bool:
         with self.db._conn() as conn:
             cursor = conn.execute(
@@ -681,6 +700,58 @@ class TradingAgentHarness:
                     "child_ledgers": child_ledgers if composite_failed else None,
                     "child_audit_error": child_audit_error,
                 })
+            return self.store.get_proposal(proposal_id) or proposal
+
+    async def close_review(self, proposal_id: str, observed_state_fingerprint: str) -> dict:
+        """Close an uncertain proposal after a human has inspected the current ledger."""
+        from tradingagents.core.stockmanager_paper import paper_request
+
+        lock = self._reconcile_locks.setdefault(proposal_id, asyncio.Lock())
+        async with lock:
+            proposal = self.store.get_proposal(proposal_id)
+            if not proposal:
+                raise KeyError(proposal_id)
+            if proposal["status"] != "unknown":
+                raise ValueError("只有待核对的提案可以人工关闭")
+            task = self.store.get_task(proposal["task_id"])
+            conversation = self.store.get_conversation(task["conversation_id"]) if task else None
+            if not conversation or conversation.get("paper_session_id") != proposal["session_id"]:
+                raise ValueError("提案与模拟盘会话不匹配")
+            ledger = (await paper_request(
+                self.config, "GET", f"/api/v2/paper/{proposal['session_id']}/status"
+            )).get("data") or {}
+            conflicts = paper_ledger_conflicts(proposal["session_id"], ledger)
+            actual = _paper_state_fingerprint(ledger)
+            if conflicts or not actual or actual != ledger.get("state_fingerprint"):
+                raise ValueError("当前模拟盘账本不完整或存在矛盾，不能关闭核对")
+            if actual != observed_state_fingerprint:
+                raise ValueError("模拟盘账本在确认期间已变化，请重新查看")
+            operation = ledger.get("advance_operation") or {}
+            known_job = str(proposal["result"].get("job_id") or "")
+            if (operation.get("state") not in {"completed", "reviewed"}
+                    or operation.get("target_date") != proposal["args"]["target_date"]
+                    or (known_job and operation.get("job_id") != known_job)):
+                raise ValueError("模拟盘推进作业仍未核对完成，或作业与提案不匹配")
+            child_ledgers: list[dict] = []
+            if ledger.get("kind") == "composite":
+                child_ledgers, child_error = await self._read_composite_child_ledgers(
+                    ledger, proposal["session_id"]
+                )
+                if child_error or any(item.get("error") for item in child_ledgers):
+                    raise ValueError(child_error or "子策略账本仍有错误，不能关闭核对")
+            result = {**proposal["result"], "reviewed_at": _now(),
+                      "reviewed_state_fingerprint": actual,
+                      "reviewed_job_id": operation["job_id"],
+                      "reviewed_date": (ledger.get("snapshot") or {}).get("as_of_date"),
+                      "reviewed_child_ledgers": child_ledgers}
+            content = "已人工核对并关闭此模拟盘推进提案；执行结果以当前账本为准。"
+            if not self.store.close_reviewed_proposal(proposal_id, result, content):
+                raise ValueError("提案状态已变化，请重新查看")
+            self.store.add_message(task["conversation_id"], "assistant", content, task["id"])
+            self.store.event(task["id"], "action_reviewed", {
+                "proposal_id": proposal_id, "job_id": operation["job_id"],
+                "state_fingerprint": actual, "child_ledgers": child_ledgers,
+            })
             return self.store.get_proposal(proposal_id) or proposal
 
     async def _read_composite_child_ledgers(self, ledger: dict,

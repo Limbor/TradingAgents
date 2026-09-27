@@ -43,6 +43,12 @@ class AdvancePaper(BaseModel):
     expected_state_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
+class AdvancePaperReview(BaseModel):
+    job_id: str = Field(min_length=1, max_length=160)
+    observed_state_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmed: bool
+
+
 @router.get("/strategies")
 async def strategies(request: Request):
     return (await _call(request, "GET", "/api/v2/strategies")).get("items", [])
@@ -107,4 +113,15 @@ async def advance(request: Request, session_id: str, body: AdvancePaper):
         {"target_date": body.target_date.isoformat(),
          **({"expected_state_fingerprint": body.expected_state_fingerprint}
             if body.expected_state_fingerprint is not None else {})},
+    )
+
+
+@router.post("/sessions/{session_id}/advance-review")
+async def advance_review(request: Request, session_id: str, body: AdvancePaperReview):
+    if not body.confirmed:
+        raise HTTPException(422, "必须确认已核对账本")
+    return await _call(
+        request, "POST", f"/api/v2/paper/{_id(session_id)}/advance_review",
+        {"job_id": _id(body.job_id), "observed_state_fingerprint": body.observed_state_fingerprint,
+         "confirmed": True},
     )
