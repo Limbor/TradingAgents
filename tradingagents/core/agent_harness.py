@@ -739,6 +739,10 @@ class TradingAgentHarness:
                 )
                 if child_error or any(item.get("error") for item in child_ledgers):
                     raise ValueError(child_error or "子策略账本仍有错误，不能关闭核对")
+                if any((item.get("advance_operation") or {}).get("job_id") != operation["job_id"]
+                       or (item.get("advance_operation") or {}).get("state") not in {"completed", "reviewed"}
+                       for item in child_ledgers):
+                    raise ValueError("子策略推进作业仍待核对，不能关闭组合提案")
             result = {**proposal["result"], "reviewed_at": _now(),
                       "reviewed_state_fingerprint": actual,
                       "reviewed_job_id": operation["job_id"],
@@ -785,6 +789,7 @@ class TradingAgentHarness:
                     conflicts.append("子策略账本缺少基准日")
                 return {"session_id": child_id, "as_of_date": as_of_date,
                         "equity": snapshot.get("equity"),
+                        "advance_operation": child.get("advance_operation"),
                         "error": "；".join(conflicts) if conflicts else None}
             except (PaperServiceError, TimeoutError) as exc:
                 return {"session_id": child_id, "as_of_date": None,

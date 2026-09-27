@@ -1177,6 +1177,33 @@ async def test_manual_review_closes_uncertain_proposal_only_after_ledger_check(t
 
 
 @pytest.mark.asyncio
+async def test_composite_review_waits_for_child_operation_review(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "unknown", {"job_id": "job:group"})
+    store.set_status(task["id"], "needs_review")
+    parent = _paper_status("2026-09-26")["data"]
+    parent["kind"] = "composite"
+    parent["session"]["params"] = {"child_session_ids": ["paper:child"]}
+    parent["advance_operation"] = {"job_id": "job:group", "target_date": "2026-09-28",
+                                   "state": "reviewed"}
+    parent["state_fingerprint"] = _paper_state_fingerprint(parent)
+    child = {"session": {"session_id": "paper:child", "last_date": "2026-09-26"},
+             "snapshot": {"as_of_date": "2026-09-26", "equity": 100_000},
+             "advance_operation": {"job_id": "job:group", "state": "needs_review"}}
+
+    async def paper_request(config, method, path, payload=None):
+        assert method == "GET"
+        return {"data": child if path.endswith("paper:child/status") else parent}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    with pytest.raises(ValueError, match="子策略推进作业仍待核对"):
+        await harness.close_review(proposal["id"], parent["state_fingerprint"])
+    child["advance_operation"]["state"] = "reviewed"
+    assert (await harness.close_review(proposal["id"], parent["state_fingerprint"]))["status"] == "reviewed"
+
+
+@pytest.mark.asyncio
 async def test_advance_requires_one_time_approval_and_reconciles_ledger(tmp_path, monkeypatch):
     harness, store, task, proposal = await _proposed_advance(tmp_path)
     calls = []
