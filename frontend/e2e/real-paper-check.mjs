@@ -27,11 +27,26 @@ try {
   }
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  if (process.env.REAL_PAPER_SCREENSHOT) {
+    await page.screenshot({ path: process.env.REAL_PAPER_SCREENSHOT.replace(/\.png$/i, "-mobile.png"),
+      fullPage: true });
+  }
+  await page.getByRole("button", { name: "查看模拟账本" }).click();
+  const ledger = page.getByRole("region", { name: "模拟盘账本" });
+  await expect(ledger.getByText("总权益", { exact: true })).toBeInViewport();
+  await expect(ledger.getByText(`¥${process.env.REAL_PAPER_EQUITY}`, { exact: true }).first()).toBeInViewport();
+  if (process.env.REAL_PAPER_SCREENSHOT) {
+    await page.screenshot({ path: process.env.REAL_PAPER_SCREENSHOT.replace(/\.png$/i, "-mobile-ledger.png") });
+  }
+  await page.getByRole("button", { name: "查看 Agent 对话" }).click();
+  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toBeInViewport();
   await page.getByRole("link", { name: "在工作台继续" }).click();
   await expect(page).toHaveURL(/\/chat\?paper_session=/);
   await expect(page.getByText("模拟盘推进任务已完成")).toBeVisible();
   await expect(page.getByText("执行后账本").locator("..")).toContainText("10 天");
   if (process.env.REAL_PAPER_SCREENSHOT) {
+    await page.screenshot({ path: process.env.REAL_PAPER_SCREENSHOT.replace(/\.png$/i, "-mobile-chat.png"),
+      fullPage: true });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.screenshot({ path: process.env.REAL_PAPER_SCREENSHOT.replace(/\.png$/i, "-chat.png"),
       fullPage: true });

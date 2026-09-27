@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -38,6 +38,8 @@ export default function Paper() {
   const [job, setJob] = useState<ActiveJob | null>(null);
   const [error, setError] = useState("");
   const [agentPrompt, setAgentPrompt] = useState<{ sessionId: string; text: string; nonce: number }>();
+  const agentSection = useRef<HTMLDivElement>(null);
+  const ledgerSection = useRef<HTMLDivElement>(null);
 
   const sessions = useQuery({ queryKey: queryKeys.paperSessions(), queryFn: listPaperSessions, retry: false });
   const strategies = useQuery({ queryKey: ["paper-strategies"], queryFn: listPaperStrategies, enabled: createOpen });
@@ -304,9 +306,13 @@ export default function Paper() {
 
       {id && <>
         {isCompositeChild && <div role="status" className={`${card} text-sm text-ui-muted`}>当前为组合子策略账本，可查看持仓、成交和 Agent 取证；请在所属组合账户推进交易日。{parentId && <Link to={`/paper?session=${encodeURIComponent(parentId)}`} className="ml-2 font-medium text-ui-accent underline underline-offset-2">查看组合账户</Link>}</div>}
+        <nav aria-label="模拟盘内容跳转" className="sticky top-0 z-20 flex gap-2 rounded-lg bg-ui-canvas/95 py-2 backdrop-blur xl:hidden">
+          <button className="rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm text-ui-body" onClick={() => agentSection.current?.scrollIntoView({ behavior: "auto", block: "start" })}>查看 Agent 对话</button>
+          <button className="rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm text-ui-body" onClick={() => ledgerSection.current?.scrollIntoView({ behavior: "auto", block: "start" })}>查看模拟账本</button>
+        </nav>
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(310px,0.82fr)_minmax(0,1.5fr)]">
-        <div className="h-[620px] min-w-0 xl:sticky xl:top-0 xl:h-[calc(100vh-170px)]"><Chat key={id} paperSessionId={id} embedded promptRequest={agentPrompt?.sessionId === id ? agentPrompt : undefined} /></div>
-        <div className="min-w-0 space-y-4">
+        <div ref={agentSection} className="h-[620px] min-w-0 scroll-mt-12 xl:sticky xl:top-0 xl:h-[calc(100vh-170px)]"><Chat key={id} paperSessionId={id} embedded promptRequest={agentPrompt?.sessionId === id ? agentPrompt : undefined} /></div>
+        <div ref={ledgerSection} role="region" aria-label="模拟盘账本" className="min-w-0 space-y-4 scroll-mt-12">
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ui-line bg-ui-panel/70 px-4 py-3 text-xs text-ui-muted"><span className="rounded-full bg-ui-accent/10 px-2 py-1 text-ui-accent">Paper · {status.data?.kind === "composite" ? "组合策略" : "单策略"}</span><span>最新快照 · {snapshot?.as_of_date ?? "尚未推进"}</span><span>唯一模拟账本：StockManager</span></div>
         <section className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
           <div className={card}><p className="text-xs text-ui-muted">总权益</p><p className="mt-2 text-xl font-semibold">{money(snapshot?.equity)}</p><p className="mt-1 text-xs text-ui-faint">截至 {snapshot?.as_of_date ?? "尚未推进"}</p></div>
