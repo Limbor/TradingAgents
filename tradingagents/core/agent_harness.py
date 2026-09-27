@@ -657,16 +657,30 @@ class TradingAgentHarness:
                 snapshot = ledger.get("snapshot") or {}
                 observed_date = snapshot.get("as_of_date") or (ledger.get("session") or {}).get("last_date")
                 conflicts = paper_ledger_conflicts(proposal["session_id"], ledger)
+                observed_fingerprint = _paper_state_fingerprint(ledger)
+                baseline_fingerprint = proposal["baseline"].get("state_fingerprint")
+                unchanged_account = bool(
+                    baseline_fingerprint and observed_fingerprint == baseline_fingerprint
+                    and ledger.get("state_fingerprint") == baseline_fingerprint
+                )
+                operation = ledger.get("advance_operation") or {}
+                operation_reviewed = not operation or (
+                    operation.get("job_id") == job_id
+                    and operation.get("state") in {"reviewed", "completed"}
+                )
             except PaperServiceError as exc:
                 observed_date = None
                 ledger_error = str(exc)
+                observed_fingerprint = None
+                unchanged_account = False
+                operation_reviewed = False
             else:
                 ledger_error = "；".join(conflicts) if conflicts else None
 
             if job and str(job.get("state") or "").lower() in {"success", "completed"} and not ledger_error:
                 self._finish_paper_action(proposal, job, ledger)
             elif (job and str(job.get("state") or "").lower() in {"failed", "error", "cancelled"}
-                  and not ledger_error and observed_date == proposal["baseline"].get("as_of_date")
+                  and not ledger_error and unchanged_account and operation_reviewed
                   and ledger.get("kind") != "composite"):
                 message = str(job.get("message") or job.get("state"))[:500]
                 self.store.set_proposal_status(proposal_id, "failed", {**proposal["result"], "error": message, "observed_date": observed_date})
@@ -683,6 +697,8 @@ class TradingAgentHarness:
                 review_reason = ("组合模拟盘作业失败，但子策略账本可能已推进。请逐一核对组合账户与子策略账户，勿重复提交。"
                                  if composite_failed else "执行结果仍待核对")
                 result = {**proposal["result"], "observed_date": observed_date,
+                          "observed_state_fingerprint": observed_fingerprint,
+                          "baseline_state_unchanged": unchanged_account,
                           "job_state": state, "job_error": job_error, "ledger_error": ledger_error,
                           "checked_at": _now()}
                 if composite_failed:
@@ -808,6 +824,14 @@ class TradingAgentHarness:
         snapshot = ledger.get("snapshot") or {}
         observed_date = snapshot.get("as_of_date") or (ledger.get("session") or {}).get("last_date")
         conflicts = paper_ledger_conflicts(proposal["session_id"], ledger)
+        observed_fingerprint = _paper_state_fingerprint(ledger)
+        fingerprint_valid = bool(
+            observed_fingerprint and ledger.get("state_fingerprint") == observed_fingerprint
+        )
+        operation = ledger.get("advance_operation") or {}
+        operation_completed = not operation or (
+            operation.get("job_id") == job_id and operation.get("state") == "completed"
+        )
         target = proposal["args"]["target_date"]
         baseline_date = proposal["baseline"].get("as_of_date")
         try:
@@ -820,12 +844,15 @@ class TradingAgentHarness:
         count_matches_date = valid_dates and valid_count and ((received > baseline) == (advanced_days > 0))
         if (receipt_session != proposal["session_id"] or
                 observed_date != receipt_date or not valid_dates or
-                not count_matches_date or conflicts):
+                not count_matches_date or conflicts or not fingerprint_valid or
+                not operation_completed or
+                (advanced_days == 0 and observed_fingerprint != proposal["baseline"].get("state_fingerprint"))):
             reason = "；".join(conflicts) if conflicts else "作业回执与账户账本不一致，请人工核对"
             self.store.set_proposal_status(proposal["id"], "unknown", {
                 **proposal["result"], "job_id": job_id, "job_state": "success",
                 "receipt_session_id": receipt_session, "receipt_date": receipt_date,
                 "observed_date": observed_date, "advanced_days": advanced_days,
+                "observed_state_fingerprint": observed_fingerprint,
                 "error": reason,
             })
             self.store.set_status(task_id, "needs_review", error=reason)
@@ -837,7 +864,7 @@ class TradingAgentHarness:
             return
         result = {"job_id": job_id, "target_date": target,
                   "as_of_date": observed_date, "equity": snapshot.get("equity"),
-                  "advanced_days": advanced_days}
+                  "advanced_days": advanced_days, "state_fingerprint": observed_fingerprint}
         if advanced_days == 0:
             self.store.set_proposal_status(proposal["id"], "no_change", result)
             content = (f"StockManager 作业已结束，但模拟盘账本未推进：基准日仍为 {observed_date}，"
