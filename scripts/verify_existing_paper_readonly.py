@@ -110,7 +110,47 @@ async def check_browser(trading_port: int, cases: list[dict]) -> None:
             print(stderr[-3000:], file=sys.stderr)
 
 
-async def main(*, with_browser: bool = False) -> None:
+async def check_copied_lifecycle(stock_port: int, sessions: list[dict],
+                                 stored_ids: list[str]) -> None:
+    parent = next((row for row in sessions
+                   if row.get("params", {}).get("kind") == "composite" and
+                   row.get("params", {}).get("child_session_ids")), None)
+    if parent is None:
+        raise RuntimeError("No composite account in the temporary copy")
+    parent_id = parent["session_id"]
+    child_ids = parent["params"]["child_session_ids"]
+    account_ids = [parent_id, *child_ids]
+    other_id = next((value for value in stored_ids if value not in account_ids), None)
+    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{stock_port}", timeout=15) as stock:
+        for child_id in child_ids:
+            child_path = f"/api/v2/paper/{quote(child_id, safe='')}"
+            assert (await stock.post(child_path + "/reset")).status_code == 409
+            assert (await stock.delete(f"/api/v2/sessions/{quote(child_id, safe='')}")).status_code == 409
+            assert (await stock.get(child_path + "/next_plan?force=true")).status_code == 409
+        parent_path = f"/api/v2/paper/{quote(parent_id, safe='')}"
+        reset = await stock.post(parent_path + "/reset")
+        assert reset.status_code == 200, "Temporary composite reset failed"
+        for account_id in account_ids:
+            status = await stock.get(f"/api/v2/paper/{quote(account_id, safe='')}/status")
+            assert status.status_code == 200
+            data = status.json()["data"]
+            assert data["session"]["last_date"] is None
+            assert data.get("snapshot") is None
+        if other_id:
+            assert (await stock.get(f"/api/v2/paper/{quote(other_id, safe='')}/status")).status_code == 200
+        deleted = await stock.delete(f"/api/v2/sessions/{quote(parent_id, safe='')}")
+        assert deleted.status_code == 200, "Temporary composite delete failed"
+        for account_id in account_ids:
+            assert (await stock.get(f"/api/v2/paper/{quote(account_id, safe='')}/status")).status_code == 404
+        if other_id:
+            assert (await stock.get(f"/api/v2/paper/{quote(other_id, safe='')}/status")).status_code == 200
+    print(json.dumps({"copied_group_accounts": len(account_ids),
+                      "child_direct_mutations": "blocked",
+                      "group_reset_delete": "atomic",
+                      "source_writes": 0}))
+
+
+async def main(*, with_browser: bool = False, with_lifecycle: bool = False) -> None:
     if not (STOCK_SOURCE / "stockmanager").is_dir() or not STOCK_PYTHON.is_file():
         raise RuntimeError(f"StockManager checkout and virtualenv required: {STOCK_SOURCE}")
     with tempfile.TemporaryDirectory(prefix="existing-paper-readonly-") as folder:
@@ -206,6 +246,8 @@ async def main(*, with_browser: bool = False) -> None:
                     if not kinds:
                         raise RuntimeError("No account with a snapshot for browser check")
                     await check_browser(trading_port, list(kinds.values()))
+                if with_lifecycle:
+                    await check_copied_lifecycle(stock_port, sessions, stored_ids)
         finally:
             if trading_server and trading_task:
                 trading_server.should_exit = True
@@ -226,4 +268,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--with-browser", action="store_true",
                         help="Also verify one single and one composite account in a local browser")
-    asyncio.run(main(with_browser=parser.parse_args().with_browser))
+    parser.add_argument("--with-lifecycle", action="store_true",
+                        help="Reset and delete one composite account only in the temporary copy")
+    args = parser.parse_args()
+    asyncio.run(main(with_browser=args.with_browser, with_lifecycle=args.with_lifecycle))
