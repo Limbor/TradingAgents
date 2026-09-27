@@ -19,6 +19,8 @@ try {
   await expect(page.getByRole("heading", { name: "最近成交" })).toBeVisible();
   await expect(page.getByText("模拟盘推进任务已完成")).toBeVisible();
   await expect(page.getByText(`账户权益：¥${process.env.REAL_PAPER_EQUITY}`)).toBeVisible();
+  await expect(page.getByText("提案时权益")).toBeVisible();
+  await expect(page.getByText("执行后账本").locator("..")).toContainText(`¥${process.env.REAL_PAPER_EQUITY}`);
   await expect(page.locator(".recharts-xAxis .recharts-cartesian-axis-tick-value").first()).toHaveText("06-19");
   if (process.env.REAL_PAPER_SCREENSHOT) {
     await page.screenshot({ path: process.env.REAL_PAPER_SCREENSHOT, fullPage: true });
@@ -28,6 +30,16 @@ try {
   await page.getByRole("link", { name: "在工作台继续" }).click();
   await expect(page).toHaveURL(/\/chat\?paper_session=/);
   await expect(page.getByText("模拟盘推进任务已完成")).toBeVisible();
+  await expect(page.getByText("执行后账本").locator("..")).toContainText("10 天");
+  if (process.env.REAL_PAPER_SCREENSHOT) {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: process.env.REAL_PAPER_SCREENSHOT.replace(/\.png$/i, "-chat.png"),
+      fullPage: true });
+  }
+  await expect(page.getByRole("link", { name: "查看实际账本" })).toHaveAttribute(
+    "href", `/paper?session=${encodeURIComponent(session)}`);
+  await page.getByRole("link", { name: "查看实际账本" }).click();
+  await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(session);
   expect(errors).toEqual([]);
   process.stdout.write(JSON.stringify({ browser: "passed", session,
     equity: process.env.REAL_PAPER_EQUITY, same_conversation: true }) + "\n");
