@@ -1,6 +1,39 @@
 import { expect, test } from "@playwright/test";
 import { mockAgentTasks } from "./agentMock";
 
+test("unknown paper deep link does not switch to another account", async ({ page }) => {
+  const ledgerRequests: string[] = [];
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/paper/sessions") body = [{
+      session_id: "paper:existing", mode: "paper", strategy: "demo", config_name: "",
+      initial_cash: 100000, last_date: "2026-01-02", params: {},
+    }];
+    else if (path.startsWith("/api/v1/paper/sessions/paper")) {
+      ledgerRequests.push(path);
+      if (path.endsWith("/status")) body = { session: { initial_cash: 100000 },
+        snapshot: { as_of_date: "2026-01-02", equity: 100000, cash: 100000, positions: {} },
+        trades_count: 0 };
+      else if (path.endsWith("/equity")) body = { daily_records: [], benchmark_curve: [] };
+      else if (path.endsWith("/trades")) body = [];
+      else if (path.endsWith("/next-plan")) body = null;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await mockAgentTasks(page);
+
+  await page.goto("/paper?session=paper%3Amissing");
+  await expect(page.getByRole("alert")).toContainText("未找到模拟盘会话 paper:missing");
+  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toHaveCount(0);
+  expect(ledgerRequests).toHaveLength(0);
+  await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption("paper:existing");
+  await expect(page).toHaveURL(/\/paper\?session=paper%3Aexisting$/);
+  await expect(page.getByText("¥100,000").first()).toBeVisible();
+  await expect.poll(() => ledgerRequests.some((path) => path.endsWith("/status"))).toBe(true);
+});
+
 test("strategy paper workbench creates, reads, and advances a StockManager session", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem("tradingagents.theme", "light"));
   let created = false;

@@ -45,8 +45,9 @@ export default function Paper() {
   const strategyOptions = Array.isArray(strategies.data) ? strategies.data : [];
   const configOptions = Array.isArray(configs.data) ? configs.data : [];
   const allocatorOptions = Array.isArray(allocators.data) ? allocators.data : [];
-  const active = rows.find((row) => row.session_id === selected) ?? rows[0];
+  const active = selected ? rows.find((row) => row.session_id === selected) : rows[0];
   const id = active?.session_id ?? "";
+  const missingSession = !!selected && !sessions.isLoading && !sessions.isError && !active;
   useEffect(() => {
     setAgentPrompt(undefined);
   }, [id]);
@@ -257,7 +258,7 @@ export default function Paper() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-ui-accent">Paper trading</p><h1 className="mt-1 text-2xl font-semibold">模拟盘工作台</h1><p className="mt-1 text-sm text-ui-muted">策略账本由 StockManager 维护，Agent 解释策略行为并跟踪判断。</p></div>
         <div className="flex flex-wrap items-center gap-2">
-          {rows.length > 0 && <label className="text-xs text-ui-muted">当前会话<select aria-label="当前模拟盘会话" value={id} onChange={(event) => setParams({ session: event.target.value })} className="ml-2 max-w-64 rounded-xl border border-ui-strong bg-ui-panel px-3 py-2 text-sm text-ui-ink">{rows.map((row) => <option key={row.session_id} value={row.session_id}>{row.params?.kind === "composite" ? "组合" : row.strategy} · {row.session_id}</option>)}</select></label>}
+          {rows.length > 0 && <label className="text-xs text-ui-muted">当前会话<select aria-label="当前模拟盘会话" value={id} onChange={(event) => setParams({ session: event.target.value })} className="ml-2 max-w-64 rounded-xl border border-ui-strong bg-ui-panel px-3 py-2 text-sm text-ui-ink">{missingSession && <option value="" disabled>所请求会话不存在</option>}{rows.map((row) => <option key={row.session_id} value={row.session_id}>{row.params?.kind === "composite" ? "组合" : row.strategy} · {row.session_id}</option>)}</select></label>}
           <button className="rounded-lg border border-ui-strong px-3 py-2 text-sm hover:bg-ui-hover" onClick={refreshAll}><RefreshCw className="inline h-4 w-4" /> 刷新</button>
           <button className="rounded-lg bg-ui-accent px-3 py-2 text-sm font-medium text-ui-onAccent hover:bg-ui-accent" onClick={() => setCreateOpen(!createOpen)}>新建会话</button>
         </div>
@@ -287,7 +288,8 @@ export default function Paper() {
         <button disabled={busy || Number(cash) <= 0 || (kind === "single" && (!strategy || !startDate)) || (kind === "composite" && !allocatorPath)} className="mt-4 rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40" onClick={() => void create()}>创建</button>
       </section>}
 
-      {!id && !sessions.isLoading && !connectionError && <div className={`${card} text-sm text-ui-muted`}>还没有策略模拟会话。创建会话后，可以查看净值、持仓、成交和下一日计划。</div>}
+      {missingSession && <div role="alert" className={`${card} text-sm text-ui-warning`}>未找到模拟盘会话 <strong className="break-all">{selected}</strong>。请从上方选择已有会话，或刷新列表后重试。</div>}
+      {!id && !selected && !sessions.isLoading && !connectionError && <div className={`${card} text-sm text-ui-muted`}>还没有策略模拟会话。创建会话后，可以查看净值、持仓、成交和下一日计划。</div>}
 
       {id && <>
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(310px,0.82fr)_minmax(0,1.5fr)]">
