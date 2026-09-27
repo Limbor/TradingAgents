@@ -9,13 +9,7 @@ const titles: Record<string, string> = {
   "/library": "产物库", "/reflection": "反思记录", "/settings": "设置", "/analysis": "分析详情",
 };
 
-export function Header() {
-  const { pathname } = useLocation();
-  const status = useRunStore((state) => state.status);
-  const title = titles[pathname] ?? (pathname.startsWith("/analysis/") ? titles["/analysis"] : "工作台");
-  const running = status === "running";
-  const failed = status === "failed" || status === "cancelled";
-  const StatusIcon = running ? Activity : failed ? CircleX : status === "completed" ? CircleCheck : Clock3;
+export function ThemeToggle() {
   const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
     try {
       const saved = window.localStorage.getItem("tradingagents.theme");
@@ -36,16 +30,25 @@ export function Header() {
 
   const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
   const themeLabel = theme === "light" ? "浅色" : theme === "dark" ? "深色" : "跟随系统";
-  const themeButton = <button
+  return <button
     type="button"
     aria-label={`主题：${themeLabel}，点击切换`}
     title={`主题：${themeLabel}，点击切换`}
     onClick={() => setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system")}
     className="rounded-md border border-ui-line p-1.5 text-ui-muted hover:bg-ui-hover hover:text-ui-ink"
   ><ThemeIcon className="h-4 w-4" /></button>;
+}
+
+export function Header() {
+  const { pathname } = useLocation();
+  const status = useRunStore((state) => state.status);
+  const title = titles[pathname] ?? (pathname.startsWith("/analysis/") ? titles["/analysis"] : "工作台");
+  const running = status === "running";
+  const failed = status === "failed" || status === "cancelled";
+  const StatusIcon = running ? Activity : failed ? CircleX : status === "completed" ? CircleCheck : Clock3;
 
   return <header className="flex h-[52px] shrink-0 items-center justify-between gap-3 border-b border-ui-line bg-ui-panel px-4 sm:px-5">
     <div className="min-w-0 text-xs text-ui-muted"><span className="hidden sm:inline">工作空间</span><span className="mx-2 hidden text-ui-faint sm:inline">/</span><strong className="truncate font-semibold text-ui-ink">{title}</strong></div>
-    <div className="flex items-center gap-2">{pathname !== "/chat" && <div className={`hidden items-center gap-2 rounded-md border border-ui-line px-2.5 py-1.5 text-xs sm:flex ${running ? "text-ui-accent" : failed ? "text-ui-danger" : "text-ui-muted"}`}><StatusIcon className={`h-3.5 w-3.5 ${running ? "animate-pulse" : ""}`} />{running ? "任务运行中" : failed ? "任务需检查" : status === "completed" ? "任务已完成" : "等待任务"}</div>}{themeButton}</div>
+    <div className="flex items-center gap-2">{pathname !== "/chat" && <div className={`hidden items-center gap-2 rounded-md border border-ui-line px-2.5 py-1.5 text-xs sm:flex ${running ? "text-ui-accent" : failed ? "text-ui-danger" : "text-ui-muted"}`}><StatusIcon className={`h-3.5 w-3.5 ${running ? "animate-pulse" : ""}`} />{running ? "任务运行中" : failed ? "任务需检查" : status === "completed" ? "任务已完成" : "等待任务"}</div>}<ThemeToggle /></div>
   </header>;
 }

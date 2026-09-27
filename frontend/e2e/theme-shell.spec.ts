@@ -17,7 +17,9 @@ test("workspace theme applies to Agent, research, and paper pages", async ({ pag
 
   await page.goto("/chat");
   await expect(page.locator("main")).toHaveCSS("background-color", "rgb(244, 245, 242)");
+  await expect(page.locator("main")).toHaveCSS("padding-top", "0px");
   await expect(page.locator(".agent-workspace")).toHaveCSS("background-color", "rgb(244, 245, 242)");
+  await expect(page.locator("main").getByRole("button", { name: "主题：浅色，点击切换" })).toBeVisible();
   if (process.env.CAPTURE_THEME_QA) await page.screenshot({ path: "test-results/theme-agent-light.png", fullPage: true });
 
   await page.goto("/research");
