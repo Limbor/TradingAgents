@@ -40,6 +40,7 @@ class CreatePaperSession(BaseModel):
 
 class AdvancePaper(BaseModel):
     target_date: date
+    expected_state_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 @router.get("/strategies")
@@ -103,5 +104,7 @@ async def next_plan(request: Request, session_id: str):
 async def advance(request: Request, session_id: str, body: AdvancePaper):
     return await _call(
         request, "POST", f"/api/v2/paper/{_id(session_id)}/advance",
-        {"target_date": body.target_date.isoformat()},
+        {"target_date": body.target_date.isoformat(),
+         **({"expected_state_fingerprint": body.expected_state_fingerprint}
+            if body.expected_state_fingerprint is not None else {})},
     )

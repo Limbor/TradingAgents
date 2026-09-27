@@ -22,7 +22,7 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
     } else if (pathname === "/api/v1/paper/configs") {
       body = [];
     } else if (pathname.endsWith("/status")) {
-      body = { session: { initial_cash: 100000 }, snapshot: { as_of_date: "2026-01-02", equity: 102000, cash: 40000, positions: { "600519.SH": { name: "贵州茅台", shares: 40, avg_cost: 1000, last_price: 1550, value: 62000 } } }, trades_count: 1 };
+      body = { session: { initial_cash: 100000 }, state_fingerprint: "a".repeat(64), snapshot: { as_of_date: "2026-01-02", equity: 102000, cash: 40000, positions: { "600519.SH": { name: "贵州茅台", shares: 40, avg_cost: 1000, last_price: 1550, value: 62000 } } }, trades_count: 1 };
     } else if (pathname.endsWith("/equity")) {
       body = { daily_records: [
         { date: "2026-01-01", equity: 100000, cash: 100000 },
@@ -62,7 +62,7 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
   await page.getByLabel("推进至交易日").fill("2026-01-05");
   await page.getByRole("button", { name: "推进模拟盘" }).click();
   await expect.poll(() => advanced).toBe(true);
-  expect(advanceBody).toEqual({ target_date: "2026-01-05" });
+  expect(advanceBody).toEqual({ target_date: "2026-01-05", expected_state_fingerprint: "a".repeat(64) });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("link", { name: "在工作台继续" })).toBeVisible();
   const agentHeader = page.getByRole("region", { name: "交易 Agent 对话" }).locator("header");
@@ -134,15 +134,22 @@ test("composite decision is readable and Agent chat stays bound to its account",
 test("an advancing paper job can be observed again after page reload", async ({ page }) => {
   let polls = 0;
   let jobLost = false;
+  let advanceFails = false;
   await page.route("**/api/v1/**", async (route) => {
     const { pathname } = new URL(route.request().url());
     let body: unknown = {};
     if (pathname === "/api/v1/paper/sessions") body = [{ session_id: "paper:demo", mode: "paper", strategy: "demo", config_name: "", initial_cash: 100000, last_date: "2026-01-02", params: {} }];
-    else if (pathname.endsWith("/status")) body = { session: { initial_cash: 100000 }, snapshot: null, trades_count: 0 };
+    else if (pathname.endsWith("/status")) body = { session: { initial_cash: 100000 }, state_fingerprint: "b".repeat(64), snapshot: null, trades_count: 0 };
     else if (pathname.endsWith("/equity")) body = { daily_records: [], benchmark_curve: [] };
     else if (pathname.endsWith("/trades")) body = [];
     else if (pathname.endsWith("/next-plan")) body = null;
-    else if (pathname.endsWith("/advance")) body = { job_id: "job-running" };
+    else if (pathname.endsWith("/advance")) {
+      if (advanceFails) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Connection lost" }) });
+        return;
+      }
+      body = { job_id: "job-running" };
+    }
     else if (pathname.endsWith("/jobs/job-running")) {
       polls += 1;
       if (jobLost) {
@@ -150,6 +157,9 @@ test("an advancing paper job can be observed again after page reload", async ({ 
         return;
       }
       body = { job_id: "job-running", state: "running", progress: 25, message: "计算中", result: null };
+    } else if (pathname.endsWith("/jobs/submission-unknown")) {
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "Job not found" }) });
+      return;
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
@@ -165,5 +175,17 @@ test("an advancing paper job can be observed again after page reload", async ({ 
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
   jobLost = true;
   await expect(page.getByText(/任务记录已失效。StockManager/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
+  await page.getByRole("button", { name: "核对账本后解除锁定" }).click();
+  await page.getByLabel("推进至交易日").fill("2026-01-05");
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeEnabled();
+  advanceFails = true;
+  await page.getByRole("button", { name: "推进模拟盘" }).click();
+  await expect(page.getByText("提交结果待核对")).toBeVisible();
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "核对账本后解除锁定" })).toBeVisible();
 });

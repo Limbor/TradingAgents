@@ -36,7 +36,10 @@ def test_paper_routes_use_stockmanager_ledger(client):
             }
             return {"ok": True, "session_id": "paper:one"}
         if path == "/api/v2/paper/paper:one/advance":
-            assert payload == {"target_date": "2026-01-05"}
+            assert payload in (
+                {"target_date": "2026-01-05"},
+                {"target_date": "2026-01-05", "expected_state_fingerprint": "a" * 64},
+            )
             return {"ok": True, "job_id": "job-1"}
         if path == "/api/jobs/job-1":
             return {"job_id": "job-1", "state": "success", "progress": 100, "message": "done", "result": None}
@@ -50,6 +53,12 @@ def test_paper_routes_use_stockmanager_ledger(client):
         assert client.post("/api/v1/paper/sessions", json={"strategy": "demo"}).status_code == 422
         assert client.post("/api/v1/paper/sessions", json={"allocator_config_path": "../../secrets.json"}).status_code == 422
         assert client.post("/api/v1/paper/sessions/paper:one/advance", json={"target_date": "2026-01-05"}).json()["job_id"] == "job-1"
+        assert client.post("/api/v1/paper/sessions/paper:one/advance", json={
+            "target_date": "2026-01-05", "expected_state_fingerprint": "a" * 64,
+        }).json()["job_id"] == "job-1"
+        assert client.post("/api/v1/paper/sessions/paper:one/advance", json={
+            "target_date": "2026-01-05", "expected_state_fingerprint": "invalid",
+        }).status_code == 422
         assert client.get("/api/v1/paper/jobs/job-1").json()["state"] == "success"
         assert client.get("/api/v1/paper/sessions/%2Fetc/status").status_code in (400, 404)
 

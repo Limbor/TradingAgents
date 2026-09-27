@@ -66,8 +66,11 @@ export default function Paper() {
 
   useEffect(() => {
     if (!id || (job && job.sessionId === id)) return;
-    const stored = window.sessionStorage.getItem(`paper-advance-job:${id}`);
+    const key = `paper-advance-job:${id}`;
+    const stored = window.localStorage.getItem(key) || window.sessionStorage.getItem(key);
     if (stored) {
+      window.localStorage.setItem(key, stored);
+      window.sessionStorage.removeItem(key);
       setJob({ job_id: stored, sessionId: id, state: "queued", progress: 0, message: "正在恢复任务状态", result: null });
       setBusy(true);
     }
@@ -81,17 +84,16 @@ export default function Paper() {
         setJob({ ...next, sessionId: job.sessionId });
         if (next.state === "success") {
           setBusy(false);
-          window.sessionStorage.removeItem(`paper-advance-job:${job.sessionId}`);
+          window.localStorage.removeItem(`paper-advance-job:${job.sessionId}`);
           void client.invalidateQueries({ queryKey: queryKeys.paperSessions() });
           void client.invalidateQueries({ queryKey: queryKeys.paperSession(job.sessionId) });
         } else if (next.state === "error") {
           setBusy(false);
-          window.sessionStorage.removeItem(`paper-advance-job:${job.sessionId}`);
-          setError(next.message || "模拟盘推进失败");
+          setError(`${next.message || "模拟盘推进失败"}。请先核对账本，再决定是否重新推进。`);
+          void client.invalidateQueries({ queryKey: queryKeys.paperSession(job.sessionId) });
         }
       } catch (cause) {
         if (cause instanceof ApiHttpError && cause.status === 404) {
-          window.sessionStorage.removeItem(`paper-advance-job:${job.sessionId}`);
           setJob({ ...job, state: "error", message: "任务记录已失效" });
           setBusy(false);
           setError("任务记录已失效。StockManager 可能在任务期间重启，请刷新账本核对是否完成后再推进。");
@@ -124,16 +126,50 @@ export default function Paper() {
 
   const advance = async () => {
     if (!id || !targetDate) return;
-    if (!window.confirm(`将模拟盘 ${id} 推进到 ${targetDate}？StockManager 会按策略计算并写入成交。`)) return;
+    const reviewKey = `paper-advance-job:${id}`;
+    if ((job?.sessionId === id && job.state === "error") ||
+        (window.localStorage.getItem(reviewKey) && (!job || job.sessionId !== id || job.state === "error"))) {
+      setError("上一次推进仍需核对账本，请先完成核对");
+      return;
+    }
+    const fingerprint = status.data?.state_fingerprint;
+    if (!fingerprint) {
+      setError("当前账本缺少状态指纹，请刷新账本后再推进");
+      return;
+    }
+    const ledgerDate = status.data?.snapshot?.as_of_date ?? "尚未推进";
+    if (!window.confirm(`将模拟盘 ${id} 从账本日期 ${ledgerDate} 推进到 ${targetDate}？StockManager 会按策略计算并写入成交。`)) return;
     setError("");
     setBusy(true);
     try {
-      const ack = await advancePaper(id, targetDate);
-      window.sessionStorage.setItem(`paper-advance-job:${id}`, ack.job_id);
+      window.localStorage.setItem(reviewKey, "submission-unknown");
+      const ack = await advancePaper(id, targetDate, fingerprint);
+      window.localStorage.setItem(reviewKey, ack.job_id);
       setJob({ job_id: ack.job_id, sessionId: id, state: "queued", progress: 0, message: "任务已提交", result: null });
     } catch (cause) {
       setBusy(false);
-      setError(cause instanceof Error ? cause.message : "推进失败");
+      setJob({ job_id: "submission-unknown", sessionId: id, state: "error", progress: 0,
+        message: "提交结果待核对", result: null });
+      setError(`${cause instanceof Error ? cause.message : "提交结果未知"}。请求可能已到达 StockManager，请先核对账本。`);
+      void client.invalidateQueries({ queryKey: queryKeys.paperSession(id) });
+    }
+  };
+
+  const releaseReview = async () => {
+    if (!id || job?.sessionId !== id || job.state !== "error") return;
+    try {
+      const current = await getPaperStatus(id);
+      client.setQueryData([...queryKeys.paperSession(id), "status"], current);
+      const ledgerDate = current.snapshot?.as_of_date ?? "尚未推进";
+      const jobLabel = job.job_id === "submission-unknown" ? "提交请求" : `作业 ${job.job_id}`;
+      if (!window.confirm(`${jobLabel}的结果不确定。当前账本日期：${ledgerDate}。请先核对持仓和成交；确认已完成核对并解除推进锁定？`)) return;
+      window.localStorage.removeItem(`paper-advance-job:${id}`);
+      setJob(null);
+      setError("");
+      void client.invalidateQueries({ queryKey: queryKeys.paperSessions() });
+      void client.invalidateQueries({ queryKey: queryKeys.paperSession(id) });
+    } catch (cause) {
+      setError(cause instanceof Error ? `账本无法复读：${cause.message}` : "账本无法复读");
     }
   };
 
@@ -222,7 +258,7 @@ export default function Paper() {
 
         <section className={card}><h2 className="mb-3 font-medium">最近成交</h2>{trades.data?.length ? <div className="max-h-72 overflow-auto"><table className="w-full text-left text-sm"><thead className="text-xs text-ui-faint"><tr><th>日期</th><th>标的</th><th>方向</th><th>数量</th><th>价格</th></tr></thead><tbody>{trades.data.slice(0, 30).map((trade, index) => <tr key={index} className="border-t border-ui-line"><td className="py-2">{trade.trade_date}</td><td>{trade.name || trade.code}</td><td>{trade.side}</td><td>{trade.shares}</td><td>{money(trade.price)}</td></tr>)}</tbody></table></div> : <p className="text-sm text-ui-faint">暂无成交</p>}</section>
 
-        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || !targetDate || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
+        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
         </div>
         </div>
       </>}

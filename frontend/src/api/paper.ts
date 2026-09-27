@@ -31,6 +31,7 @@ export interface PaperPosition {
 
 export interface PaperStatus {
   session: PaperSession;
+  state_fingerprint: string | null;
   snapshot: {
     as_of_date: string | null;
     equity: number;
@@ -135,6 +136,6 @@ export const getPaperStatus = (id: string) => fetchJson<PaperStatus>(`${sessionU
 export const getPaperCurve = (id: string) => fetchJson<PaperCurve>(`${sessionUrl(id)}/equity`);
 export const getPaperTrades = (id: string) => fetchJson<PaperTrade[]>(`${sessionUrl(id)}/trades`);
 export const getPaperPlan = (id: string) => fetchJson<PaperPlan | null>(`${sessionUrl(id)}/next-plan`);
-export const advancePaper = (id: string, target_date: string) =>
-  fetchJson<{ job_id: string }>(`${sessionUrl(id)}/advance`, postJson({ target_date }));
+export const advancePaper = (id: string, target_date: string, expected_state_fingerprint: string) =>
+  fetchJson<{ job_id: string }>(`${sessionUrl(id)}/advance`, postJson({ target_date, expected_state_fingerprint }));
 export const getPaperJob = (id: string) => fetchJson<PaperJob>(`${root}/jobs/${encodeURIComponent(id)}`);
