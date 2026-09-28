@@ -44,7 +44,17 @@ test("interrupted read task requires an explicit retry", async ({ page }) => {
     messages: [{ id: "m1", conversation_id: conversation.id, task_id: "task-old",
       role: "user", content: goal, created_at: time }],
     tasks: [{ id: "task-old", conversation_id: conversation.id, goal, status: "interrupted",
-      result: {}, error: null, created_at: time, updated_at: time, events: [], evidence: [], proposal: null }],
+      result: {}, error: null, created_at: time, updated_at: time, evidence: [], proposal: null,
+      events: [
+        { task_id: "task-old", seq: 1, event_type: "plan_created",
+          payload: { steps: [{ id: "ledger", label: "读取当前模拟盘账本" }] }, created_at: time },
+        { task_id: "task-old", seq: 2, event_type: "step_started",
+          payload: { id: "ledger" }, created_at: time },
+        { task_id: "task-old", seq: 3, event_type: "step_completed",
+          payload: { id: "ledger", status: "failed", reason: "interrupted" }, created_at: time },
+        { task_id: "task-old", seq: 4, event_type: "task_interrupted",
+          payload: { reason: "process_restart" }, created_at: time },
+      ] }],
   };
   await page.route("**/api/v1/agent/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -59,7 +69,7 @@ test("interrupted read task requires an explicit retry", async ({ page }) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.goto("/chat?paper_session=paper%3Aone");
-  await expect(page.getByText("本任务没有可展示的执行步骤。")).toBeVisible();
+  await expect(page.getByText("读取当前模拟盘账本").locator("..").getByText("已中断")).toBeVisible();
   await expect(page.getByRole("button", { name: "重新运行任务" })).toBeVisible();
   expect(submissions).toBe(0);
   await page.getByRole("button", { name: "重新运行任务" }).click();

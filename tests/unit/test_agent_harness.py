@@ -892,8 +892,34 @@ def test_reopen_marks_incomplete_task_interrupted(tmp_path):
     store = AgentStore(db)
     conversation = store.create_conversation("测试", None)
     task = store.create_task(conversation["id"], "分析")
+    store.set_status(task["id"], "running")
+    store.event(task["id"], "plan_created", {
+        "steps": [{"id": "read-1", "label": "读取行情"}],
+    })
+    store.event(task["id"], "step_started", {"id": "read-1"})
     reopened = AgentStore(Database(tmp_path / "agent.db"))
     assert reopened.get_task(task["id"])["status"] == "interrupted"
+    events = reopened.list_events(task["id"])
+    assert [event["event_type"] for event in events[-2:]] == [
+        "step_completed", "task_interrupted",
+    ]
+    assert events[-2]["payload"] == {"id": "read-1", "status": "failed",
+                                     "reason": "interrupted"}
+    assert events[-1]["payload"]["reason"] == "process_restart"
+    assert len(AgentStore(Database(tmp_path / "agent.db")).list_events(task["id"])) == len(events)
+
+
+def test_reopen_repairs_preexisting_interrupted_task_step_once(tmp_path):
+    store = AgentStore(Database(tmp_path / "agent.db"))
+    conversation = store.create_conversation("测试", None)
+    task = store.create_task(conversation["id"], "分析")
+    store.event(task["id"], "step_started", {"id": "read-1"})
+    store.set_status(task["id"], "interrupted")
+    reopened = AgentStore(Database(tmp_path / "agent.db"))
+    events = reopened.list_events(task["id"])
+    assert events[-1]["event_type"] == "step_completed"
+    assert events[-1]["payload"]["reason"] == "interrupted"
+    assert len(AgentStore(Database(tmp_path / "agent.db")).list_events(task["id"])) == len(events)
 
 
 def test_intent_hint_only_selects_allowlisted_analysis_skill(tmp_path):
@@ -2062,6 +2088,10 @@ async def test_restart_never_replays_submitted_paper_action(tmp_path):
     assert reopened.get_task(task["id"])["status"] == "needs_review"
     assert reopened.get_proposal(proposal["id"])["status"] == "unknown"
     assert reopened.get_proposal(proposal["id"])["result"]["job_id"] == "job:pending"
+    events = reopened.list_events(task["id"])
+    assert events[-1]["event_type"] == "action_unknown"
+    assert events[-1]["payload"]["reason"] == "process_restart"
+    assert len(AgentStore(Database(tmp_path / "agent.db")).list_events(task["id"])) == len(events)
 
 
 @pytest.mark.asyncio

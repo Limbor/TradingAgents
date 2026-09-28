@@ -106,20 +106,62 @@ class AgentStore:
         # A process restart must never silently resume a previous write or
         # imply that an in-memory operation is still running.
         with db._conn() as conn:
-            conn.execute(
-                "UPDATE agent_tasks SET status = 'interrupted', updated_at = ? "
-                "WHERE status IN ('queued', 'planning', 'running', 'reviewing')",
-                (_now(),),
-            )
-            conn.execute(
-                "UPDATE agent_tasks SET status = 'needs_review', updated_at = ? "
-                "WHERE status = 'executing_action'",
-                (_now(),),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            now = _now()
+            rows = conn.execute(
+                "SELECT id, status FROM agent_tasks WHERE status IN "
+                "('queued', 'planning', 'running', 'reviewing', 'executing_action', 'interrupted')"
+            ).fetchall()
+            for task in rows:
+                task_id = task["id"]
+                events = conn.execute(
+                    "SELECT seq, event_type, payload_json FROM agent_events "
+                    "WHERE task_id = ? ORDER BY seq", (task_id,),
+                ).fetchall()
+                open_steps: dict[str, None] = {}
+                for event in events:
+                    if event["event_type"] not in {"step_started", "step_completed"}:
+                        continue
+                    try:
+                        step_id = json.loads(event["payload_json"]).get("id")
+                    except (ValueError, AttributeError):
+                        continue
+                    if not isinstance(step_id, str):
+                        continue
+                    if event["event_type"] == "step_started":
+                        open_steps[step_id] = None
+                    else:
+                        open_steps.pop(step_id, None)
+                seq = events[-1]["seq"] if events else 0
+
+                def append(event_type: str, payload: dict, *, task_id: str = task_id) -> None:
+                    nonlocal seq
+                    seq += 1
+                    conn.execute(
+                        "INSERT INTO agent_events (task_id, seq, event_type, payload_json, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (task_id, seq, event_type, _json(payload), now),
+                    )
+
+                for step_id in open_steps:
+                    append("step_completed", {"id": step_id, "status": "failed",
+                                              "reason": "interrupted"})
+                if task["status"] in {"queued", "planning", "running", "reviewing"}:
+                    conn.execute(
+                        "UPDATE agent_tasks SET status = 'interrupted', updated_at = ? WHERE id = ?",
+                        (now, task_id),
+                    )
+                    append("task_interrupted", {"reason": "process_restart"})
+                elif task["status"] == "executing_action":
+                    conn.execute(
+                        "UPDATE agent_tasks SET status = 'needs_review', updated_at = ? WHERE id = ?",
+                        (now, task_id),
+                    )
+                    append("action_unknown", {"reason": "process_restart"})
             conn.execute(
                 "UPDATE agent_proposals SET status = 'unknown', updated_at = ? "
                 "WHERE status IN ('executing', 'submitted', 'reconciling')",
-                (_now(),),
+                (now,),
             )
 
     def create_conversation(self, title: str, paper_session_id: str | None) -> dict:

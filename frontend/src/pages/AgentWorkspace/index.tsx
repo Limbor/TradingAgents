@@ -35,6 +35,9 @@ const proposalStatusText: Record<string, string> = {
   completed: "账本已推进", no_change: "账本未推进", stale: "提案已失效",
   unknown: "执行结果待核对", reviewed: "已人工核对", rejected: "已取消", expired: "已过期", failed: "执行失败",
 };
+const failedStepReasonText: Record<string, string> = {
+  interrupted: "已中断", timeout: "已超时", cancelled: "已取消",
+};
 
 function taskSteps(task: AgentTask) {
   const steps = task.events
@@ -44,7 +47,8 @@ function taskSteps(task: AgentTask) {
   return steps.map((step) => {
     const started = task.events.some((event) => event.event_type === "step_started" && event.payload.id === step.id);
     const finished = task.events.find((event) => event.event_type === "step_completed" && event.payload.id === step.id);
-    return { ...step, status: finished ? String(finished.payload.status) : started ? "running" : "queued" };
+    return { ...step, status: finished ? String(finished.payload.status) : started ? "running" : "queued",
+      reason: finished && typeof finished.payload.reason === "string" ? finished.payload.reason : null };
   });
 }
 
@@ -80,7 +84,7 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
           step.status === "failed" ? <CircleAlert className="h-4 w-4 text-ui-warning" /> :
           step.status === "running" ? <LoaderCircle className="h-4 w-4 animate-spin text-ui-accent" /> :
           <Clock3 className="h-4 w-4 text-ui-faint" />}
-        <span>{step.label}</span><span className="ml-auto text-ui-faint">{step.status === "completed" ? "已完成" : step.status === "failed" ? "失败" : step.status === "running" ? "进行中" : "待执行"}</span>
+        <span>{step.label}</span><span className="ml-auto text-ui-faint">{step.status === "completed" ? "已完成" : step.status === "failed" ? failedStepReasonText[step.reason ?? ""] ?? "失败" : step.status === "running" ? "进行中" : "待执行"}</span>
       </div>) : <p className="text-xs text-ui-muted">{activeStatuses.has(task.status) ? "正在解析任务目标…" : "本任务没有可展示的执行步骤。"}</p>}
       {skillStages.length > 0 && <div className="space-y-1 border-l border-ui-line pl-3 text-xs text-ui-muted" aria-label="分析子任务进度">
         {skillStages.map((stage, index) => <p key={index}>{stage.label} · {statusText[stage.status] ?? stage.status}</p>)}

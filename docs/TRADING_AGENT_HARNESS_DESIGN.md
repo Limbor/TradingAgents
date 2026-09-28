@@ -48,7 +48,7 @@ Harness 是独立于 `ChatAgent` 的服务层。保留现有 `ChatAgent` 处理�
 
 `conversation_id` 是对话，`task_id` 是一次目标，已有 `run_id` 是某个 Skill 子任务；三者不得混用。`paper_session_id` 是账户/策略会话的外部标识，须在服务端验证其存在与权限。浏览器提交的页面上下文只作为提示，账户权益、持仓和成交必须由工具重新读取。
 
-任务状态：`queued → planning → running → reviewing → completed`。必要时进入 `needs_input`、`awaiting_approval`、`failed`、`cancelled`。步骤和工具调用有独立状态；某个工具失败不必直接结束整个任务，可以在预算内换可信来源或输出有缺口的结论。审批通过后进入 `executing_action`，完成后返回 `reviewing`，核对实际结果再结束。服务重启后，未完成任务标为 `interrupted`，从安全检查点恢复或明确要求重试；绝不自动重放写操作。
+任务状态：`queued → planning → running → reviewing → completed`。必要时进入 `needs_input`、`awaiting_approval`、`failed`、`cancelled`。步骤和工具调用有独立状态；某个工具失败不必直接结束整个任务，可以在预算内换可信来源或输出有缺口的结论。审批通过后进入 `executing_action`，完成后返回 `reviewing`，核对实际结果再结束。服务重启后，未完成的读取任务标为 `interrupted`，由用户明确重试；绝不自动重放写操作。启动恢复会在同一事务内为未闭合步骤补记中断事件，并为任务补记终态事件，重复启动不会重复补记。进行中的写动作转为 `needs_review`，追加结果待核对事件，后续只通过回执和账本核对。
 
 每个事件有单调 `seq`，客户端以 `last_seq` 重连补齐。写动作使用 `proposal_id + idempotency_key` 去重，提交前重新获取账户状态并校验提案尚未过期。取消应终止可取消的读取/计算；若外部写入已经提交，显示“执行结果待核对”，而不是虚报取消成功。
 
