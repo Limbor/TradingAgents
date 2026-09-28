@@ -551,6 +551,62 @@ async def test_total_task_budget_stops_read_and_records_timeout(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_late_tool_result_cannot_create_paper_proposal(tmp_path):
+    returned_after_cancel = asyncio.Event()
+
+    async def slow_paper(session_id):
+        assert session_id == "paper:mine"
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            returned_after_cancel.set()
+            return _paper_status(as_of_date="2026-09-25")
+
+    harness, store = _harness(tmp_path, paper_handler=slow_paper)
+    harness.config.update(agent_model_planning_enabled=False,
+                          agent_task_timeout_seconds=0.05)
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "推进模拟盘到 2026-09-28")
+    await asyncio.wait_for(harness._active[task["id"]], timeout=2)
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert returned_after_cancel.is_set()
+    assert detail["status"] == "failed"
+    assert detail["evidence"] == []
+    assert detail["proposal"] is None
+    assert not any(event["event_type"] == "proposal_created" for event in detail["events"])
+
+
+@pytest.mark.asyncio
+async def test_late_model_answer_cannot_complete_task(tmp_path):
+    async def paper(session_id):
+        assert session_id == "paper:mine"
+        return _paper_status(as_of_date="2026-09-25")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config.update(agent_model_planning_enabled=False,
+                          agent_task_timeout_seconds=0.05)
+
+    async def slow_synthesis(*_args, **_kwargs):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            return "超时后返回的回答"
+
+    harness._synthesize = slow_synthesis
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "这个模拟盘账户的权益如何？")
+    await asyncio.wait_for(harness._active[task["id"]], timeout=2)
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "failed"
+    assert len(detail["evidence"]) == 1
+    assert not any(message["role"] == "assistant"
+                   for message in store.list_messages(conversation["id"]))
+    assert any(event["event_type"] == "task_timed_out" for event in detail["events"])
+
+
+@pytest.mark.asyncio
 async def test_total_task_budget_includes_queue_wait(tmp_path):
     async def paper(_session_id):
         raise AssertionError("排队超时的任务不应调用账本")

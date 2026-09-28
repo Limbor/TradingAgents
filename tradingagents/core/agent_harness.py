@@ -1110,10 +1110,20 @@ class TradingAgentHarness:
                 current_task.cancel()
 
         loop = asyncio.get_running_loop()
-        remaining = max(0.0, (deadline if deadline is not None else
-                              loop.time() + timeout_seconds) - loop.time())
+        absolute_deadline = deadline if deadline is not None else loop.time() + timeout_seconds
+        remaining = max(0.0, absolute_deadline - loop.time())
         timeout_handle = loop.call_later(remaining, expire)
+
+        def enforce_budget() -> None:
+            nonlocal timed_out
+            if self._shutting_down or task_id in self._cancel_requested:
+                raise asyncio.CancelledError()
+            if timed_out or loop.time() >= absolute_deadline:
+                timed_out = True
+                raise asyncio.CancelledError()
+
         try:
+            enforce_budget()
             tickers = self._goal_tickers(goal)
             if not tickers and self._is_stock_followup(goal):
                 tickers, scope_error = self._resolve_stock_reference(conversation["id"], task_id)
@@ -1154,6 +1164,7 @@ class TradingAgentHarness:
                 self.store.event(task_id, "task_needs_input", {"content": content})
                 return
             async with self._slots:
+                enforce_budget()
                 self.store.set_status(task_id, "planning")
                 paper_session_id = conversation.get("paper_session_id")
                 market_asof_date = None
@@ -1178,6 +1189,7 @@ class TradingAgentHarness:
                         return
                 plan, plan_source = await self._build_plan(goal, paper_session_id, intent_hint,
                                                            tickers=tickers)
+                enforce_budget()
                 self.store.event(task_id, "plan_created", {"steps": plan, "source": plan_source})
                 self.store.set_status(task_id, "running")
                 evidence: list[dict] = []
@@ -1217,6 +1229,7 @@ class TradingAgentHarness:
                     else:
                         result = await self._call_read_tool(step["tool"], step["args"],
                                                             paper_session_id, tickers)
+                    enforce_budget()
                     if not isinstance(result, dict):
                         result = {"value": result}
                     if step["tool"] == "get_mcp_factor_snapshot":
@@ -1321,11 +1334,13 @@ class TradingAgentHarness:
                         replanned = True
                         extra = await self._replan(goal, paper_session_id, plan, evidence,
                                                    tickers=tickers)
+                        enforce_budget()
                         if extra:
                             plan.extend(extra)
                             self.store.event(task_id, "plan_revised", {
                                 "steps": extra, "reason": "已有工具未返回可用结果",
                             })
+                enforce_budget()
                 self.store.set_status(task_id, "reviewing")
                 self.store.event(task_id, "review_started", {"evidence_count": len(evidence)})
                 advance_target = self._advance_target(goal, conversation.get("paper_session_id"))
@@ -1372,6 +1387,7 @@ class TradingAgentHarness:
                             "blocking_proposal_id": blocker["id"],
                         })
                         return
+                    enforce_budget()
                     proposal = self.store.create_proposal(
                         task_id, conversation["paper_session_id"], advance_target, baseline
                     )
@@ -1390,12 +1406,14 @@ class TradingAgentHarness:
                         goal, conversation["id"], evidence, tickers=tickers,
                         required_skill_id=(intent_hint or {}).get("skill_id"),
                     )
+                    enforce_budget()
                     answer = synthesized.get("answer") if isinstance(synthesized, dict) else None
                     content = synthesized["content"] if isinstance(synthesized, dict) else synthesized
                 else:
                     self.store.event(task_id, "step_started", plan[0])
                     active_step_id = plan[0]["id"]
                     content = await self._delegate_chat(task_id, goal, conversation)
+                    enforce_budget()
                     self.store.event(task_id, "step_completed", {"id": plan[0]["id"], "status": "completed"})
                     active_step_id = None
                     evidence = self.store.list_evidence(task_id)
@@ -1405,6 +1423,7 @@ class TradingAgentHarness:
                 result = {"content": content, "citations": citations, "read_only": True}
                 if answer is not None:
                     result["answer"] = answer
+                enforce_budget()
                 self.store.add_message(conversation["id"], "assistant", content, task_id)
                 self.store.set_status(task_id, "completed", result=result)
                 self.store.event(task_id, "task_completed", result)
