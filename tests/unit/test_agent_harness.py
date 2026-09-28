@@ -1016,6 +1016,44 @@ async def test_factor_failure_does_not_become_current_stock_advice(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason, expected", [
+    ("price_data_unavailable", "行情不完整"),
+    ("locked_limit_down", "可交易性检查未通过"),
+])
+async def test_trade_judgment_stops_on_negative_tradability(
+    tmp_path, monkeypatch, reason, expected,
+):
+    monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
+                        lambda *_args, **_kwargs: SimpleNamespace(market_asof_date="2026-09-25"))
+
+    async def paper(_session_id):
+        raise AssertionError("未绑定模拟盘时不得读取账本")
+
+    async def factor(ts_code):
+        return {"ts_code": ts_code, "as_of_date": "2026-09-25",
+                "source": "StockManager MCP", "snapshot": {"rows": [{
+                    "ts_code": ts_code,
+                    "tradability": {"is_tradable": False, "reason": reason},
+                }]}}
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        handler=factor,
+    ))
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "现在要不要买入 600519.SH？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "completed"
+    assert expected in detail["result"]["content"]
+    assert "没有生成买卖判断" in detail["result"]["content"]
+    assert len(detail["evidence"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_paper_stock_question_requires_both_ledger_and_factor_snapshot(tmp_path):
     async def paper(session_id):
         return {"session_id": session_id, "source": "StockManager ledger",

@@ -318,6 +318,28 @@ class TestLightweightToolHandlers:
         assert result["snapshot"]["rows"][0]["factor_scores"]["flow"] == 50.0
 
     @pytest.mark.asyncio
+    async def test_factor_snapshot_surfaces_unverified_tradability(self, monkeypatch):
+        from tradingagents.core.lightweight_tools import make_get_mcp_factor_snapshot
+
+        client = MagicMock()
+        client.get_factor_snapshot = AsyncMock(return_value={
+            "status": "success", "as_of_date": "2026-09-25", "warnings": [],
+            "rows": [{"ts_code": "600519.SH", "trade_date": "2026-09-25",
+                      "raw_factors": {"pe_ttm": 12.0}, "latest_price": None,
+                      "tradability": {"is_tradable": False,
+                                      "reason": "price_data_unavailable"},
+                      "warnings": ["请求交易日缺少收盘价"]}],
+        })
+        monkeypatch.setattr("tradingagents.core.mcp_client.get_mcp_client",
+                            AsyncMock(return_value=client))
+        result = await make_get_mcp_factor_snapshot({})(
+            ts_code="600519.SH", trade_date="2026-09-25"
+        )
+        assert "请求交易日缺少收盘价" in result["warnings"]
+        assert any("price_data_unavailable" in warning for warning in result["warnings"])
+        assert result["snapshot"]["rows"][0]["latest_price"] is None
+
+    @pytest.mark.asyncio
     async def test_risk_announcement_dates_are_bounded_and_explain_zero_hits(self, monkeypatch):
         from tradingagents.core.lightweight_tools import make_get_mcp_risk_announcements
 

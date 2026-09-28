@@ -1822,6 +1822,23 @@ class TradingAgentHarness:
                         "为同一时点的交易判断。请核对数据源后重试。")
             if any(risk_date != ledger_date for risk_date in risk_dates):
                 return "风险公告查询截止日与模拟盘账本基准日不一致。本轮没有生成交易判断，请核对数据源后重试。"
+        if self._asks_trade_decision(goal):
+            for item in evidence:
+                if item["tool_name"] != "get_mcp_factor_snapshot":
+                    continue
+                snapshot = item["result"].get("snapshot") or {}
+                rows = snapshot.get("rows") if isinstance(snapshot, dict) else None
+                ticker = item["result"].get("ts_code")
+                matching = next((row for row in rows if isinstance(row, dict) and
+                                 row.get("ts_code") == ticker), None) if isinstance(rows, list) else None
+                tradability = matching.get("tradability") if matching else None
+                if isinstance(tradability, dict) and tradability.get("is_tradable") is False:
+                    reason = str(tradability.get("reason") or "未提供原因")[:100]
+                    if reason == "price_data_unavailable":
+                        return (f"{ticker} 的请求日行情不完整，无法核对停牌和涨跌停状态。"
+                                "本轮没有生成买卖判断，请核对数据源后重试。")
+                    return (f"{ticker} 的来源可交易性检查未通过（{reason}）。"
+                            "本轮没有生成买卖判断，请先核对交易所行情与账户交易条件。")
         if self._asks_trade_execution_feasibility(goal):
             return ("当前证据未核对停牌、涨跌停、交易日及账户可交易数量等执行条件，"
                     "无法判断这笔交易能否成交。本轮没有生成可执行的交易判断；"

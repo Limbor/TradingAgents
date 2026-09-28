@@ -359,6 +359,13 @@ def make_get_mcp_factor_snapshot(config: dict[str, Any]):
                     "warnings": warnings, "ts_code": ts_code, "source": source}
         if result.get("status") == "partial":
             warnings = [*warnings, "因子快照覆盖不完整，缺失维度不能当作中性分"]
+        row_warnings = matching[0].get("warnings")
+        if isinstance(row_warnings, list):
+            warnings.extend(str(item)[:500] for item in row_warnings[:10])
+        tradability = matching[0].get("tradability")
+        if isinstance(tradability, dict) and tradability.get("is_tradable") is False:
+            reason = str(tradability.get("reason") or "未提供原因")[:100]
+            warnings.append(f"{trade_date} 的可交易性检查未通过或资料不足：{reason}；不能据此判断可成交")
         coverage = matching[0].get("data_coverage")
         if isinstance(coverage, dict):
             missing = sorted(str(name) for name, state in coverage.items()
