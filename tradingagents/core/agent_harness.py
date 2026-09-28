@@ -1713,25 +1713,14 @@ class TradingAgentHarness:
             goal, session_id=conversation["id"],
             context={"paper_session_context": {"session_id": conversation["paper_session_id"]}}
             if conversation.get("paper_session_id") else None,
+            allow_tools=False,
         )
         if response.intent == "skill_run":
-            if response.skill_id not in _SAFE_ANALYSIS_SKILLS:
-                return ("这项技能可能修改持仓、计划或审计记录，当前交易 Agent 不会直接执行。"
-                        "请在对应页面查看操作并完成确认。")
-            result = await self._run_skill(task_id, response.skill_id, response.skill_params)
-            item = self.store.add_evidence(task_id, f"skill:{response.skill_id}", result)
-            self.store.event(task_id, "evidence_added", {"evidence_id": item["id"],
-                             "source": item["source"], "summary": item["summary"],
-                             "as_of_date": item["as_of_date"], "warnings": item["warnings"]})
-            if result.get("error"):
-                return f"分析任务未完成：{result['error']}"
-            return f"分析已完成。运行编号：{result['run_id']}。结果摘要：{_json(result.get('result') or {})[:8000]}"
+            return ("普通问答不会直接执行分析技能。请明确提出分析目标，"
+                    "由交易任务核对范围、证据和执行步骤后重试。")
         if response.intent == "tool_answer":
-            result = response.tool_result if isinstance(response.tool_result, dict) else {"value": response.tool_result}
-            item = self.store.add_evidence(task_id, response.tool_name, result)
-            self.store.event(task_id, "evidence_added", {"evidence_id": item["id"],
-                             "source": item["source"], "summary": item["summary"],
-                             "as_of_date": item["as_of_date"], "warnings": item["warnings"]})
+            return ("这项查询需要由交易任务重新核对来源、账户与日期。"
+                    "请明确提供标的或账户后重试。")
         if response.intent == "clarify":
             return response.clarify_question or response.content or "请补充需要分析的标的或账户。"
         return response.content or "本轮没有得到可用结论。"

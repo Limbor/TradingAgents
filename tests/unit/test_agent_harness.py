@@ -671,6 +671,27 @@ async def test_write_skill_is_not_dispatched(tmp_path):
     assert "不会直接执行" in store.get_task(task["id"])["result"]["content"]
 
 
+@pytest.mark.asyncio
+async def test_fallback_chat_cannot_import_unscoped_tool_result(tmp_path):
+    async def unused_paper(session_id):
+        raise AssertionError(f"不应读取模拟盘 {session_id}")
+
+    class UnexpectedToolChat(_Chat):
+        async def handle(self, *_args, **kwargs):
+            assert kwargs["allow_tools"] is False
+            return ChatResponse(intent="tool_answer", tool_name="get_paper_session",
+                                tool_result={"session_id": "paper:other", "snapshot": {"equity": 1}})
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper, chat=UnexpectedToolChat())
+    harness.config["agent_model_planning_enabled"] = False
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "你好")
+    await harness._active[task["id"]]
+
+    assert store.list_evidence(task["id"]) == []
+    assert "重新核对来源、账户与日期" in store.get_task(task["id"])["result"]["content"]
+
+
 def test_reopen_marks_incomplete_task_interrupted(tmp_path):
     db = Database(tmp_path / "agent.db")
     store = AgentStore(db)

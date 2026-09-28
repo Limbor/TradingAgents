@@ -201,6 +201,8 @@ class ChatAgent:
         user_text: str,
         session_id: str = "default",
         context: dict[str, Any] | None = None,
+        *,
+        allow_tools: bool = True,
     ) -> ChatResponse:
         """Process a user message and return a classified ChatResponse.
 
@@ -208,6 +210,7 @@ class ChatAgent:
             user_text: The user's natural-language message.
             session_id: Conversation session identifier for multi-turn context.
             context: Optional structured context (e.g. selection_context).
+            allow_tools: Disable tool use when a caller owns the tool and evidence lifecycle.
 
         Returns:
             ChatResponse with intent and relevant payload fields populated.
@@ -237,14 +240,14 @@ class ChatAgent:
         self._buffers[session_id] = self._buffers[session_id][-20:]
         self._buffer_ts[session_id] = monotonic_time.monotonic()
 
-        if paper_id and _is_paper_question(user_text):
+        if allow_tools and paper_id and _is_paper_question(user_text):
             result = await self._answer_paper_question(user_text, session_id, paper_id)
             self._buffers[session_id].append({"role": "assistant", "content": result.content})
             self._buffers[session_id] = self._buffers[session_id][-20:]
             return result
 
         try:
-            llm_with_tools = self._get_llm_with_tools()
+            llm_with_tools = self._get_llm_with_tools() if allow_tools else self._get_plain_llm()
         except Exception as exc:
             logger.warning("ChatAgent LLM init failed: %s", exc)
             return ChatResponse(
@@ -255,7 +258,8 @@ class ChatAgent:
 
         try:
             response = await asyncio.wait_for(
-                self._invoke_llm(llm_with_tools, session_id, context_block),
+                self._invoke_llm(llm_with_tools, session_id, context_block,
+                                 text_only=not allow_tools),
                 timeout=self._timeout,
             )
         except asyncio.TimeoutError:
@@ -273,7 +277,12 @@ class ChatAgent:
                 degraded=True,
             )
 
-        result = await self._parse_response(response, user_text)
+        if allow_tools:
+            result = await self._parse_response(response, user_text)
+        else:
+            content = str(getattr(response, "content", "") or "").strip()
+            result = (ChatResponse(intent="chat_answer", content=content) if content else
+                      ChatResponse(intent="clarify", content="请补充需要讨论的问题。"))
         # Deterministic guard: a news-interpretation turn (news_context attached
         # by the 问AI jump) must never trigger the market_overview snapshot
         # pipeline — it takes minutes and cannot answer the question. When the
@@ -476,6 +485,8 @@ class ChatAgent:
         llm_with_tools: Any,
         session_id: str,
         context_block: str = "",
+        *,
+        text_only: bool = False,
     ) -> Any:
         """Build messages and call the LLM.
 
@@ -486,7 +497,12 @@ class ChatAgent:
         """
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        messages: list[Any] = [SystemMessage(content=self._build_system_prompt())]
+        system_prompt = self._build_system_prompt()
+        if text_only:
+            system_prompt += ("\n\n本轮没有开放工具调用，也没有提供已核对的账户或行情证据。"
+                              "只回答概念性问题；需要当前行情、持仓、模拟盘或公告事实时，"
+                              "明确说明需要通过受控取证任务核对，不要猜测或声称已经查询。")
+        messages: list[Any] = [SystemMessage(content=system_prompt)]
 
         for msg in self._buffers[session_id]:
             if msg["role"] == "user":

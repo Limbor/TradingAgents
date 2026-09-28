@@ -69,6 +69,26 @@ class TestChatAgentIntentClassification:
     """Verify ChatAgent correctly classifies LLM responses into 4 intents."""
 
     @pytest.mark.asyncio
+    async def test_text_only_mode_never_executes_tools(self, chat_agent, mock_tool_registry):
+        plain = AsyncMock()
+        plain.ainvoke = AsyncMock(return_value=AIMessage(
+            content="当前账本需要另行核对。",
+            tool_calls=[{"name": "get_portfolio_summary", "args": {}, "id": "tool-1"}],
+        ))
+        with (patch.object(chat_agent, "_get_plain_llm", return_value=plain),
+              patch.object(chat_agent, "_get_llm_with_tools",
+                           side_effect=AssertionError("不得绑定工具"))):
+            result = await chat_agent.handle(
+                "当前模拟盘权益是多少？", context={"paper_session_context": {"session_id": "paper:mine"}},
+                allow_tools=False,
+            )
+
+        assert result.intent == "chat_answer"
+        assert result.content == "当前账本需要另行核对。"
+        mock_tool_registry.get("get_portfolio_summary").handler.assert_not_awaited()
+        assert "本轮没有开放工具调用" in plain.ainvoke.await_args.args[0][0].content
+
+    @pytest.mark.asyncio
     async def test_chat_answer_intent(self, chat_agent):
         """LLM responds with content, no tool_call → chat_answer."""
         mock_llm = AsyncMock()
