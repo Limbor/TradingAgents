@@ -89,6 +89,49 @@ class TestChatAgentIntentClassification:
         assert "本轮没有开放工具调用" in plain.ainvoke.await_args.args[0][0].content
 
     @pytest.mark.asyncio
+    async def test_paper_tool_call_uses_page_bound_account(self, chat_agent, mock_tool_registry):
+        paper_handler = AsyncMock(return_value={"session_id": "paper:mine", "as_of_date": "2026-09-25"})
+        mock_tool_registry.register(LightweightTool(
+            name="get_paper_session", description="paper", parameters={}, handler=paper_handler,
+        ))
+        chat_agent = ChatAgent(chat_agent._config, chat_agent._skill_registry, mock_tool_registry)
+        response = MagicMock(content="", tool_calls=[{
+            "name": "get_paper_session", "args": {"session_id": "paper:other"},
+        }])
+        model = AsyncMock(ainvoke=AsyncMock(return_value=response))
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=model):
+            result = await chat_agent.handle(
+                "扫描市场", context={"paper_session_context": {"session_id": "paper:mine"}},
+            )
+
+        paper_handler.assert_awaited_once_with(session_id="paper:mine")
+        assert result.intent == "tool_answer"
+        assert result.tool_args == {"session_id": "paper:mine"}
+        assert result.citations[0]["args"] == {"session_id": "paper:mine"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("include_portfolio", [False, True])
+    async def test_paper_tool_call_without_page_scope_asks_for_account(
+        self, chat_agent, mock_tool_registry, include_portfolio,
+    ):
+        paper_handler = AsyncMock()
+        mock_tool_registry.register(LightweightTool(
+            name="get_paper_session", description="paper", parameters={}, handler=paper_handler,
+        ))
+        chat_agent = ChatAgent(chat_agent._config, chat_agent._skill_registry, mock_tool_registry)
+        calls = [{"name": "get_paper_session", "args": {"session_id": "paper:other"}}]
+        if include_portfolio:
+            calls.append({"name": "get_portfolio_summary", "args": {}})
+        model = AsyncMock(ainvoke=AsyncMock(return_value=MagicMock(content="", tool_calls=calls)))
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=model):
+            result = await chat_agent.handle("你好")
+
+        assert result.intent == "clarify"
+        assert "选择要查询的模拟盘账户" in result.content
+        paper_handler.assert_not_awaited()
+        mock_tool_registry.get("get_portfolio_summary").handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_chat_answer_intent(self, chat_agent):
         """LLM responds with content, no tool_call → chat_answer."""
         mock_llm = AsyncMock()

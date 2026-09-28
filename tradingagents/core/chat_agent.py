@@ -278,7 +278,7 @@ class ChatAgent:
             )
 
         if allow_tools:
-            result = await self._parse_response(response, user_text)
+            result = await self._parse_response(response, user_text, paper_id=paper_id)
         else:
             content = str(getattr(response, "content", "") or "").strip()
             result = (ChatResponse(intent="chat_answer", content=content) if content else
@@ -574,11 +574,12 @@ class ChatAgent:
     # Response parsing
     # ------------------------------------------------------------------
 
-    async def _parse_response(self, response: Any, user_text: str = "") -> ChatResponse:
+    async def _parse_response(self, response: Any, user_text: str = "",
+                              *, paper_id: str = "") -> ChatResponse:
         """Parse the LLM response into a ChatResponse with the correct intent."""
         # Check for tool calls
         if hasattr(response, "tool_calls") and response.tool_calls:
-            return await self._handle_tool_call(response, user_text)
+            return await self._handle_tool_call(response, user_text, paper_id=paper_id)
 
         # No tool call — check content
         content = ""
@@ -592,14 +593,21 @@ class ChatAgent:
         # after this returns, so multi-turn context is preserved.
         return ChatResponse(intent="chat_answer", content=content)
 
-    async def _handle_tool_call(self, response: Any, user_text: str = "") -> ChatResponse:
+    async def _handle_tool_call(self, response: Any, user_text: str = "",
+                                *, paper_id: str = "") -> ChatResponse:
         """Process one tool call, or combine multiple lightweight lookups."""
         parsed_calls = [self._parse_tool_call(item) for item in response.tool_calls]
+        if not paper_id and any(name == "get_paper_session" for name, _ in parsed_calls):
+            return ChatResponse(
+                intent="clarify", content="请先选择要查询的模拟盘账户。",
+                clarify_question="请先选择要查询的模拟盘账户。",
+            )
         if len(parsed_calls) > 1 and all(
             name in self._lightweight_names for name, _ in parsed_calls
         ):
             answers = await asyncio.gather(
-                *(self._execute_lightweight_tool(name, args) for name, args in parsed_calls)
+                *(self._execute_lightweight_tool(name, args, paper_id=paper_id)
+                  for name, args in parsed_calls)
             )
             return ChatResponse(
                 intent="tool_answer",
@@ -617,7 +625,8 @@ class ChatAgent:
 
         # Is it a lightweight tool?
         if tool_name in self._lightweight_names:
-            return await self._execute_lightweight_tool(tool_name, tool_args)
+            return await self._execute_lightweight_tool(tool_name, tool_args,
+                                                        paper_id=paper_id)
 
         # Is it a registered skill?
         skill = self._skill_registry.get(tool_name)
@@ -678,9 +687,17 @@ class ChatAgent:
         return str(tool_name), tool_args
 
     async def _execute_lightweight_tool(
-        self, tool_name: str, args: dict[str, Any]
+        self, tool_name: str, args: dict[str, Any], *, paper_id: str = ""
     ) -> ChatResponse:
         """Execute a lightweight tool and return a tool_answer response."""
+        if tool_name == "get_paper_session":
+            if not paper_id:
+                return ChatResponse(
+                    intent="clarify", content="请先选择要查询的模拟盘账户。",
+                    clarify_question="请先选择要查询的模拟盘账户。",
+                )
+            # The page-bound account owns the scope. Model supplied IDs are data.
+            args = {"session_id": paper_id}
         tool = self._tool_registry.get(tool_name)
         if tool is None:
             return ChatResponse(
