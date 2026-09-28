@@ -128,9 +128,11 @@ is_tradingagents_frontend() {
 }
 
 is_stockmanager_web() {
-  local command
+  local command cwd
   command="$(pid_command "$1")"
-  [[ "$command" == *"$STOCKMANAGER_ROOT/.venv/bin/python -m uvicorn stockmanager.web.app:app"* ]]
+  cwd="$(lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+  [[ -n "$STOCKMANAGER_WEB_PORT" && "$cwd" == "$(cd "$STOCKMANAGER_ROOT" && pwd -P)" ]] \
+    && [[ "$command" == *" -m uvicorn stockmanager.web.app:app --host 127.0.0.1 --port $STOCKMANAGER_WEB_PORT" ]]
 }
 
 is_stockmanager_mcp() {
@@ -334,21 +336,59 @@ start_frontend() {
 }
 
 # ── 启动 StockManager 现有 Web API（不启动第二套前端）───────
+restart_outdated_stockmanager_web() {
+  local listeners pid i
+  listeners="$(port_listener_pids "$STOCKMANAGER_WEB_PORT")"
+  if [ -z "$listeners" ] || [ "$(printf '%s\n' "$listeners" | wc -l | tr -d ' ')" != 1 ]; then
+    error "无法确认旧版 StockManager Web 的唯一监听进程，端口 $STOCKMANAGER_WEB_PORT: ${listeners:-无}"
+    return 1
+  fi
+  pid="$listeners"
+  if ! is_stockmanager_web "$pid"; then
+    error "端口 $STOCKMANAGER_WEB_PORT 的旧版服务不属于当前 StockManager 工作目录，无法自动重启 (PID: $pid)"
+    echo "  $(pid_command "$pid")"
+    return 1
+  fi
+  info "旧版 StockManager Web 缺少所需接口，优雅重启本项目进程 (PID: $pid) ..."
+  kill -TERM "$pid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if [ -z "$(port_listener_pids "$STOCKMANAGER_WEB_PORT")" ]; then
+      rm -f "$STOCKMANAGER_PID_FILE"
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  error "旧版 StockManager Web 未能优雅停止；请检查其运行状态 (PID: $pid)"
+  return 1
+}
+
 start_stockmanager_web() {
   if [ -z "$STOCKMANAGER_WEB_PORT" ]; then
     warn "StockManager Web 地址不是本机 HTTP 端口，由用户自行管理: $STOCKMANAGER_WEB_URL"
     return 0
   fi
   if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
-    if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1; then
-      error "现有 StockManager Web 进程缺少新版模拟盘接口；请先重启该进程，再启动 TradingAgents"
+    local capabilities_code allocator_code
+    capabilities_code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" || true)"
+    allocator_code="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$STOCKMANAGER_WEB_URL/api/v2/allocator-configs" || true)"
+    if [ "$capabilities_code" = 200 ] && [ "$allocator_code" = 200 ]; then
+      info "StockManager Web 已就绪，复用现有服务 → $STOCKMANAGER_WEB_URL"
+      return 0
+    fi
+    if { [ "$capabilities_code" != 200 ] && [ "$capabilities_code" != 404 ]; } ||
+       { [ "$allocator_code" != 200 ] && [ "$allocator_code" != 404 ]; }; then
+      error "StockManager Web 接口异常（模拟盘 HTTP ${capabilities_code:-未知}，组合配置 HTTP ${allocator_code:-未知}）；请检查服务日志"
       return 1
     fi
-    info "StockManager Web 已就绪，复用现有服务 → $STOCKMANAGER_WEB_URL"
-    if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/allocator-configs" >/dev/null 2>&1; then
-      warn "现有 StockManager Web 进程未加载组合配置接口；请重启该进程后使用组合会话创建"
+    if [ ! -f "$STOCKMANAGER_ROOT/stockmanager/web/api_v2_session.py" ] ||
+       ! grep -q '"/paper/capabilities"' "$STOCKMANAGER_ROOT/stockmanager/web/api_v2_session.py" ||
+       ! grep -q '"/allocator-configs"' "$STOCKMANAGER_ROOT/stockmanager/web/api_v2_session.py"; then
+      error "StockManager 工作目录本身缺少所需接口：$STOCKMANAGER_ROOT"
+      return 1
     fi
-    return 0
+    restart_outdated_stockmanager_web
   fi
   if port_in_use "$STOCKMANAGER_WEB_PORT"; then
     error "StockManager Web 端口 $STOCKMANAGER_WEB_PORT 已被其他服务占用，但健康检查失败"
@@ -372,8 +412,9 @@ start_stockmanager_web() {
   local i=0
   while [ $i -lt 120 ]; do
     if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
-      if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1; then
-        error "StockManager Web 已启动但缺少新版模拟盘接口；请检查 $STOCKMANAGER_LOG"
+      if ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1 ||
+         ! curl -sf --max-time 5 "$STOCKMANAGER_WEB_URL/api/v2/allocator-configs" >/dev/null 2>&1; then
+        error "StockManager Web 已启动但缺少所需接口；请检查 $STOCKMANAGER_LOG"
         stop_stockmanager_web
         return 1
       fi
@@ -556,10 +597,11 @@ cmd_status() {
     echo -e "  ${RED}○${NC} 前端  未运行"
   fi
   if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/health" >/dev/null 2>&1; then
-    if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1; then
+    if curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/v2/paper/capabilities" >/dev/null 2>&1 &&
+       curl -sf --max-time 2 "$STOCKMANAGER_WEB_URL/api/v2/allocator-configs" >/dev/null 2>&1; then
       echo -e "  ${GREEN}●${NC} StockManager Web  $STOCKMANAGER_WEB_URL  状态: healthy"
     else
-      echo -e "  ${YELLOW}●${NC} StockManager Web  $STOCKMANAGER_WEB_URL  状态: 旧进程，需重启"
+      echo -e "  ${YELLOW}●${NC} StockManager Web  $STOCKMANAGER_WEB_URL  状态: 接口不完整，启动时尝试自动重启"
     fi
   else
     echo -e "  ${RED}○${NC} StockManager Web  $STOCKMANAGER_WEB_URL  未连接"

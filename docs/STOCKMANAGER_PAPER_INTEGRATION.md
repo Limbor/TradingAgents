@@ -7,7 +7,7 @@ TradingAgents 在 `/paper` 提供统一的策略模拟盘工作台。StockManage
 ## 本地启动
 
 1. 确认 StockManager 位于同级目录并安装了其 `.venv` 依赖。
-2. 在 TradingAgents 仓库运行 `./scripts/dev.sh start`，脚本会启动或复用本机 StockManager Web（`127.0.0.1:8787`）和 MCP（`127.0.0.1:8765/mcp`），并启动 TradingAgents 后端与前端。打开前端的「模拟盘」。`./scripts/dev.sh status` 可分别查看四个服务；`stop` 只会停止由此脚本启动的进程。
+2. 在 TradingAgents 仓库运行 `./scripts/dev.sh start`，脚本会启动或复用本机 StockManager Web（`127.0.0.1:8787`）和 MCP（`127.0.0.1:8765/mcp`），并启动 TradingAgents 后端与前端。若现有 Web 进程来自当前 StockManager 工作目录但未加载所需接口，脚本会自动优雅重启；无法确认归属的端口进程不会被终止。打开前端的「模拟盘」。`./scripts/dev.sh status` 可分别查看四个服务；`stop` 只会停止由此脚本启动的进程。
 3. StockManager 使用其他本机端口时，在启动 TradingAgents 前设置 `STOCKMANAGER_WEB_URL=http://127.0.0.1:<port>`。慢速会话可通过 `STOCKMANAGER_WEB_TIMEOUT` 调整读取超时，默认 90 秒。
 
 如果 StockManager Web 已在升级前启动，需重启该进程以加载新增的组合配置列表接口。推进策略需要 StockManager 原有的数据源配置（包括 `TUSHARE_TOKEN`）。
