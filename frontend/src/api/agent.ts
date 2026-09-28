@@ -41,12 +41,22 @@ export interface AgentEvidence {
   result: Record<string, unknown>;
 }
 
+export interface AgentAnswer {
+  summary: string;
+  verdict: "informational" | "conditional" | "insufficient_evidence";
+  reasons: string[];
+  risks: string[];
+  assumptions: string[];
+  evidence_refs: string[];
+  next_actions: string[];
+}
+
 export interface AgentTask {
   id: string;
   conversation_id: string;
   goal: string;
   status: string;
-  result: { content?: string; citations?: unknown[]; read_only?: boolean };
+  result: { content?: string; citations?: unknown[]; read_only?: boolean; answer?: AgentAnswer };
   error: string | null;
   created_at: string;
   updated_at: string;

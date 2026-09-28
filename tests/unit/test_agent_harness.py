@@ -1110,6 +1110,49 @@ async def test_trade_execution_question_needs_factor_and_does_not_claim_sellabil
 
 
 @pytest.mark.asyncio
+async def test_structured_answer_keeps_only_current_task_evidence_refs(tmp_path, monkeypatch):
+    class FakeLLM:
+        async def ainvoke(self, messages):
+            supplied = json.loads(messages[1].content.split("证据 JSON：\n", 1)[1])
+            return SimpleNamespace(content=json.dumps({
+                "summary": "估值数据已读取，仍需核对缺失维度。",
+                "verdict": "conditional",
+                "reasons": ["因子快照的日期已标明。"],
+                "risks": ["缺失维度不能解释为中性。"],
+                "assumptions": ["仅讨论当前标的。"],
+                "evidence_refs": [supplied[0]["id"], "other-task-evidence"],
+                "next_actions": ["核对完整因子定义。"],
+            }, ensure_ascii=False))
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=FakeLLM))
+
+    async def factor(ts_code):
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-25", "snapshot": {"rows": [{"ts_code": ts_code}]}}
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={}, handler=factor,
+    ))
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "分析 600519.SH 的估值")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    answer = detail["result"]["answer"]
+    assert answer["verdict"] == "conditional"
+    assert answer["evidence_refs"] == [detail["evidence"][0]["id"]]
+    assert "other-task-evidence" not in detail["result"]["content"]
+    assert "判断：有条件判断" in detail["result"]["content"]
+    assert "风险：" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
 async def test_current_trade_decision_without_market_date_stops_before_tools(
     tmp_path, monkeypatch,
 ):
