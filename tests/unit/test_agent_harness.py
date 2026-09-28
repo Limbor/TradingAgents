@@ -506,6 +506,7 @@ async def test_cancel_stops_task_and_rejects_concurrent_submission(tmp_path):
         return {"session_id": session_id}
 
     harness, store = _harness(tmp_path, paper_handler=slow_paper)
+    harness.config["agent_task_timeout_seconds"] = 2.0
     conversation = store.create_conversation("测试", "paper-3")
     task = harness.submit(conversation["id"], "解释策略")
     await asyncio.wait_for(started.wait(), timeout=2)
@@ -514,6 +515,79 @@ async def test_cancel_stops_task_and_rejects_concurrent_submission(tmp_path):
     assert await harness.cancel(task["id"])
     await harness._active[task["id"]]
     assert store.get_task(task["id"])["status"] == "cancelled"
+    assert not any(event["event_type"] == "task_timed_out"
+                   for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
+async def test_total_task_budget_stops_read_and_records_timeout(tmp_path):
+    stopped = asyncio.Event()
+
+    async def slow_paper(session_id):
+        assert session_id == "paper:mine"
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    harness, store = _harness(tmp_path, paper_handler=slow_paper)
+    harness.config.update(agent_model_planning_enabled=False,
+                          agent_task_timeout_seconds=0.05)
+    conversation = store.create_conversation("测试", "paper:mine")
+    task = harness.submit(conversation["id"], "评估模拟盘风险")
+    await asyncio.wait_for(harness._active[task["id"]], timeout=2)
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    events = detail["events"]
+    assert stopped.is_set()
+    assert detail["status"] == "failed"
+    assert "总时限" in detail["error"]
+    assert detail["proposal"] is None
+    assert next(event["payload"]["budget"]["total_seconds"] for event in events
+                if event["event_type"] == "task_created") == 0.05
+    assert any(event["event_type"] == "step_completed" and
+               event["payload"].get("reason") == "timeout" for event in events)
+    assert any(event["event_type"] == "task_timed_out" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_total_task_budget_includes_queue_wait(tmp_path):
+    async def paper(_session_id):
+        raise AssertionError("排队超时的任务不应调用账本")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config.update(agent_model_planning_enabled=False,
+                          agent_task_timeout_seconds=0.05)
+    for _ in range(3):
+        await harness._slots.acquire()
+    try:
+        conversation = store.create_conversation("测试", "paper:mine")
+        task = harness.submit(conversation["id"], "评估模拟盘风险")
+        await asyncio.wait_for(harness._active[task["id"]], timeout=2)
+        assert store.get_task(task["id"])["status"] == "failed"
+        assert any(event["event_type"] == "task_timed_out"
+                   for event in store.list_events(task["id"]))
+    finally:
+        for _ in range(3):
+            harness._slots.release()
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_task_starts_records_terminal_status(tmp_path):
+    async def paper(_session_id):
+        raise AssertionError("取消的任务不应读取账本")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "解释风险")
+    running = harness._active[task["id"]]
+    assert await harness.cancel(task["id"])
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    await asyncio.sleep(0)
+    assert store.get_task(task["id"])["status"] == "cancelled"
+    assert any(event["event_type"] == "task_cancelled"
+               for event in store.list_events(task["id"]))
 
 
 @pytest.mark.asyncio

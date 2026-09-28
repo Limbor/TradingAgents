@@ -631,6 +631,7 @@ class TradingAgentHarness:
         self.skills = skill_registry
         self.config = config
         self._active: dict[str, asyncio.Task] = {}
+        self._cancel_requested: set[str] = set()
         self._slots = asyncio.Semaphore(3)
         self._reconcile_locks: dict[str, asyncio.Lock] = {}
         self._shutting_down = False
@@ -657,16 +658,43 @@ class TradingAgentHarness:
                         f"标的代码以用户本轮提供的 {goal.upper()} 为准。")
         task = self.store.create_task(conversation_id, goal)
         self.store.add_message(conversation_id, "user", user_input, task["id"])
-        self.store.event(task["id"], "task_created", {"goal": goal})
+        timeout_seconds = self._task_timeout_seconds()
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        self.store.event(task["id"], "task_created", {
+            "goal": goal, "budget": {"total_seconds": timeout_seconds,
+                                     "max_tool_steps": _MAX_PLAN_STEPS,
+                                     "max_harness_model_calls": 3},
+        })
         if clarified_from:
             self.store.event(task["id"], "scope_resolved", {
                 "ts_code": user_input.upper(), "source": "clarification",
                 "previous_task_id": clarified_from,
             })
-        running = asyncio.create_task(self._execute(task["id"], conversation, intent_hint))
+        running = asyncio.create_task(
+            self._execute(task["id"], conversation, intent_hint, timeout_seconds, deadline)
+        )
         self._active[task["id"]] = running
-        running.add_done_callback(lambda _: self._active.pop(task["id"], None))
+        running.add_done_callback(lambda done: self._on_task_done(task["id"], done))
         return task
+
+    def _on_task_done(self, task_id: str, done: asyncio.Task) -> None:
+        self._active.pop(task_id, None)
+        self._cancel_requested.discard(task_id)
+        task = self.store.get_task(task_id)
+        if not task or task["status"] not in {"queued", "planning", "running", "reviewing"}:
+            return
+        if done.cancelled():
+            status = "interrupted" if self._shutting_down else "cancelled"
+            self.store.set_status(task_id, status)
+            self.store.event(task_id, f"task_{status}", {})
+        elif error := done.exception():
+            logger.error("Trading agent task %s stopped before status update: %s", task_id, error)
+            self.store.set_status(task_id, "failed", error=str(error))
+            self.store.event(task_id, "task_failed", {"message": str(error)})
+        else:
+            message = "交易任务结束时缺少终态，请重新运行。"
+            self.store.set_status(task_id, "failed", error=message)
+            self.store.event(task_id, "task_failed", {"message": message})
 
     async def cancel(self, task_id: str) -> bool:
         task = self.store.get_task(task_id)
@@ -674,11 +702,21 @@ class TradingAgentHarness:
             return False
         active = self._active.get(task_id)
         if active:
+            self._cancel_requested.add(task_id)
             active.cancel()
         else:
             self.store.set_status(task_id, "cancelled")
             self.store.event(task_id, "task_cancelled", {})
         return True
+
+    def _task_timeout_seconds(self) -> float:
+        try:
+            value = float(self.config.get("agent_task_timeout_seconds", 2100.0))
+        except (TypeError, ValueError):
+            value = 2100.0
+        if not math.isfinite(value):
+            value = 2100.0
+        return max(0.05, min(value, 7200.0))
 
     def approve(self, proposal_id: str) -> dict:
         proposal = self.store.get_proposal(proposal_id)
@@ -1053,11 +1091,28 @@ class TradingAgentHarness:
         return result
 
     async def _execute(self, task_id: str, conversation: dict,
-                       intent_hint: dict | None = None) -> None:
+                       intent_hint: dict | None = None,
+                       timeout_seconds: float = 2100.0,
+                       deadline: float | None = None) -> None:
         task = self.store.get_task(task_id)
         if not task:
             return
         goal = task["goal"]
+        timed_out = False
+        active_step_id: str | None = None
+        current_task = asyncio.current_task()
+
+        def expire() -> None:
+            nonlocal timed_out
+            if current_task and not current_task.done() and not self._shutting_down and \
+                    task_id not in self._cancel_requested:
+                timed_out = True
+                current_task.cancel()
+
+        loop = asyncio.get_running_loop()
+        remaining = max(0.0, (deadline if deadline is not None else
+                              loop.time() + timeout_seconds) - loop.time())
+        timeout_handle = loop.call_later(remaining, expire)
         try:
             tickers = self._goal_tickers(goal)
             if not tickers and self._is_stock_followup(goal):
@@ -1152,6 +1207,7 @@ class TradingAgentHarness:
                                 step = {**step, "args": {**step["args"], date_arg: trade_date}}
                     date_conflict = False
                     self.store.event(task_id, "step_started", step)
+                    active_step_id = step["id"]
                     if (step["tool"] == "get_mcp_risk_announcements" and paper_session_id and
                             "end_date" not in step["args"]):
                         result = {"error": "模拟盘账本缺少有效基准日，不能查询对应时点的风险公告",
@@ -1242,6 +1298,7 @@ class TradingAgentHarness:
                     self.store.event(task_id, "step_completed", {
                         "id": step["id"], "status": "failed" if result.get("error") else "completed"
                     })
+                    active_step_id = None
                     retry_key = (step["tool"], step["args"].get("ts_code", ""))
                     if (date_conflict and tool_policy is not None and
                             tool_policy.retry_policy == "date_conflict_once" and
@@ -1337,8 +1394,10 @@ class TradingAgentHarness:
                     content = synthesized["content"] if isinstance(synthesized, dict) else synthesized
                 else:
                     self.store.event(task_id, "step_started", plan[0])
+                    active_step_id = plan[0]["id"]
                     content = await self._delegate_chat(task_id, goal, conversation)
                     self.store.event(task_id, "step_completed", {"id": plan[0]["id"], "status": "completed"})
+                    active_step_id = None
                     evidence = self.store.list_evidence(task_id)
                     answer = None
                 citations = [{k: item[k] for k in ("id", "tool_name", "source", "as_of_date", "summary", "warnings")}
@@ -1350,13 +1409,27 @@ class TradingAgentHarness:
                 self.store.set_status(task_id, "completed", result=result)
                 self.store.event(task_id, "task_completed", result)
         except asyncio.CancelledError:
-            status = "interrupted" if self._shutting_down else "cancelled"
-            self.store.set_status(task_id, status)
-            self.store.event(task_id, f"task_{status}", {})
+            if active_step_id:
+                self.store.event(task_id, "step_completed", {
+                    "id": active_step_id, "status": "failed",
+                    "reason": "timeout" if timed_out else "cancelled",
+                })
+            if timed_out:
+                message = f"交易任务超过 {timeout_seconds:g} 秒总时限，已停止只读取证。请缩小目标后重试。"
+                self.store.set_status(task_id, "failed", error=message)
+                self.store.event(task_id, "task_timed_out", {"timeout_seconds": timeout_seconds})
+                self.store.event(task_id, "task_failed", {"message": message})
+            else:
+                status = "interrupted" if self._shutting_down else "cancelled"
+                self.store.set_status(task_id, status)
+                self.store.event(task_id, f"task_{status}", {})
         except Exception as exc:
             logger.exception("Trading agent task %s failed", task_id)
             self.store.set_status(task_id, "failed", error=str(exc))
             self.store.event(task_id, "task_failed", {"message": str(exc)})
+        finally:
+            timeout_handle.cancel()
+            self._cancel_requested.discard(task_id)
 
     @staticmethod
     def _goal_tickers(goal: str) -> list[str]:
