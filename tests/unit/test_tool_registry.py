@@ -64,6 +64,14 @@ class TestToolRegistry:
         registry = ToolRegistry()
         assert registry.to_openai_schemas() == []
 
+    def test_write_tool_is_not_offered_as_chat_schema(self):
+        registry = ToolRegistry()
+        registry.register(LightweightTool(
+            name="paper_write_probe", description="write", parameters={"type": "object"},
+            handler=AsyncMock(), permission="paper_write",
+        ))
+        assert registry.to_openai_schemas() == []
+
 
 class TestLightweightToolHandlers:
     """Tests for individual lightweight tool handlers."""

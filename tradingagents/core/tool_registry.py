@@ -11,9 +11,12 @@ search, run status, MCP snapshots, and strategy lesson lookups.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from jsonschema import Draft202012Validator
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,16 @@ class LightweightTool:
             JSON-serialisable dict. Must handle its own exceptions and return
             ``{"error": "...", "warnings": [...]}`` on failure.
         display: Frontend rendering hint: ``"text"``, ``"table"``, or ``"card"``.
+        output_schema: JSON Schema for a successful handler result. Error
+            responses with an ``error`` field are audited without validation.
+        permission: Harness permission tier. Legacy ChatAgent only exposes
+            read tools; the Harness rejects other tiers before dispatch.
+        scope: Whether the call is global, bound to a paper account, or bound
+            to a symbol from the user's goal.
+        timeout_seconds: Maximum duration of a single Harness tool call.
+        retry_policy: Whether a dated source can be retried once on a date
+            conflict. Other failures remain visible for replanning.
+        data_source: Auditable source label used when a handler cannot return one.
     """
 
     name: str
@@ -37,6 +50,12 @@ class LightweightTool:
     parameters: dict[str, Any]
     handler: Callable[..., Awaitable[Any]]
     display: str = "text"
+    output_schema: dict[str, Any] | None = None
+    permission: Literal["read", "compute", "paper_write", "live_trade"] = "read"
+    scope: Literal["global", "paper", "symbol"] = "global"
+    timeout_seconds: float = 100.0
+    retry_policy: Literal["none", "date_conflict_once"] = "none"
+    data_source: str | None = None
 
 
 class ToolRegistry:
@@ -55,6 +74,21 @@ class ToolRegistry:
         """
         if tool.name in self._tools:
             raise ValueError(f"Lightweight tool '{tool.name}' already registered")
+        if tool.permission not in {"read", "compute", "paper_write", "live_trade"}:
+            raise ValueError(f"Invalid permission for tool '{tool.name}'")
+        if tool.scope not in {"global", "paper", "symbol"}:
+            raise ValueError(f"Invalid scope for tool '{tool.name}'")
+        if not math.isfinite(tool.timeout_seconds) or tool.timeout_seconds <= 0:
+            raise ValueError(f"Invalid timeout for tool '{tool.name}'")
+        if tool.retry_policy not in {"none", "date_conflict_once"}:
+            raise ValueError(f"Invalid retry policy for tool '{tool.name}'")
+        if tool.data_source is not None and (
+            not isinstance(tool.data_source, str) or not tool.data_source.strip()
+        ):
+            raise ValueError(f"Invalid data source for tool '{tool.name}'")
+        Draft202012Validator.check_schema(tool.parameters)
+        if tool.output_schema is not None:
+            Draft202012Validator.check_schema(tool.output_schema)
         self._tools[tool.name] = tool
         logger.info("Registered lightweight tool: %s", tool.name)
 
@@ -73,6 +107,8 @@ class ToolRegistry:
         """
         schemas: list[dict[str, Any]] = []
         for tool in self._tools.values():
+            if tool.permission != "read":
+                continue
             schemas.append({
                 "type": "function",
                 "function": {

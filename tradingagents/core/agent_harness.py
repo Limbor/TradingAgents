@@ -17,6 +17,9 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
 from tradingagents.core.persistence import Database
 
@@ -1012,6 +1015,43 @@ class TradingAgentHarness:
         if self._active:
             await asyncio.gather(*tuple(self._active.values()), return_exceptions=True)
 
+    async def _call_read_tool(self, name: str, args: dict, paper_session_id: str | None,
+                              tickers: list[str]) -> dict:
+        """Enforce the registered contract before admitting a tool result as evidence."""
+        tool = self.tools.get(name)
+        if tool is None:
+            return {"error": f"工具 {name} 未注册"}
+        if tool.permission != "read":
+            return {"error": f"工具 {name} 不允许在只读交易任务中执行"}
+        if (tool.scope == "paper" and
+                (not paper_session_id or args.get("session_id") != paper_session_id)):
+            return {"error": f"工具 {name} 的账户范围与当前对话不一致"}
+        if tool.scope == "symbol" and args.get("ts_code") not in tickers:
+            return {"error": f"工具 {name} 的标的范围与当前任务不一致"}
+        try:
+            Draft202012Validator(tool.parameters).validate(args)
+        except ValidationError as exc:
+            logger.warning("Agent tool %s input invalid: %s", name, exc.message)
+            return {"error": f"工具 {name} 的输入不符合登记契约"}
+        try:
+            result = await asyncio.wait_for(tool.handler(**args), timeout=tool.timeout_seconds)
+        except asyncio.TimeoutError:
+            return {"error": f"工具 {name} 超过 {tool.timeout_seconds:g} 秒未返回",
+                    "warnings": ["工具执行超时"]}
+        except Exception as exc:
+            logger.warning("Agent tool %s failed: %s", name, exc)
+            return {"error": str(exc), "warnings": ["工具执行失败"]}
+        if not isinstance(result, dict):
+            return {"error": f"工具 {name} 返回格式无效：预期对象"}
+        if not result.get("error") and tool.output_schema is not None:
+            try:
+                Draft202012Validator(tool.output_schema).validate(result)
+            except ValidationError as exc:
+                logger.warning("Agent tool %s output invalid: %s", name, exc.message)
+                return {"error": f"工具 {name} 的结果不符合登记契约",
+                        "warnings": ["工具结果格式无效"]}
+        return result
+
     async def _execute(self, task_id: str, conversation: dict,
                        intent_hint: dict | None = None) -> None:
         task = self.store.get_task(task_id)
@@ -1119,17 +1159,8 @@ class TradingAgentHarness:
                     elif step["tool"] == "skill":
                         result = await self._run_skill(task_id, step["skill_id"], step["args"])
                     else:
-                        tool = self.tools.get(step["tool"])
-                        if tool is None:
-                            result = {"error": f"工具 {step['tool']} 未注册"}
-                        else:
-                            try:
-                                result = await asyncio.wait_for(
-                                    tool.handler(**step["args"]), timeout=100.0
-                                )
-                            except Exception as exc:
-                                logger.warning("Agent tool %s failed: %s", step["tool"], exc)
-                                result = {"error": str(exc), "warnings": ["工具执行失败"]}
+                        result = await self._call_read_tool(step["tool"], step["args"],
+                                                            paper_session_id, tickers)
                     if not isinstance(result, dict):
                         result = {"value": result}
                     if step["tool"] == "get_mcp_factor_snapshot":
@@ -1198,6 +1229,9 @@ class TradingAgentHarness:
                         if freshness.get("is_active_plan_current") is False:
                             warnings.append("当前策略计划不是最新版本")
                         result["warnings"] = warnings
+                    tool_policy = self.tools.get(step["tool"])
+                    if tool_policy and tool_policy.data_source:
+                        result.setdefault("source", tool_policy.data_source)
                     item = self.store.add_evidence(task_id, step["tool"], result)
                     evidence.append(item)
                     self.store.event(task_id, "evidence_added", {
@@ -1209,7 +1243,9 @@ class TradingAgentHarness:
                         "id": step["id"], "status": "failed" if result.get("error") else "completed"
                     })
                     retry_key = (step["tool"], step["args"].get("ts_code", ""))
-                    if (date_conflict and retry_key not in date_retried and
+                    if (date_conflict and tool_policy is not None and
+                            tool_policy.retry_policy == "date_conflict_once" and
+                            retry_key not in date_retried and
                             len(plan) < _MAX_PLAN_STEPS):
                         date_retried.add(retry_key)
                         retry = {**step, "id": f"{step['id']}-verify",

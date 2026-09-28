@@ -504,6 +504,11 @@ def make_get_strategy_lessons(db: Any):
 # ---------------------------------------------------------------------------
 
 
+def _result_schema(**fields: str | list[str]) -> dict[str, Any]:
+    return {"type": "object", "required": list(fields),
+            "properties": {name: {"type": kind} for name, kind in fields.items()}}
+
+
 def build_all_tools(
     db: Any,
     mcp_client: Any | None,
@@ -511,7 +516,7 @@ def build_all_tools(
 ) -> list[dict[str, Any]]:
     """Return a list of tool definition dicts ready for ToolRegistry.
 
-    Each dict has: name, description, parameters (JSON Schema), handler, display.
+    Each dict declares input/output schemas, permission, scope, timeout and retry policy.
     Call ``ToolRegistry.register(LightweightTool(**d))`` in the app lifespan.
     """
     return [
@@ -530,6 +535,10 @@ def build_all_tools(
             },
             "handler": make_get_paper_session(config),
             "display": "card",
+            "output_schema": _result_schema(session_id="string", as_of_date=["string", "null"],
+                                            snapshot="object"),
+            "permission": "read", "scope": "paper", "timeout_seconds": 100.0,
+            "data_source": "StockManager Web",
         },
         {
             "name": "get_portfolio_summary",
@@ -544,6 +553,9 @@ def build_all_tools(
             },
             "handler": make_get_portfolio_summary(db),
             "display": "table",
+            "output_schema": _result_schema(holdings="array", total_symbols="integer"),
+            "permission": "read", "scope": "global", "timeout_seconds": 10.0,
+            "data_source": "TradingAgents local holdings",
         },
         {
             "name": "search_artifacts",
@@ -569,6 +581,9 @@ def build_all_tools(
             },
             "handler": make_search_artifacts(db),
             "display": "card",
+            "output_schema": _result_schema(results="array", query="string"),
+            "permission": "read", "scope": "global", "timeout_seconds": 15.0,
+            "data_source": "TradingAgents Library",
         },
         {
             "name": "get_recent_runs",
@@ -589,6 +604,9 @@ def build_all_tools(
             },
             "handler": make_get_recent_runs(db),
             "display": "table",
+            "output_schema": _result_schema(runs="array"),
+            "permission": "read", "scope": "global", "timeout_seconds": 10.0,
+            "data_source": "TradingAgents RunManager",
         },
         {
             "name": "get_mcp_factor_snapshot",
@@ -614,6 +632,11 @@ def build_all_tools(
             },
             "handler": make_get_mcp_factor_snapshot(config),
             "display": "card",
+            "output_schema": _result_schema(ts_code="string", as_of_date="string",
+                                            snapshot="object"),
+            "permission": "read", "scope": "symbol", "timeout_seconds": 45.0,
+            "retry_policy": "date_conflict_once",
+            "data_source": "StockManager MCP",
         },
         {
             "name": "get_mcp_risk_announcements",
@@ -633,6 +656,11 @@ def build_all_tools(
             },
             "handler": make_get_mcp_risk_announcements(config),
             "display": "card",
+            "output_schema": _result_schema(ts_code="string", as_of_date="string",
+                                            rows="array", count="integer"),
+            "permission": "read", "scope": "symbol", "timeout_seconds": 45.0,
+            "retry_policy": "date_conflict_once",
+            "data_source": "StockManager MCP",
         },
         {
             "name": "get_strategy_lessons",
@@ -647,5 +675,8 @@ def build_all_tools(
             },
             "handler": make_get_strategy_lessons(db),
             "display": "text",
+            "output_schema": _result_schema(lessons="array"),
+            "permission": "read", "scope": "global", "timeout_seconds": 10.0,
+            "data_source": "TradingAgents reflection store",
         },
     ]

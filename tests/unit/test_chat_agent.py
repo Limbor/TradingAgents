@@ -132,6 +132,26 @@ class TestChatAgentIntentClassification:
         mock_tool_registry.get("get_portfolio_summary").handler.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_legacy_chat_cannot_execute_registered_write_tool(
+        self, chat_agent, mock_tool_registry,
+    ):
+        write_handler = AsyncMock(return_value={"ok": True})
+        mock_tool_registry.register(LightweightTool(
+            name="paper_write_probe", description="write", parameters={"type": "object"},
+            handler=write_handler, permission="paper_write",
+        ))
+        chat_agent = ChatAgent(chat_agent._config, chat_agent._skill_registry, mock_tool_registry)
+        model = AsyncMock(ainvoke=AsyncMock(return_value=MagicMock(
+            content="", tool_calls=[{"name": "paper_write_probe", "args": {}}],
+        )))
+        with patch.object(chat_agent, "_get_llm_with_tools", return_value=model):
+            result = await chat_agent.handle("请修改模拟盘")
+
+        assert result.intent == "chat_answer"
+        assert "核对范围与权限" in result.content
+        write_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_chat_answer_intent(self, chat_agent):
         """LLM responds with content, no tool_call → chat_answer."""
         mock_llm = AsyncMock()

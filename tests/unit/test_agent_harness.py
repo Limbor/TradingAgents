@@ -290,6 +290,71 @@ def _harness(tmp_path, *, paper_handler, chat=None):
 
 
 @pytest.mark.asyncio
+async def test_read_tool_contract_blocks_unbound_scope_and_invalid_output(tmp_path):
+    calls = []
+
+    async def handler(**args):
+        calls.append(args)
+        return {"ts_code": args.get("ts_code", "600519.SH")}
+
+    harness, _ = _harness(tmp_path, paper_handler=handler)
+    harness.tools.register(LightweightTool(
+        name="paper_probe", description="paper", parameters={"type": "object"},
+        handler=handler, scope="paper",
+    ))
+    harness.tools.register(LightweightTool(
+        name="compute_probe", description="compute", parameters={"type": "object"},
+        handler=handler, permission="compute",
+    ))
+    harness.tools.register(LightweightTool(
+        name="symbol_probe", description="symbol",
+        parameters={"type": "object", "properties": {"ts_code": {"type": "string"}},
+                    "required": ["ts_code"]},
+        output_schema={"type": "object", "required": ["snapshot"],
+                       "properties": {"snapshot": {"type": "object"}}},
+        handler=handler, scope="symbol",
+    ))
+
+    wrong_account = await harness._call_read_tool(
+        "paper_probe", {"session_id": "paper:other"}, "paper:mine", [],
+    )
+    forbidden = await harness._call_read_tool("compute_probe", {}, None, [])
+    wrong_symbol = await harness._call_read_tool(
+        "symbol_probe", {"ts_code": "000001.SZ"}, None, ["600519.SH"],
+    )
+    bad_input = await harness._call_read_tool(
+        "symbol_probe", {"ts_code": 600519}, None, [600519],
+    )
+    assert not calls
+    assert "账户范围" in wrong_account["error"]
+    assert "只读交易任务" in forbidden["error"]
+    assert "标的范围" in wrong_symbol["error"]
+    assert "输入不符合登记契约" in bad_input["error"]
+
+    malformed = await harness._call_read_tool(
+        "symbol_probe", {"ts_code": "600519.SH"}, None, ["600519.SH"],
+    )
+    assert calls == [{"ts_code": "600519.SH"}]
+    assert "结果不符合登记契约" in malformed["error"]
+
+
+@pytest.mark.asyncio
+async def test_read_tool_timeout_has_visible_reason(tmp_path):
+    async def slow():
+        await asyncio.sleep(1)
+        return {"ok": True}
+
+    harness, _ = _harness(tmp_path, paper_handler=slow)
+    harness.tools.register(LightweightTool(
+        name="slow_probe", description="slow", parameters={"type": "object"},
+        handler=slow, timeout_seconds=0.01,
+    ))
+    result = await harness._call_read_tool("slow_probe", {}, None, [])
+    assert "超过 0.01 秒" in result["error"]
+    assert "工具执行超时" in result["warnings"]
+
+
+@pytest.mark.asyncio
 async def test_paper_task_persists_events_and_evidence_across_store_reopen(tmp_path):
     calls = []
 
@@ -774,12 +839,12 @@ async def test_explicit_stock_question_reads_factor_evidence(tmp_path):
 
     async def factor(ts_code):
         calls.append(ts_code)
-        return {"ts_code": ts_code, "source": "StockManager MCP",
-                "as_of_date": "2026-09-25", "snapshot": {"valuation": 12.0}}
+        return {"ts_code": ts_code, "as_of_date": "2026-09-25",
+                "snapshot": {"valuation": 12.0}}
 
     harness.tools.register(LightweightTool(
         name="get_mcp_factor_snapshot", description="factor", parameters={},
-        handler=factor,
+        handler=factor, data_source="StockManager MCP",
     ))
 
     async def synthesize(*_args, **_kwargs):
@@ -793,6 +858,7 @@ async def test_explicit_stock_question_reads_factor_evidence(tmp_path):
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
     assert calls == ["600519.SH"]
     assert detail["evidence"][0]["as_of_date"] == "2026-09-25"
+    assert detail["evidence"][0]["source"] == "StockManager MCP"
     assert detail["result"]["citations"][0]["tool_name"] == "get_mcp_factor_snapshot"
 
 
@@ -897,7 +963,7 @@ async def test_paper_factor_date_conflict_abstains_before_model(tmp_path):
     harness.config["agent_model_planning_enabled"] = False
     harness.tools.register(LightweightTool(
         name="get_mcp_factor_snapshot", description="factor", parameters={},
-        handler=factor,
+        handler=factor, retry_policy="date_conflict_once",
     ))
     conversation = store.create_conversation("测试", "paper:mine")
     task = harness.submit(conversation["id"], "评估模拟盘内 600519.SH 的风险")
@@ -942,7 +1008,7 @@ async def test_paper_factor_date_conflict_recovers_with_one_read_only_retry(
     harness.config["agent_model_planning_enabled"] = False
     harness.tools.register(LightweightTool(
         name="get_mcp_factor_snapshot", description="factor", parameters={},
-        handler=factor,
+        handler=factor, retry_policy="date_conflict_once",
     ))
     conversation = store.create_conversation("测试", "paper:mine")
     task = harness.submit(conversation["id"], "评估模拟盘内 600519.SH 的风险")
@@ -1002,6 +1068,7 @@ async def test_current_trade_decision_rechecks_stale_factor_before_model(
     harness.config["agent_model_planning_enabled"] = False
     harness.tools.register(LightweightTool(
         name="get_mcp_factor_snapshot", description="factor", parameters={}, handler=factor,
+        retry_policy="date_conflict_once",
     ))
     conversation = store.create_conversation("测试", None)
     task = harness.submit(conversation["id"], "现在要不要买入 600519.SH？")
@@ -1055,7 +1122,7 @@ async def test_current_trade_decision_rechecks_stale_announcement_and_abstains(
     harness.config["agent_model_planning_enabled"] = False
     harness.tools.register(LightweightTool(
         name="get_mcp_risk_announcements", description="risk", parameters={},
-        handler=announcements,
+        handler=announcements, retry_policy="date_conflict_once",
     ))
     conversation = store.create_conversation("测试", None)
     task = harness.submit(conversation["id"], "600519.SH 公告后现在还能卖出吗？")
@@ -1304,7 +1371,7 @@ async def test_paper_announcement_cutoff_is_bound_to_ledger_and_conflict_abstain
     harness.config["agent_model_planning_enabled"] = False
     harness.tools.register(LightweightTool(
         name="get_mcp_risk_announcements", description="risk", parameters={},
-        handler=announcements,
+        handler=announcements, retry_policy="date_conflict_once",
     ))
     conversation = store.create_conversation("测试", "paper:mine")
     task = harness.submit(conversation["id"], "模拟盘 600519.SH 的问询公告如何？")

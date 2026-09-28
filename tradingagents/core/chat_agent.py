@@ -704,6 +704,11 @@ class ChatAgent:
                 intent="chat_answer",
                 content=f"工具 {tool_name} 暂时不可用。",
             )
+        if tool.permission != "read":
+            return ChatResponse(
+                intent="chat_answer",
+                content="这项工具需要在交易任务中核对范围与权限后操作。",
+            )
 
         try:
             result = await tool.handler(**args)
