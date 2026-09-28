@@ -148,24 +148,31 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
 
 test("composite decision is readable and Agent chat stays bound to its account", async ({ page }) => {
   const sessionId = "paper:allocator:demo:follow";
+  const childId = "paper:sleeve:wfo";
   const otherSessionId = "paper:other";
   await page.route("**/api/v1/**", async (route) => {
     const { pathname } = new URL(route.request().url());
     let body: unknown = {};
     if (pathname === "/api/v1/paper/sessions") body = [
-      { session_id: sessionId, mode: "paper", strategy: "allocator", config_name: "demo", initial_cash: 100000, last_date: "2026-09-24", params: { kind: "composite", allocator_config_path: "config/allocators/demo.json" } },
+      { session_id: sessionId, mode: "paper", strategy: "allocator", config_name: "demo", initial_cash: 100000, last_date: "2026-09-24", params: { kind: "composite", allocator_config_path: "config/allocators/demo.json", child_session_ids: [childId] } },
       { session_id: otherSessionId, mode: "paper", strategy: "other", config_name: "", initial_cash: 100000, last_date: "2026-09-24", params: {} },
     ];
     else if (pathname === "/api/v1/paper/strategies") body = [{ name: "demo" }];
     else if (pathname === "/api/v1/paper/configs") body = [];
     else if (pathname === "/api/v1/paper/allocator-configs") body = [{ name: "demo", path: "config/allocators/demo.json", description: "测试组合配置", status: "ready", initial_cash: 100000, start_date: "2026-07-01", sleeves: ["wfo", "csi"] }];
+    else if (pathname.endsWith("/status") && pathname.includes("sleeve")) body = {
+      session: { session_id: childId, initial_cash: 100000, last_date: "2026-09-24",
+        params: { composite_child: true, parent_composite_id: sessionId } },
+      snapshot: { as_of_date: "2026-09-24", equity: 105000, cash: 10000, positions: {} }, trades_count: 1,
+    };
     else if (pathname.endsWith("/status")) body = {
-      kind: "composite", session: { initial_cash: 100000 }, snapshot: { as_of_date: "2026-09-24", equity: 108000, cash: 20000, positions: {} }, trades_count: 3,
+      kind: "composite", session: { session_id: sessionId, initial_cash: 100000,
+        params: { kind: "composite", child_session_ids: [childId] } }, snapshot: { as_of_date: "2026-09-24", equity: 108000, cash: 20000, positions: {} }, trades_count: 3,
       decision: { date: "2026-09-24", active_sleeve: "wfo", switched: false, switch_count: 1, fast_relative_return: 0.02 },
       readiness: { status: "ready_to_observe", can_reference_plan: true, reasons: [] },
       freshness: { is_shadow_aligned: true, active_plan_lag_days: 0 },
       summary: { total_return: 0.08, max_drawdown: -0.1, sharpe: 1.2 },
-      sleeves: { wfo: { strategy: "smallcap", equity: 105000, last_date: "2026-09-24" }, csi: { strategy: "breakout", equity: 95000, last_date: "2026-09-24" } },
+      sleeves: { wfo: { strategy: "smallcap", session_id: childId, equity: 105000, last_date: "2026-09-24" }, csi: { strategy: "breakout", session_id: "paper:foreign", equity: 95000, last_date: "2026-09-24" } },
     };
     else if (pathname.endsWith("/equity")) body = { daily_records: [{ date: "2026-09-24", equity: 108000, cash: 20000 }], benchmark_curve: [] };
     else if (pathname.endsWith("/trades")) body = [];
@@ -205,6 +212,14 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
   await page.reload();
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
+  await expect(page.getByRole("link", { name: "查看csi账本" })).toHaveCount(0);
+  await expect(page.getByText("账本归属待核对")).toBeVisible();
+  await page.getByRole("link", { name: "查看wfo账本" }).click();
+  await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(childId);
+  await expect(page.getByRole("status")).toContainText("组合子策略账本");
+  await expect(page.getByRole("button", { name: "推进模拟盘" })).toHaveCount(0);
+  await page.getByRole("link", { name: "查看组合账户" }).click();
+  await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(sessionId);
   expect(submissions).toHaveLength(2);
 });
 

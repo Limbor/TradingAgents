@@ -78,6 +78,7 @@ export interface PaperStatus {
   sleeves?: Record<string, {
     strategy?: string;
     config_name?: string;
+    session_id?: string | null;
     equity?: number | null;
     last_date?: string | null;
   }>;

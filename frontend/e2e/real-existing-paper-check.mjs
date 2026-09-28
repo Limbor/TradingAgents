@@ -23,9 +23,17 @@ try {
     await expect(page).toHaveURL(new RegExp(`conversation=${encodeURIComponent(paper.conversation)}`));
     await expect(page.getByText("总结这个模拟盘当前账本的已核对事实。").first()).toBeVisible();
   }
+  const [parent, child] = cases;
+  await page.goto(`${process.env.EXISTING_PAPER_URL}/paper?session=${encodeURIComponent(parent.id)}`);
+  await page.locator(`a[href="/paper?session=${encodeURIComponent(child.id)}"]`).first().click();
+  await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(child.id);
+  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toContainText(child.id);
+  await expect(page.getByRole("status")).toContainText("组合子策略账本");
+  await page.getByRole("link", { name: "查看组合账户" }).click();
+  await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(parent.id);
   expect(errors).toEqual([]);
   process.stdout.write(JSON.stringify({ existing_browser_accounts: cases.length,
-    account_scope: "matched", screenshots: 0 }) + "\n");
+    account_scope: "matched", parent_child_navigation: "passed", screenshots: 0 }) + "\n");
 } finally {
   await browser.close();
 }

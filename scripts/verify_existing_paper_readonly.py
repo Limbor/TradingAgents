@@ -207,6 +207,7 @@ async def main(*, with_browser: bool = False, with_lifecycle: bool = False) -> N
                     raise RuntimeError("Temporary copy has no paper sessions")
                 assert {item["session_id"] for item in sessions} <= set(stored_ids)
                 kinds: dict[str, dict] = {}
+                observed: dict[str, dict] = {}
                 for index, session_id in enumerate(stored_ids, start=1):
                     encoded = quote(session_id, safe="")
                     status_response = await ta.get(f"/api/v1/paper/sessions/{encoded}/status")
@@ -235,6 +236,10 @@ async def main(*, with_browser: bool = False, with_lifecycle: bool = False) -> N
                     assert evidence["as_of_date"] == (snapshot.get("as_of_date") or
                                                       status["session"].get("last_date")), index
                     kind = "composite" if status.get("kind") == "composite" else "single"
+                    observed[session_id] = {"status": status,
+                                            "browser": {"id": session_id,
+                                                        "equity": snapshot.get("equity"),
+                                                        "conversation": conversation_id}}
                     if snapshot.get("equity") is not None and kind not in kinds:
                         kinds[kind] = {"id": session_id, "equity": snapshot["equity"],
                                        "conversation": conversation_id}
@@ -243,9 +248,17 @@ async def main(*, with_browser: bool = False, with_lifecycle: bool = False) -> N
                                   "read_only_agent_tasks": len(stored_ids),
                                   "sample_kinds": sorted(kinds)}, ensure_ascii=False))
                 if with_browser:
-                    if not kinds:
-                        raise RuntimeError("No account with a snapshot for browser check")
-                    await check_browser(trading_port, list(kinds.values()))
+                    linked = next((
+                        [item["browser"], observed[child_id]["browser"]]
+                        for item in observed.values()
+                        if item["status"].get("kind") == "composite"
+                        and item["browser"]["equity"] is not None
+                        for child_id in (item["status"]["session"].get("params") or {}).get("child_session_ids", [])
+                        if child_id in observed and observed[child_id]["browser"]["equity"] is not None
+                    ), None)
+                    if linked is None:
+                        raise RuntimeError("No parent-child account pair with snapshots for browser check")
+                    await check_browser(trading_port, linked)
                 if with_lifecycle:
                     await check_copied_lifecycle(stock_port, sessions, stored_ids)
         finally:
@@ -267,7 +280,7 @@ async def main(*, with_browser: bool = False, with_lifecycle: bool = False) -> N
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--with-browser", action="store_true",
-                        help="Also verify one single and one composite account in a local browser")
+                        help="Also verify a composite and one of its child accounts in a local browser")
     parser.add_argument("--with-lifecycle", action="store_true",
                         help="Reset and delete one composite account only in the temporary copy")
     args = parser.parse_args()

@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import type { PaperStatus } from "@/api/paper";
 
 const percent = (value: number | null | undefined) =>
@@ -13,6 +14,8 @@ export function CompositeDecision({ status, onAsk }: {
   const summary = status.summary;
   const freshness = status.freshness;
   const sleeves = Object.entries(status.sleeves ?? {});
+  const childIds = Array.isArray(status.session.params?.child_session_ids)
+    ? status.session.params.child_session_ids.filter((value): value is string => typeof value === "string") : [];
   const ready = status.readiness?.can_reference_plan;
   return (
     <section className="rounded-xl border border-ui-line bg-ui-panel p-4">
@@ -57,12 +60,16 @@ export function CompositeDecision({ status, onAsk }: {
       {!!status.readiness?.reasons?.length && <p className="mt-3 text-xs text-ui-warning">{status.readiness.reasons.join("；")}</p>}
       {sleeves.length > 0 && <div className="mt-4">
         <h3 className="mb-2 text-xs font-medium text-ui-muted">子策略参考信号</h3>
-        <div className="grid gap-2 sm:grid-cols-2">{sleeves.map(([name, sleeve]) => (
-          <div key={name} className="rounded-lg border border-ui-line p-3 text-sm">
+        <div className="grid gap-2 sm:grid-cols-2">{sleeves.map(([name, sleeve]) => {
+          const childId = sleeve.session_id && childIds.includes(sleeve.session_id)
+            ? sleeve.session_id : null;
+          return <div key={name} className="rounded-lg border border-ui-line p-3 text-sm">
             <div className="flex items-center justify-between gap-2"><span className={name === decision?.active_sleeve ? "font-medium text-ui-accent" : "text-ui-body"}>{name}</span><span>{money(sleeve.equity)}</span></div>
             <p className="mt-1 break-all text-xs text-ui-faint">{sleeve.strategy} · {sleeve.last_date ?? "—"}</p>
-          </div>
-        ))}</div>
+            {childId && <Link to={`/paper?session=${encodeURIComponent(childId)}`} className="mt-2 inline-block text-xs font-medium text-ui-accent underline underline-offset-2">查看{name}账本</Link>}
+            {!childId && sleeve.session_id && <p className="mt-2 text-xs text-ui-warning">账本归属待核对</p>}
+          </div>;
+        })}</div>
         <p className="mt-2 text-xs text-ui-faint">子策略权益仅作切换信号参考，不等于组合账户资金。</p>
       </div>}
     </section>
