@@ -1332,7 +1332,16 @@ class TradingAgentHarness:
     @classmethod
     def _needs_factor(cls, goal: str) -> bool:
         lowered = goal.lower()
-        return not cls._asks_announcements(goal) or any(word in lowered for word in _FACTOR_WORDS)
+        # An announcement keyword scan alone cannot support a buy/sell decision.
+        return (cls._asks_trade_decision(goal) or not cls._asks_announcements(goal) or
+                any(word in lowered for word in _FACTOR_WORDS))
+
+    @staticmethod
+    def _asks_trade_execution_feasibility(goal: str) -> bool:
+        """Questions about whether a trade can execute need exchange/account checks."""
+        action = r"(?:买入|卖出|买|卖|加仓|减仓)"
+        ability = r"(?:能否|能不能|可不可以|还能|能|可以)"
+        return bool(re.search(rf"{ability}.{{0,8}}{action}|{action}.{{0,8}}{ability}", goal))
 
     @staticmethod
     def _advance_target(goal: str, paper_session_id: str | None) -> str | None:
@@ -1633,6 +1642,10 @@ class TradingAgentHarness:
                         "为同一时点的交易判断。请核对数据源后重试。")
             if any(risk_date != ledger_date for risk_date in risk_dates):
                 return "风险公告查询截止日与模拟盘账本基准日不一致。本轮没有生成交易判断，请核对数据源后重试。"
+        if self._asks_trade_execution_feasibility(goal):
+            return ("当前证据未核对停牌、涨跌停、交易日及账户可交易数量等执行条件，"
+                    "无法判断这笔交易能否成交。本轮没有生成可执行的交易判断；"
+                    "请先在交易账户与交易所行情核对这些条件。")
         from langchain_core.messages import HumanMessage, SystemMessage
 
         from tradingagents.llm_clients import create_llm_client

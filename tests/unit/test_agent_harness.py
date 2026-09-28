@@ -94,6 +94,10 @@ def test_trade_decision_detection_keeps_general_education_separate():
     assert TradingAgentHarness._asks_trade_decision("给我一个买入计划")
     assert not TradingAgentHarness._asks_trade_decision("如何制定买入纪律？")
     assert not TradingAgentHarness._asks_trade_decision("帮我介绍买卖策略")
+    assert TradingAgentHarness._needs_factor("600519.SH 公告后要不要卖出？")
+    assert not TradingAgentHarness._needs_factor("查看 600519.SH 的公告")
+    assert TradingAgentHarness._asks_trade_execution_feasibility("600519.SH 现在还能卖出吗？")
+    assert not TradingAgentHarness._asks_trade_execution_feasibility("解释卖出纪律")
 
 
 def test_artifact_search_requires_an_existing_report_reference(tmp_path):
@@ -1040,6 +1044,48 @@ async def test_current_trade_decision_rechecks_stale_announcement_and_abstains(
     assert calls == ["600519.SH"] * 2
     assert all(item["result"].get("error") for item in detail["evidence"])
     assert "没有生成交易判断" in detail["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_trade_execution_question_needs_factor_and_does_not_claim_sellability(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
+                        lambda *_args, **_kwargs: SimpleNamespace(market_asof_date="2026-09-25"))
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: (_ for _ in ()).throw(
+                            AssertionError("缺少成交条件时不得交给模型判断能否卖出")))
+
+    async def factor(ts_code):
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-25", "snapshot": {"rows": [{"ts_code": ts_code}]}}
+
+    async def announcements(ts_code, end_date=""):
+        return {"ts_code": ts_code, "source": "StockManager MCP",
+                "as_of_date": "2026-09-25", "rows": [], "count": 0}
+
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={}, handler=factor,
+    ))
+    harness.tools.register(LightweightTool(
+        name="get_mcp_risk_announcements", description="risk", parameters={},
+        handler=announcements,
+    ))
+    conversation = store.create_conversation("测试", None)
+    task = harness.submit(conversation["id"], "600519.SH 公告后现在还能卖出吗？")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert [item["tool_name"] for item in detail["evidence"]] == [
+        "get_mcp_factor_snapshot", "get_mcp_risk_announcements",
+    ]
+    assert "无法判断这笔交易能否成交" in detail["result"]["content"]
+    assert "没有生成可执行的交易判断" in detail["result"]["content"]
 
 
 @pytest.mark.asyncio
