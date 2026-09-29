@@ -5,6 +5,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel
@@ -1919,6 +1920,66 @@ async def _proposed_advance(tmp_path):
     assert store.get_task(task["id"])["status"] == "awaiting_approval"
     assert proposal["args"] == {"target_date": "2026-09-28"}
     return harness, store, task, proposal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", ["推进到今天", "把组合模拟盘推进至今日", "推进组合模拟盘到今天"])
+async def test_paper_advance_today_resolves_date_and_prepares_review(tmp_path, monkeypatch, prompt):
+    async def paper(session_id):
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
+                  "as_of_date": "2026-09-28",
+                  "session": {"session_id": session_id, "strategy_hash": "strategy:v1",
+                              "config_hash": "config:v1"},
+                  "snapshot": {"as_of_date": "2026-09-28", "equity": 108167.69,
+                               "cash": 2549.69, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    monkeypatch.setattr("tradingagents.core.agent_harness._shanghai_today",
+                        lambda: "2026-09-30")
+
+    async def unexpected_synthesis(*_args, **_kwargs):
+        raise AssertionError("推进请求不应进入只读证据回答")
+
+    harness._synthesize = unexpected_synthesis
+    conversation = store.create_conversation("组合模拟盘", "paper:advance")
+    task = harness.submit(conversation["id"], prompt)
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])
+    proposal = store.proposal_for_task(task["id"])
+    assert proposal["args"] == {"target_date": "2026-09-30"}
+    assert detail["tasks"][-1]["status"] == "awaiting_approval"
+    assert detail["tasks"][-1]["goal"].endswith("2026-09-30")
+    assert detail["messages"][-2]["content"] == prompt
+    assert any(event["event_type"] == "target_date_resolved" and
+               event["payload"]["timezone"] == "Asia/Shanghai"
+               for event in detail["tasks"][-1]["events"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", ["如何推进到今天？", "不要推进到今天", "不能推进到今天",
+                                     "能推进到今天吗？", "推进到今天吗"])
+async def test_paper_advance_today_non_action_does_not_create_proposal(tmp_path, prompt):
+    async def paper(session_id):
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
+                  "as_of_date": "2026-09-28",
+                  "session": {"session_id": session_id},
+                  "snapshot": {"as_of_date": "2026-09-28", "equity": 100000,
+                               "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness._synthesize = AsyncMock(return_value="可以先核对账本，再明确提出推进请求。")
+    conversation = store.create_conversation("操作说明", "paper:advance")
+    task = harness.submit(conversation["id"], prompt)
+    await harness._active[task["id"]]
+
+    assert store.proposal_for_task(task["id"]) is None
+    assert store.get_task(task["id"])["status"] == "completed"
 
 
 def _paper_status(as_of_date="2026-09-25", *, equity=100000, cash=100000,

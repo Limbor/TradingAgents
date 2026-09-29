@@ -16,6 +16,7 @@ import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -49,7 +50,11 @@ _STOCK_REFERENCE = re.compile(
 )
 _MAX_EVIDENCE_CHARS = 60_000
 _MAX_PLAN_STEPS = 4
-_ADVANCE_TARGET = re.compile(r"推进(?:模拟盘|策略模拟盘)?(?:至|到)\s*(\d{4}-\d{2}-\d{2})")
+_ADVANCE_TARGET = re.compile(r"推进(?:(?:组合|策略)?模拟盘)?(?:至|到)\s*(\d{4}-\d{2}-\d{2})")
+_ADVANCE_TODAY = re.compile(r"推进(?:(?:组合|策略)?模拟盘)?(?:至|到)\s*(今天|今日)")
+_ADVANCE_NON_ACTION = re.compile(
+    r"(?:不要|别|无需|不需要|取消|如何|怎么|为什么|能否|能不能|是否|可不可以|不能|不可以|无法|没法|已经).{0,12}推进"
+)
 _SAFE_ANALYSIS_SKILLS = {
     "stock_analysis", "strategy_backtest", "market_scanner", "market_overview",
     "daily_pipeline", "position_advisor", "risk_monitor",
@@ -75,6 +80,10 @@ def _is_daily_pipeline_run_request(goal: str) -> bool:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _shanghai_today() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
 
 def _json(value: Any) -> str:
@@ -711,6 +720,14 @@ class TradingAgentHarness:
         user_input = goal
         clarified_from = None
         skill_clarified_from = None
+        resolved_paper_date = None
+        if (conversation.get("paper_session_id") and not _ADVANCE_NON_ACTION.search(goal) and
+                not goal.endswith(("?", "？", "吗", "么"))):
+            relative_date = _ADVANCE_TODAY.search(goal)
+            if relative_date:
+                resolved_paper_date = _shanghai_today()
+                goal = (goal[:relative_date.start(1)] + resolved_paper_date +
+                        goal[relative_date.end(1):])
         previous = next(iter(reversed(self.store.list_tasks(conversation_id))), None)
         if (intent_hint is None and
                 (_is_daily_pipeline_run_request(goal) or _DEFAULT_RUN_REPLY.fullmatch(goal)) and
@@ -754,6 +771,11 @@ class TradingAgentHarness:
             self.store.event(task["id"], "skill_request_resolved", {
                 "skill_id": "daily_pipeline", "source": "previous_task",
                 "previous_task_id": skill_clarified_from,
+            })
+        if resolved_paper_date:
+            self.store.event(task["id"], "target_date_resolved", {
+                "target_date": resolved_paper_date, "timezone": "Asia/Shanghai",
+                "source": "today",
             })
         running = asyncio.create_task(
             self._execute(task["id"], conversation, intent_hint, timeout_seconds,
@@ -1479,8 +1501,9 @@ class TradingAgentHarness:
                     proposal = self.store.create_proposal(
                         task_id, conversation["paper_session_id"], advance_target, baseline
                     )
-                    content = (f"已根据 {baseline_date} 的账本准备推进至 {advance_target}。"
-                               "请核对右侧动作卡中的账户和日期，再决定是否执行。")
+                    content = (f"已根据 {baseline_date} 的账本准备尝试推进至 {advance_target}。"
+                               "请核对右侧动作卡中的账户和日期，再决定是否执行；"
+                               "实际推进结果以 StockManager 完成后的账本为准。")
                     self.store.add_message(conversation["id"], "assistant", content, task_id)
                     self.store.set_status(task_id, "awaiting_approval", result={"content": content})
                     self.store.event(task_id, "proposal_created", {
@@ -1614,7 +1637,8 @@ class TradingAgentHarness:
 
     @staticmethod
     def _advance_target(goal: str, paper_session_id: str | None) -> str | None:
-        if not paper_session_id:
+        if (not paper_session_id or _ADVANCE_NON_ACTION.search(goal) or
+                goal.rstrip().endswith(("?", "？", "吗", "么"))):
             return None
         match = _ADVANCE_TARGET.search(goal)
         if not match:
@@ -1948,6 +1972,8 @@ class TradingAgentHarness:
              "warnings": e["warnings"], "data": _answer_evidence_result(e)}
             for e in evidence
         ])[:28_000]
+        ticker_context = (f"服务端确认的标的：{', '.join(selected_tickers)}\n\n"
+                          if selected_tickers else "")
         prompt = (
             "你是交易任务分析员。只使用下面的工具证据回答当前用户问题，不能编造行情、持仓、"
             "成交或策略规则。区分账本事实、策略既有决策和你的分析。先简短结论，再写关键依据、"
@@ -1975,7 +2001,7 @@ class TradingAgentHarness:
             response = await asyncio.wait_for(llm.ainvoke([
                 SystemMessage(content=prompt),
                 HumanMessage(content=(f"最近对话：\n{history_text}\n\n当前问题：{goal}\n"
-                                      f"服务端确认的标的：{', '.join(selected_tickers) or '无'}\n\n"
+                                      f"{ticker_context}"
                                       f"证据 JSON：\n{evidence_text}")),
             ]), timeout=25)
             content = str(getattr(response, "content", "") or "").strip()
