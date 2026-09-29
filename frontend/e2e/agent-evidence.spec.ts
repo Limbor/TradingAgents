@@ -100,6 +100,7 @@ test("each Agent answer opens its own evidence and shows trading facts", async (
   });
 
   await page.goto("/chat");
+  await page.getByRole("button", { name: "展开任务档案" }).click();
   const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
   await expect(inspector.getByText("新任务：检查组合")).toBeVisible();
   await page.getByRole("button", { name: "已关联 1 项证据 · 查看任务档案" }).first().click();
@@ -143,6 +144,7 @@ test("announcement evidence shows the query window and its limits", async ({ pag
   });
 
   await page.goto("/chat");
+  await page.getByRole("button", { name: "展开任务档案" }).click();
   const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
   await expect(inspector.getByText("2026-06-27 至 2026-09-25")).toBeVisible();
   await expect(inspector.getByText("1 个日期")).toBeVisible();
@@ -186,11 +188,13 @@ test("Agent Skill progress and result links survive conversation reload", async 
 
   await page.goto("/chat");
   await expect(page.getByLabel("分析子任务进度").getByText("整理研究报告 · 已完成")).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
   const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
   await expect(inspector.getByRole("link", { name: "查看分析过程" })).toHaveAttribute("href", "/analysis/run-123");
   await expect(inspector.getByRole("link", { name: "查看研究产物" })).toHaveAttribute("href", "/library?run_id=run-123");
   await page.reload();
   await expect(page.getByLabel("分析子任务进度").getByText("整理研究报告 · 已完成")).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
   await inspector.getByRole("link", { name: "查看研究产物" }).click();
   await expect(page).toHaveURL(/\/library\?run_id=run-123$/);
 });

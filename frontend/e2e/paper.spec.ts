@@ -69,7 +69,10 @@ test("composite child deep link opens its ledger without direct advance", async 
   await page.goto(`/paper?session=${encodeURIComponent(child)}`);
   await expect(page.getByRole("combobox", { name: "当前模拟盘会话" })).toHaveValue(child);
   await expect(page.getByText("¥105,000").first()).toBeVisible();
-  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toContainText(child);
+  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toContainText("策略模拟盘 · 已绑定模拟盘");
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" }).getByText(child)).toBeVisible();
+  await page.getByRole("button", { name: "收起任务档案" }).click();
   await expect(page.getByRole("status")).toContainText("组合子策略账本");
   await expect(page.getByRole("button", { name: "推进模拟盘" })).toHaveCount(0);
   await page.getByRole("link", { name: "查看组合账户" }).click();
@@ -192,7 +195,7 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await page.getByRole("button", { name: "问 Agent 原因" }).click();
   await expect(page).toHaveURL(/\/paper$/);
   await expect.poll(() => submissions[0]?.paperSessionId).toBe(sessionId);
-  await expect(page.getByText("已绑定 StockManager 模拟盘")).toBeVisible();
+  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toContainText("已绑定模拟盘");
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
   await page.getByRole("button", { name: "展开任务档案" }).click();
   await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toBeVisible();
@@ -200,7 +203,8 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await page.getByRole("link", { name: "在工作台继续" }).click();
   await expect(page).toHaveURL(/\/chat\?paper_session=paper%3Aallocator%3Ademo%3Afollow&conversation=conversation-1$/);
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
-  await page.getByRole("link", { name: "查看账本" }).click();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  await page.getByRole("link", { name: "查看完整账本" }).click();
   await expect(page).toHaveURL(/\/paper\?session=paper%3Aallocator%3Ademo%3Afollow$/);
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
   await page.getByRole("combobox", { name: "当前模拟盘会话" }).selectOption(otherSessionId);

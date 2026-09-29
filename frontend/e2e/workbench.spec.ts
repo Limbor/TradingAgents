@@ -168,6 +168,7 @@ test("chat renders a lightweight tool answer with provenance", async ({ page }) 
   await page.getByRole("textbox", { name: "交易问题" }).fill("我的持仓怎么样");
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.getByText("持仓查询完成：600519.SH。")).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
   await expect(page.getByRole("complementary", { name: "任务证据与方案" }).getByText(/2026-09-25/)).toBeVisible();
 });
 

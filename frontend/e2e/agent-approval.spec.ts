@@ -43,6 +43,14 @@ test("paper advance proposal requires an explicit confirmation", async ({ page }
   await page.goto("/chat?paper_session=paper%3Aone");
   await expect(page.getByText("模拟盘动作预览")).toBeVisible();
   await expect(page.getByText("2026-09-28").first()).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "任务证据与方案" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "交易 Agent 对话" })).not.toContainText("paper:one");
+  if (process.env.CAPTURE_AGENT_QA) await page.screenshot({ path: "test-results/agent-approval.png", fullPage: true });
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
+  await expect(inspector.getByText("paper:one", { exact: true })).toBeVisible();
+  await expect(inspector.getByRole("button", { name: "复制账户 ID" })).toBeVisible();
+  await page.getByRole("button", { name: "收起任务档案" }).click();
   expect(approvals).toBe(0);
   await page.getByRole("button", { name: "确认推进" }).click();
   await expect.poll(() => approvals).toBe(1);
