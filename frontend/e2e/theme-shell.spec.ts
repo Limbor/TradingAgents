@@ -16,6 +16,8 @@ test("workspace theme applies to Agent, research, and paper pages", async ({ pag
   });
 
   await page.goto("/chat");
+  await expect(page.getByRole("navigation", { name: "主导航" }).locator("..")).toHaveCSS("width", "56px");
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "交易 Agent" })).toHaveAttribute("aria-current", "page");
   await expect(page.locator("main")).toHaveCSS("background-color", "rgb(244, 245, 242)");
   await expect(page.locator("main")).toHaveCSS("padding-top", "0px");
   await expect(page.locator(".agent-workspace")).toHaveCSS("background-color", "rgb(244, 245, 242)");
@@ -23,10 +25,14 @@ test("workspace theme applies to Agent, research, and paper pages", async ({ pag
   if (process.env.CAPTURE_THEME_QA) await page.screenshot({ path: "test-results/theme-agent-light.png", fullPage: true });
 
   await page.goto("/research");
+  await expect(page.getByRole("navigation", { name: "主导航" }).locator("..")).toHaveCSS("width", "56px");
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "策略研究" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "策略研究" }).first()).toBeVisible();
   await expect(page.locator("main section").first()).toHaveCSS("background-color", "rgba(255, 255, 255, 0.7)");
   if (process.env.CAPTURE_THEME_QA) await page.screenshot({ path: "test-results/theme-research-light.png", fullPage: true });
   await page.goto("/paper");
+  await expect(page.getByRole("navigation", { name: "主导航" }).locator("..")).toHaveCSS("width", "56px");
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "模拟盘" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "模拟盘工作台" })).toBeVisible();
   await expect(page.locator("main")).toHaveCSS("background-color", "rgb(244, 245, 242)");
   if (process.env.CAPTURE_THEME_QA) await page.screenshot({ path: "test-results/theme-paper-light.png", fullPage: true });
