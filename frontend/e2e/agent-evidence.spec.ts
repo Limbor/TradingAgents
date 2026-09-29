@@ -1,6 +1,39 @@
 import { expect, test } from "@playwright/test";
 import { mockAgentTasks } from "./agentMock";
 
+test("text-only completion states clearly that no analysis tool ran", async ({ page }) => {
+  const now = "2026-09-29T08:00:00Z";
+  const conversation = { id: "text-only", title: "每日选股", paper_session_id: null,
+    created_at: now, updated_at: now, latest_status: "completed" };
+  const task = { id: "plain-task", conversation_id: conversation.id, goal: "按默认跑",
+    status: "completed", result: { content: "本轮没有开放工具调用。" }, error: null,
+    created_at: now, updated_at: now, evidence: [], proposal: null,
+    events: [
+      { task_id: "plain-task", seq: 1, event_type: "plan_created",
+        payload: { steps: [{ id: "chat", label: "解析问题并选择现有分析能力", tool: "chat_agent" }] }, created_at: now },
+      { task_id: "plain-task", seq: 2, event_type: "step_completed",
+        payload: { id: "chat", status: "completed" }, created_at: now },
+    ],
+  };
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path === "/api/v1/agent/conversations" ? [conversation]
+      : path === "/api/v1/agent/conversations/text-only" ? {
+        ...conversation, tasks: [task], messages: [
+          { id: "user-1", conversation_id: conversation.id, task_id: task.id,
+            role: "user", content: task.goal, created_at: now },
+          { id: "answer-1", conversation_id: conversation.id, task_id: task.id,
+            role: "assistant", content: task.result.content, created_at: now },
+        ],
+      } : {};
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/chat");
+  await expect(page.getByText("仅文字回答")).toBeVisible();
+  await expect(page.getByText("本轮未运行分析工具，也没有可引用的结果数据。")).toBeVisible();
+});
+
 test("mobile Agent keeps the conversation usable with the evidence drawer", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => window.localStorage.setItem("tradingagents.theme", "light"));

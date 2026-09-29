@@ -63,7 +63,16 @@ def test_get_config(client):
     config = res.json()
     assert "llm_provider" in config
     assert "deep_think_llm" in config
+    assert "agent_model" in config
     assert "stockmanager_mcp_url" in config
+
+
+def test_deepseek_catalog_offers_agent_flash_and_pro(client):
+    response = client.get("/api/v1/config/providers")
+    assert response.status_code == 200
+    deepseek = next(item for item in response.json() if item["id"] == "deepseek")
+    quick = {item["value"] for item in deepseek["quick_models"]}
+    assert {"deepseek-flash", "deepseek-v4-pro"} <= quick
 
 
 def test_get_trading_time_context(client):
@@ -146,6 +155,7 @@ def test_update_config_persists_across_app_restart(tmp_path, monkeypatch):
                 "llm_provider": "deepseek",
                 "quick_think_llm": "deepseek-v4-flash",
                 "deep_think_llm": "deepseek-v4-pro",
+                "agent_model": "deepseek-v4-pro",
                 "backend_url": None,
             },
         )
@@ -160,6 +170,7 @@ def test_update_config_persists_across_app_restart(tmp_path, monkeypatch):
         assert payload["llm_provider"] == "deepseek"
         assert payload["quick_think_llm"] == "deepseek-v4-flash"
         assert payload["deep_think_llm"] == "deepseek-v4-pro"
+        assert payload["agent_model"] == "deepseek-v4-pro"
 
 
 def test_run_manager_reads_persisted_runs(tmp_path):

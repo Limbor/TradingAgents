@@ -89,6 +89,19 @@ class TestChatAgentIntentClassification:
         assert "本轮没有开放工具调用" in plain.ainvoke.await_args.args[0][0].content
 
     @pytest.mark.asyncio
+    async def test_text_only_agent_uses_selected_model(self, chat_agent):
+        plain = AsyncMock()
+        plain.ainvoke = AsyncMock(return_value=AIMessage(content="已回答"))
+        with patch("tradingagents.llm_clients.create_llm_client") as factory:
+            factory.return_value.get_llm.return_value = plain
+            result = await chat_agent.handle(
+                "解释风险", allow_tools=False, model_override="deepseek-v4-pro",
+            )
+
+        assert result.content == "已回答"
+        assert factory.call_args.kwargs["model"] == "deepseek-v4-pro"
+
+    @pytest.mark.asyncio
     async def test_paper_tool_call_uses_page_bound_account(self, chat_agent, mock_tool_registry):
         paper_handler = AsyncMock(return_value={"session_id": "paper:mine", "as_of_date": "2026-09-25"})
         mock_tool_registry.register(LightweightTool(

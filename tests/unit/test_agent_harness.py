@@ -13,6 +13,7 @@ from tradingagents.core.agent_harness import (
     AgentStore,
     TradingAgentHarness,
     _answer_evidence_result,
+    _is_daily_pipeline_run_request,
     _paper_state_fingerprint,
 )
 from tradingagents.core.chat_agent import ChatResponse
@@ -86,6 +87,125 @@ def test_stock_reference_only_applies_to_stock_followups():
     assert TradingAgentHarness._is_stock_followup("那它的公告呢？")
     assert TradingAgentHarness._is_stock_followup("这只股票怎么样？")
     assert not TradingAgentHarness._is_stock_followup("解释计划为何没有执行它")
+
+
+def test_daily_pipeline_run_request_does_not_turn_questions_into_jobs():
+    assert _is_daily_pipeline_run_request("请运行 daily_pipeline 选股")
+    assert not _is_daily_pipeline_run_request("如何运行 daily_pipeline？")
+    assert not _is_daily_pipeline_run_request("运行 daily_pipeline 吗？")
+    assert not _is_daily_pipeline_run_request("查看 daily_pipeline 运行结果")
+
+
+@pytest.mark.asyncio
+async def test_default_run_reply_continues_unexecuted_daily_pipeline(tmp_path):
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "daily_pipeline" else None)
+    calls = []
+
+    async def run_skill(_task_id, skill_id, params):
+        calls.append((skill_id, params))
+        return {"run_id": "run:daily", "source": "TradingAgents Skill: daily_pipeline",
+                "candidates": [{"symbol": "600519.SH"}]}
+
+    async def synthesize(*_args, **_kwargs):
+        return "选股已完成，结果见证据。"
+
+    harness._run_skill = run_skill
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("每日选股", None)
+    previous = store.create_task(conversation["id"], "运行 daily_pipeline 选出前五只")
+    store.set_status(previous["id"], "completed", result={"content": "请确认是否按默认参数运行"})
+    task = harness.submit(conversation["id"], "按默认跑")
+    await harness._active[task["id"]]
+
+    detail = store.conversation_detail(conversation["id"])
+    resumed = detail["tasks"][-1]
+    assert calls == [("daily_pipeline", {})]
+    assert resumed["status"] == "completed"
+    assert resumed["evidence"][0]["tool_name"] == "skill"
+    assert detail["messages"][-2]["content"] == "按默认跑"
+    assert any(event["event_type"] == "skill_request_resolved" and
+               event["payload"]["previous_task_id"] == previous["id"]
+               for event in resumed["events"])
+
+
+@pytest.mark.asyncio
+async def test_default_run_reply_does_not_execute_after_how_to_question(tmp_path):
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config["agent_model_planning_enabled"] = False
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "daily_pipeline" else None)
+
+    async def unexpected_skill(*_args):
+        raise AssertionError("如何运行的问题不能授权执行分析")
+
+    harness._run_skill = unexpected_skill
+    conversation = store.create_conversation("操作说明", None)
+    previous = store.create_task(conversation["id"], "如何运行 daily_pipeline？")
+    store.set_status(previous["id"], "completed", result={"content": "运行说明"})
+    task = harness.submit(conversation["id"], "按默认跑")
+    await harness._active[task["id"]]
+
+    resumed = store.conversation_detail(conversation["id"])["tasks"][-1]
+    assert resumed["status"] == "completed"
+    assert resumed["evidence"] == []
+
+
+@pytest.mark.asyncio
+async def test_agent_planner_uses_selected_model_instead_of_quick_model(tmp_path, monkeypatch):
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, _ = _harness(tmp_path, paper_handler=unused_paper)
+    harness.config.update(llm_provider="deepseek", quick_think_llm="deepseek-flash",
+                          agent_model="deepseek-v4-pro")
+    selected = []
+
+    class Model:
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(content='{"steps":[]}')
+
+    def create_client(**kwargs):
+        selected.append(kwargs["model"])
+        return SimpleNamespace(get_llm=lambda: Model())
+
+    monkeypatch.setattr("tradingagents.llm_clients.api_key_env.get_api_key_env",
+                        lambda _provider: None)
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client", create_client)
+    assert await harness._request_model_plan("解释交易风险", None) == []
+    assert selected == ["deepseek-v4-pro"]
+
+
+@pytest.mark.asyncio
+async def test_running_agent_task_keeps_its_model_after_settings_change(tmp_path):
+    selected = []
+
+    async def paper(_session_id):
+        harness.config["agent_model"] = "deepseek-flash"
+        return _paper_status(as_of_date="2026-09-25")
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.config.update(agent_model_planning_enabled=False,
+                          quick_think_llm="deepseek-flash",
+                          agent_model="deepseek-v4-pro")
+
+    async def synthesize(*_args, model=None, **_kwargs):
+        selected.append(model)
+        return "已读取账本。"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("模型切换", "paper:mine")
+    task = harness.submit(conversation["id"], "当前模拟盘权益是多少？")
+    await harness._active[task["id"]]
+
+    assert selected == ["deepseek-v4-pro"]
+    assert store.list_events(task["id"])[0]["payload"]["model"] == "deepseek-v4-pro"
 
 
 def test_trade_decision_detection_keeps_general_education_separate():

@@ -54,6 +54,23 @@ _SAFE_ANALYSIS_SKILLS = {
     "stock_analysis", "strategy_backtest", "market_scanner", "market_overview",
     "daily_pipeline", "position_advisor", "risk_monitor",
 }
+_DAILY_PIPELINE_RUN = re.compile(
+    r"(?:运行|执行|启动|跑).{0,8}(?:daily_pipeline|每日选股|日常选股)|"
+    r"(?:daily_pipeline|每日选股|日常选股).{0,8}(?:运行|执行|启动|跑)",
+    re.IGNORECASE,
+)
+_DEFAULT_RUN_REPLY = re.compile(
+    r"^(?:好|好的|可以|那就|就)?[，,\s]*(?:按|用)默认(?:参数|配置|设置)?"
+    r"(?:来)?(?:跑|运行|执行)(?:一下|吧|就行)?[。.!！]?$"
+)
+
+
+def _is_daily_pipeline_run_request(goal: str) -> bool:
+    return (bool(_DAILY_PIPELINE_RUN.search(goal)) and
+            not any(word in goal for word in
+                    ("不要", "别", "如何", "怎么", "解释", "介绍", "结果", "日志",
+                     "能否", "是否", "要不要")) and
+            not goal.rstrip().endswith(("?", "？")))
 
 
 def _now() -> str:
@@ -678,6 +695,11 @@ class TradingAgentHarness:
         self._reconcile_locks: dict[str, asyncio.Lock] = {}
         self._shutting_down = False
 
+    def _agent_model(self) -> str:
+        selected = self.config.get("agent_model")
+        return (selected.strip() if isinstance(selected, str) and selected.strip()
+                else self.config.get("quick_think_llm", "gpt-5.4-mini"))
+
     def submit(self, conversation_id: str, goal: str,
                intent_hint: dict | None = None) -> dict:
         conversation = self.store.get_conversation(conversation_id)
@@ -688,32 +710,54 @@ class TradingAgentHarness:
             raise ValueError("请输入 1–4000 字的交易问题")
         user_input = goal
         clarified_from = None
-        if _A_SHARE_TICKER.fullmatch(goal.upper()):
-            previous = next(iter(reversed(self.store.list_tasks(conversation_id))), None)
-            if previous and previous["status"] == "needs_input" and any(
-                event["event_type"] == "task_needs_input" and
-                event["payload"].get("reason") == "trade_scope"
-                for event in self.store.list_events(previous["id"])
-            ):
-                clarified_from = previous["id"]
-                goal = (f"评估 {goal.upper()}。原交易问题：{previous['goal']}。"
-                        f"标的代码以用户本轮提供的 {goal.upper()} 为准。")
+        skill_clarified_from = None
+        previous = next(iter(reversed(self.store.list_tasks(conversation_id))), None)
+        if (intent_hint is None and
+                (_is_daily_pipeline_run_request(goal) or _DEFAULT_RUN_REPLY.fullmatch(goal)) and
+                self.skills.get("daily_pipeline") is not None):
+            if _is_daily_pipeline_run_request(goal):
+                intent_hint = {"skill_id": "daily_pipeline", "params": {}}
+            elif (_DEFAULT_RUN_REPLY.fullmatch(goal) and previous and
+                  previous["status"] in {"completed", "needs_input"} and
+                  _is_daily_pipeline_run_request(previous["goal"]) and
+                  not any(event["event_type"] == "skill_started"
+                          for event in self.store.list_events(previous["id"]))):
+                goal = "按默认参数运行 daily_pipeline（接续上一轮请求）"
+                intent_hint = {"skill_id": "daily_pipeline", "params": {}}
+                skill_clarified_from = previous["id"]
+        if (_A_SHARE_TICKER.fullmatch(goal.upper()) and previous and
+                previous["status"] == "needs_input" and any(
+                    event["event_type"] == "task_needs_input" and
+                    event["payload"].get("reason") == "trade_scope"
+                    for event in self.store.list_events(previous["id"])
+                )):
+            clarified_from = previous["id"]
+            goal = (f"评估 {goal.upper()}。原交易问题：{previous['goal']}。"
+                    f"标的代码以用户本轮提供的 {goal.upper()} 为准。")
         task = self.store.create_task(conversation_id, goal)
         self.store.add_message(conversation_id, "user", user_input, task["id"])
+        selected_model = self._agent_model()
         timeout_seconds = self._task_timeout_seconds()
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         self.store.event(task["id"], "task_created", {
             "goal": goal, "budget": {"total_seconds": timeout_seconds,
                                      "max_tool_steps": _MAX_PLAN_STEPS,
                                      "max_harness_model_calls": 3},
+            "model": selected_model,
         })
         if clarified_from:
             self.store.event(task["id"], "scope_resolved", {
                 "ts_code": user_input.upper(), "source": "clarification",
                 "previous_task_id": clarified_from,
             })
+        if skill_clarified_from:
+            self.store.event(task["id"], "skill_request_resolved", {
+                "skill_id": "daily_pipeline", "source": "previous_task",
+                "previous_task_id": skill_clarified_from,
+            })
         running = asyncio.create_task(
-            self._execute(task["id"], conversation, intent_hint, timeout_seconds, deadline)
+            self._execute(task["id"], conversation, intent_hint, timeout_seconds,
+                          deadline, selected_model)
         )
         self._active[task["id"]] = running
         running.add_done_callback(lambda done: self._on_task_done(task["id"], done))
@@ -1135,11 +1179,13 @@ class TradingAgentHarness:
     async def _execute(self, task_id: str, conversation: dict,
                        intent_hint: dict | None = None,
                        timeout_seconds: float = 2100.0,
-                       deadline: float | None = None) -> None:
+                       deadline: float | None = None,
+                       model: str | None = None) -> None:
         task = self.store.get_task(task_id)
         if not task:
             return
         goal = task["goal"]
+        model = model or self._agent_model()
         timed_out = False
         active_step_id: str | None = None
         current_task = asyncio.current_task()
@@ -1230,7 +1276,7 @@ class TradingAgentHarness:
                         self.store.event(task_id, "task_completed", {"content": content})
                         return
                 plan, plan_source = await self._build_plan(goal, paper_session_id, intent_hint,
-                                                           tickers=tickers)
+                                                           tickers=tickers, model=model)
                 enforce_budget()
                 self.store.event(task_id, "plan_created", {"steps": plan, "source": plan_source})
                 self.store.set_status(task_id, "running")
@@ -1375,7 +1421,7 @@ class TradingAgentHarness:
                             ))):
                         replanned = True
                         extra = await self._replan(goal, paper_session_id, plan, evidence,
-                                                   tickers=tickers)
+                                                   tickers=tickers, model=model)
                         enforce_budget()
                         if extra:
                             plan.extend(extra)
@@ -1447,6 +1493,7 @@ class TradingAgentHarness:
                     synthesized = await self._synthesize(
                         goal, conversation["id"], evidence, tickers=tickers,
                         required_skill_id=(intent_hint or {}).get("skill_id"),
+                        model=model,
                     )
                     enforce_budget()
                     answer = synthesized.get("answer") if isinstance(synthesized, dict) else None
@@ -1454,7 +1501,7 @@ class TradingAgentHarness:
                 else:
                     self.store.event(task_id, "step_started", plan[0])
                     active_step_id = plan[0]["id"]
-                    content = await self._delegate_chat(task_id, goal, conversation)
+                    content = await self._delegate_chat(task_id, goal, conversation, model=model)
                     enforce_budget()
                     self.store.event(task_id, "step_completed", {"id": plan[0]["id"], "status": "completed"})
                     active_step_id = None
@@ -1579,13 +1626,15 @@ class TradingAgentHarness:
 
     async def _build_plan(self, goal: str, paper_session_id: str | None,
                           intent_hint: dict | None, *,
-                          tickers: list[str] | None = None) -> tuple[list[dict], str]:
+                          tickers: list[str] | None = None,
+                          model: str | None = None) -> tuple[list[dict], str]:
         fallback = self._plan(goal, paper_session_id, intent_hint, tickers=tickers)
         if (not self.config.get("agent_model_planning_enabled", True) or
                 self._advance_target(goal, paper_session_id) or
                 (intent_hint or {}).get("skill_id")):
             return fallback, "rules"
-        proposed = await self._request_model_plan(goal, paper_session_id, tickers=tickers)
+        proposed = await self._request_model_plan(goal, paper_session_id,
+                                                  tickers=tickers, model=model)
         if proposed is None:
             return fallback, "rules"
         validated = self._validate_model_steps(proposed, goal, paper_session_id,
@@ -1594,7 +1643,8 @@ class TradingAgentHarness:
 
     async def _replan(self, goal: str, paper_session_id: str | None,
                       plan: list[dict], evidence: list[dict], *,
-                      tickers: list[str] | None = None) -> list[dict]:
+                      tickers: list[str] | None = None,
+                      model: str | None = None) -> list[dict]:
         if not self.config.get("agent_model_planning_enabled", True):
             return []
         remaining = _MAX_PLAN_STEPS - len(plan)
@@ -1603,7 +1653,7 @@ class TradingAgentHarness:
         summaries = [{"tool": item["tool_name"], "summary": item["summary"],
                       "error": bool(item["result"].get("error"))} for item in evidence]
         proposed = await self._request_model_plan(
-            goal, paper_session_id, evidence=summaries, tickers=tickers
+            goal, paper_session_id, evidence=summaries, tickers=tickers, model=model
         )
         if proposed is None:
             return []
@@ -1622,7 +1672,8 @@ class TradingAgentHarness:
 
     async def _request_model_plan(self, goal: str, paper_session_id: str | None,
                                   evidence: list[dict] | None = None, *,
-                                  tickers: list[str] | None = None) -> list[dict] | None:
+                                  tickers: list[str] | None = None,
+                                  model: str | None = None) -> list[dict] | None:
         """Ask a model for tool choices. Its output is data until validated below."""
         from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -1660,7 +1711,7 @@ class TradingAgentHarness:
         try:
             llm = create_llm_client(
                 provider=provider,
-                model=self.config.get("quick_think_llm", "gpt-5.4-mini"),
+                model=model or self._agent_model(),
                 base_url=self.config.get("backend_url"),
             ).get_llm()
             response = await asyncio.wait_for(
@@ -1793,7 +1844,8 @@ class TradingAgentHarness:
 
     async def _synthesize(self, goal: str, conversation_id: str, evidence: list[dict], *,
                           tickers: list[str] | None = None,
-                          required_skill_id: str | None = None) -> str | dict:
+                          required_skill_id: str | None = None,
+                          model: str | None = None) -> str | dict:
         evidence = _latest_evidence(evidence)
         selected_tickers = tickers if tickers is not None else self._goal_tickers(goal)
         conversation = self.store.get_conversation(conversation_id) or {}
@@ -1917,7 +1969,7 @@ class TradingAgentHarness:
         try:
             llm = create_llm_client(
                 provider=self.config.get("llm_provider", "openai"),
-                model=self.config.get("quick_think_llm", "gpt-5.4-mini"),
+                model=model or self._agent_model(),
                 base_url=self.config.get("backend_url"),
             ).get_llm()
             response = await asyncio.wait_for(llm.ainvoke([
@@ -1954,12 +2006,14 @@ class TradingAgentHarness:
                 lines.append(f"  注意：{warning}")
         return "\n".join(lines)
 
-    async def _delegate_chat(self, task_id: str, goal: str, conversation: dict) -> str:
+    async def _delegate_chat(self, task_id: str, goal: str, conversation: dict, *,
+                             model: str | None = None) -> str:
         response = await self.chat_agent.handle(
             goal, session_id=conversation["id"],
             context={"paper_session_context": {"session_id": conversation["paper_session_id"]}}
             if conversation.get("paper_session_id") else None,
             allow_tools=False,
+            model_override=model or self._agent_model(),
         )
         if response.intent == "skill_run":
             return ("普通问答不会直接执行分析技能。请明确提出分析目标，"

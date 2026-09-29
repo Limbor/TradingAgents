@@ -318,6 +318,7 @@ export interface ConfigResponse {
   llm_provider: string;
   deep_think_llm: string;
   quick_think_llm: string;
+  agent_model: string | null;
   output_language: string;
   max_debate_rounds: number;
   max_risk_discuss_rounds: number;

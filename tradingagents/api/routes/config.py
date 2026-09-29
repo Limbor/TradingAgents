@@ -16,6 +16,7 @@ class ConfigResponse(BaseModel):
     llm_provider: str
     deep_think_llm: str
     quick_think_llm: str
+    agent_model: str | None = None
     output_language: str
     max_debate_rounds: int
     max_risk_discuss_rounds: int
@@ -37,6 +38,7 @@ class ConfigUpdate(BaseModel):
     llm_provider: str | None = None
     deep_think_llm: str | None = None
     quick_think_llm: str | None = None
+    agent_model: str | None = Field(default=None, max_length=128)
     output_language: str | None = None
     max_debate_rounds: int | None = None
     max_risk_discuss_rounds: int | None = None
@@ -101,6 +103,7 @@ def _build_config_response(config: dict) -> ConfigResponse:
         llm_provider=config.get("llm_provider", "openai"),
         deep_think_llm=config.get("deep_think_llm", "gpt-5.5"),
         quick_think_llm=config.get("quick_think_llm", "gpt-5.4-mini"),
+        agent_model=config.get("agent_model"),
         output_language=config.get("output_language", "English"),
         max_debate_rounds=config.get("max_debate_rounds", 1),
         max_risk_discuss_rounds=config.get("max_risk_discuss_rounds", 1),

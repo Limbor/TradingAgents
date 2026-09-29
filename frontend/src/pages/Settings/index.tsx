@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ConfigResponse,
   getConfig,
@@ -23,6 +23,7 @@ const LANGUAGES = [
 ];
 
 export default function Settings() {
+  const queryClient = useQueryClient();
   const configQuery = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig });
   const providersQuery = useQuery({
     queryKey: queryKeys.providers(),
@@ -35,8 +36,11 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [customQuick, setCustomQuick] = useState("");
   const [customDeep, setCustomDeep] = useState("");
+  const [customAgent, setCustomAgent] = useState("");
+  const [editingAgentModel, setEditingAgentModel] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const [authToken, setAuthTokenState] = useState("");
+  const [saveError, setSaveError] = useState("");
 
   // Sync fetched config to local state
   useEffect(() => {
@@ -47,6 +51,7 @@ export default function Settings() {
     if (configQuery.data && !config) {
       setConfig(configQuery.data);
       setCustomUrl(configQuery.data.backend_url ?? "");
+      setCustomAgent(configQuery.data.agent_model ?? "");
       // If current model is not in any dropdown, treat as custom
       const provider = configQuery.data.llm_provider;
       const pd = providersQuery.data?.find((p) => p.id === provider);
@@ -77,20 +82,29 @@ export default function Settings() {
     () => providersQuery.data?.find((p) => p.id === config?.llm_provider),
     [providersQuery.data, config?.llm_provider]
   );
+  const agentModels = useMemo(() => {
+    const options = [...(currentProvider?.quick_models ?? []), ...(currentProvider?.deep_models ?? [])];
+    return options.filter((option, index) => option.value !== "custom" &&
+      options.findIndex((candidate) => candidate.value === option.value) === index);
+  }, [currentProvider]);
 
   const save = useCallback(
     async (updates: Partial<ConfigResponse>) => {
       setSaving(true);
+      setSaveError("");
       try {
         const updated = await updateConfig(updates);
         setConfig(updated);
+        queryClient.setQueryData(queryKeys.config(), updated);
+        return true;
       } catch (e) {
-        console.error("Failed to save:", e);
+        setSaveError(e instanceof Error ? e.message : "配置保存失败");
+        return false;
       } finally {
         setSaving(false);
       }
     },
-    []
+    [queryClient]
   );
 
   const saveProfile = useCallback(
@@ -119,10 +133,15 @@ export default function Settings() {
       if (quick && deep) {
         setCustomQuick("");
         setCustomDeep("");
+        setCustomAgent("");
+        setEditingAgentModel(false);
+        setCustomUrl("");
         save({
           llm_provider: providerId,
           quick_think_llm: quick.value,
           deep_think_llm: deep.value,
+          agent_model: null,
+          backend_url: null,
         });
       }
     },
@@ -143,65 +162,20 @@ export default function Settings() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">Settings</h2>
+        <h2 className="text-2xl font-bold">设置</h2>
         {saving && (
           <span className="text-sm text-ui-muted">Saving...</span>
         )}
       </div>
-
-      {/* API Access Token */}
-      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-        <h3 className="mb-2 text-lg font-semibold">API 访问令牌</h3>
-        <p className="mb-3 text-sm text-ui-muted">
-          当后端设置 <code className="text-ui-body">TRADINGAGENTS_API_AUTH_TOKEN</code> 后，所有 REST/WebSocket
-          请求需携带此令牌。本地默认不设可留空。
-        </p>
-        <div className="flex gap-2">
-          <input
-            type="password"
-            value={authToken}
-            onChange={(e) => setAuthTokenState(e.target.value)}
-            placeholder="留空则不启用认证"
-            className="flex-1 rounded border border-ui-strong bg-ui-panel px-3 py-1.5 text-sm text-ui-ink"
-          />
-          <button
-            type="button"
-            onClick={() => {
-              setAuthToken(authToken);
-            }}
-            className="rounded bg-ui-accent px-4 py-1.5 text-sm font-medium text-ui-onAccent hover:bg-ui-accent"
-          >
-            保存
-          </button>
-        </div>
-      </section>
-
-      {/* API Key Status */}
-      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">API Key Status</h3>
-        <div className="flex items-center gap-3">
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${apiKeyConfigured ? "bg-ui-accent" : "bg-ui-danger"}`}
-          />
-          <span className="text-sm">
-            {currentProvider?.name ?? config.llm_provider}:{" "}
-            {apiKeyConfigured ? (
-              <span className="text-ui-accent">API key configured</span>
-            ) : (
-              <span className="text-ui-danger">
-                API key missing — set the corresponding environment variable
-              </span>
-            )}
-          </span>
-        </div>
-      </section>
+      {saveError && <p role="alert" className="rounded border border-ui-danger/40 bg-ui-danger/10 px-3 py-2 text-sm text-ui-danger">{saveError}</p>}
 
       {/* LLM Backbone */}
       <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">LLM Backbone</h3>
+        <h3 className="mb-2 text-lg font-semibold">模型配置</h3>
+        <p className="mb-4 text-sm leading-6 text-ui-muted">交易 Agent 可单独选择模型；其他分析流程继续使用下面的快速模型和深度模型。</p>
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm text-ui-body">Provider</label>
+            <label className="mb-1 block text-sm text-ui-body">模型服务商</label>
             <select
               value={config.llm_provider}
               onChange={(e) => handleProviderChange(e.target.value)}
@@ -215,10 +189,48 @@ export default function Settings() {
             </select>
           </div>
 
+          <div className="rounded-lg border border-ui-line bg-ui-panel p-4">
+            <label htmlFor="agent-model" className="mb-1 block text-sm font-medium text-ui-ink">交易 Agent 模型</label>
+            <p className="mb-3 text-xs leading-5 text-ui-muted">用于对话、任务规划和证据回答。新任务立即使用所选模型；Flash 更快，Pro 适合复杂问题。</p>
+            <select
+              id="agent-model"
+              value={editingAgentModel || (config.agent_model && !agentModels.some((model) => model.value === config.agent_model)) ? "custom" : config.agent_model ?? ""}
+              onChange={(event) => {
+                if (event.target.value === "custom") {
+                  setCustomAgent(config.agent_model ?? "");
+                  setEditingAgentModel(true);
+                } else {
+                  setEditingAgentModel(false);
+                  setCustomAgent("");
+                  void save({ agent_model: event.target.value || null });
+                }
+              }}
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+            >
+              <option value="">跟随快速模型（{config.quick_think_llm}）</option>
+              {agentModels.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+              <option value="custom">自定义模型 ID…</option>
+            </select>
+            {(editingAgentModel || (config.agent_model && !agentModels.some((model) => model.value === config.agent_model))) &&
+              <div className="mt-3 flex flex-wrap gap-2">
+                <input
+                  aria-label="自定义 Agent 模型 ID"
+                  type="text"
+                  value={customAgent}
+                  onChange={(event) => setCustomAgent(event.target.value)}
+                  placeholder="输入服务商支持的模型 ID"
+                  className="min-w-0 flex-1 rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+                />
+                <button type="button" disabled={!customAgent.trim() || saving}
+                  onClick={async () => { if (await save({ agent_model: customAgent.trim() })) setEditingAgentModel(false); }}
+                  className="rounded-lg bg-ui-accent px-3 py-2 text-sm text-ui-onAccent disabled:opacity-50">保存模型</button>
+              </div>}
+          </div>
+
           <div>
             <label className="mb-1 block text-sm text-ui-body">
-              Backend URL{" "}
-              <span className="text-ui-faint">(optional, leave empty for default)</span>
+              服务地址{" "}
+              <span className="text-ui-faint">（可选，留空使用默认地址）</span>
             </label>
             <input
               type="text"
@@ -233,7 +245,7 @@ export default function Settings() {
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label className="mb-1 block text-sm text-ui-body">
-                Quick Model{" "}
+                快速模型{" "}
                 <span className="text-ui-faint">(路由、分析员、候选复核)</span>
               </label>
               <select
@@ -282,7 +294,7 @@ export default function Settings() {
 
             <div>
               <label className="mb-1 block text-sm text-ui-body">
-                Thinking Model{" "}
+                深度模型{" "}
                 <span className="text-ui-faint">(研究经理、组合决策)</span>
               </label>
               <select
@@ -329,6 +341,53 @@ export default function Settings() {
               )}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* API Access Token */}
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
+        <h3 className="mb-2 text-lg font-semibold">API 访问令牌</h3>
+        <p className="mb-3 text-sm text-ui-muted">
+          当后端设置 <code className="text-ui-body">TRADINGAGENTS_API_AUTH_TOKEN</code> 后，所有 REST/WebSocket
+          请求需携带此令牌。本地默认不设可留空。
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="password"
+            value={authToken}
+            onChange={(e) => setAuthTokenState(e.target.value)}
+            placeholder="留空则不启用认证"
+            className="flex-1 rounded border border-ui-strong bg-ui-panel px-3 py-1.5 text-sm text-ui-ink"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setAuthToken(authToken);
+            }}
+            className="rounded bg-ui-accent px-4 py-1.5 text-sm font-medium text-ui-onAccent hover:bg-ui-accent"
+          >
+            保存
+          </button>
+        </div>
+      </section>
+
+      {/* API Key Status */}
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
+        <h3 className="mb-4 text-lg font-semibold">模型密钥状态</h3>
+        <div className="flex items-center gap-3">
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${apiKeyConfigured ? "bg-ui-accent" : "bg-ui-danger"}`}
+          />
+          <span className="text-sm">
+            {currentProvider?.name ?? config.llm_provider}:{" "}
+            {apiKeyConfigured ? (
+              <span className="text-ui-accent">API 密钥已配置</span>
+            ) : (
+              <span className="text-ui-danger">
+                缺少 API 密钥，请设置对应环境变量
+              </span>
+            )}
+          </span>
         </div>
       </section>
 

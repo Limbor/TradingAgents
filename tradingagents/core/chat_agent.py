@@ -203,6 +203,7 @@ class ChatAgent:
         context: dict[str, Any] | None = None,
         *,
         allow_tools: bool = True,
+        model_override: str | None = None,
     ) -> ChatResponse:
         """Process a user message and return a classified ChatResponse.
 
@@ -211,6 +212,7 @@ class ChatAgent:
             session_id: Conversation session identifier for multi-turn context.
             context: Optional structured context (e.g. selection_context).
             allow_tools: Disable tool use when a caller owns the tool and evidence lifecycle.
+            model_override: Model for a text-only caller such as Trading Agent.
 
         Returns:
             ChatResponse with intent and relevant payload fields populated.
@@ -247,7 +249,7 @@ class ChatAgent:
             return result
 
         try:
-            llm_with_tools = self._get_llm_with_tools() if allow_tools else self._get_plain_llm()
+            llm_with_tools = self._get_llm_with_tools() if allow_tools else self._get_plain_llm(model_override)
         except Exception as exc:
             logger.warning("ChatAgent LLM init failed: %s", exc)
             return ChatResponse(
@@ -448,8 +450,16 @@ class ChatAgent:
                 self._llm_with_tools = llm
         return self._llm_with_tools
 
-    def _get_plain_llm(self) -> Any:
+    def _get_plain_llm(self, model_override: str | None = None) -> Any:
         """Return a cached LLM client without tools (for forced text answers)."""
+        if model_override and model_override != self._config.get("quick_think_llm"):
+            from tradingagents.llm_clients import create_llm_client
+
+            return create_llm_client(
+                provider=self._config.get("llm_provider", "openai"),
+                model=model_override,
+                base_url=self._config.get("backend_url"),
+            ).get_llm()
         if self._plain_llm is None:
             from tradingagents.llm_clients import create_llm_client
 

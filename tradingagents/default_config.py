@@ -11,6 +11,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_LLM_PROVIDER":         "llm_provider",
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
+    "TRADINGAGENTS_AGENT_MODEL":          "agent_model",
     "TRADINGAGENTS_AGENT_MODEL_PLANNING_ENABLED": "agent_model_planning_enabled",
     "TRADINGAGENTS_AGENT_MODEL_PLANNING_TIMEOUT": "agent_model_planning_timeout",
     "TRADINGAGENTS_AGENT_SKILL_TIMEOUT": "agent_skill_timeout_seconds",
@@ -87,6 +88,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "llm_provider": "openai",
     "deep_think_llm": "gpt-5.5",
     "quick_think_llm": "gpt-5.4-mini",
+    # None follows quick_think_llm; a specific model only affects Trading Agent tasks.
+    "agent_model": None,
     "agent_model_planning_enabled": True,
     "agent_model_planning_timeout": 8.0,
     "agent_skill_timeout_seconds": 1800.0,

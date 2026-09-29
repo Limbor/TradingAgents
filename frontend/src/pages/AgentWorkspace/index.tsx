@@ -3,7 +3,7 @@ import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowRight, Check, CircleAlert, CircleCheck, Clock3, Copy, Database, LoaderCircle, LockKeyhole, MessageSquarePlus, PanelRightClose, PanelRightOpen, Send, Square, X } from "lucide-react";
+import { ArrowRight, Check, CircleAlert, CircleCheck, Clock3, Copy, Database, LoaderCircle, LockKeyhole, MessageSquarePlus, PanelRightClose, PanelRightOpen, Send, Settings2, Square, X } from "lucide-react";
 import {
   approveAgentProposal, cancelAgentTask, closeAgentProposalReview, createAgentConversation, getAgentConversation,
   importLegacyAgentConversation, listAgentConversations, submitAgentTask,
@@ -11,6 +11,8 @@ import {
   type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask,
 } from "@/api/agent";
 import { getPaperStatus } from "@/api/paper";
+import { getConfig } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { ThemeToggle } from "@/components/Layout/Header";
 import type { ChatNavState, IntentHint } from "@/lib/chatNav";
 import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyChatImport";
@@ -63,6 +65,14 @@ function taskSteps(task: AgentTask) {
   });
 }
 
+function isTextOnlyAnswer(task: AgentTask): boolean {
+  return task.status === "completed" && task.evidence.length === 0 &&
+    task.events.some((event) => event.event_type === "plan_created" &&
+      Array.isArray(event.payload.steps) &&
+      event.payload.steps.some((step) => typeof step === "object" && step !== null &&
+        "tool" in step && step.tool === "chat_agent"));
+}
+
 function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   task: AgentTask;
   onRetry: () => void;
@@ -83,10 +93,11 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
     stages.set(key, { label: payload.stage_label, status: String(payload.status || "running") });
   }
   const skillStages = Array.from(stages.values()).slice(-5);
+  const textOnly = isTextOnlyAnswer(task);
   return <div className="mt-5 border-y border-ui-line py-3 text-xs">
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
       <span className="font-medium text-ui-ink">执行过程{revised ? " · 已调整计划" : ""}</span>
-      <div className="flex items-center gap-3 whitespace-nowrap"><span className="text-ui-accent">{statusText[task.status] ?? task.status}</span>{task.evidence.length > 0 && <button onClick={onInspect} className="text-ui-accent underline-offset-2 hover:underline">查看证据</button>}</div>
+      <div className="flex items-center gap-3 whitespace-nowrap"><span className="text-ui-accent">{textOnly ? "仅文字回答" : statusText[task.status] ?? task.status}</span>{task.evidence.length > 0 && <button onClick={onInspect} className="text-ui-accent underline-offset-2 hover:underline">查看证据</button>}</div>
     </div>
     {revisionReason && <p className="mt-2 leading-5 text-ui-muted">调整原因：{revisionReason}</p>}
     <div className="mt-2 space-y-2.5">
@@ -102,6 +113,7 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
         {skillStages.map((stage, index) => <p key={index}>{stage.label} · {statusText[stage.status] ?? stage.status}</p>)}
       </div>}
       {task.status === "reviewing" && <p className="pl-6 text-xs text-ui-muted">正在核对证据并形成回答…</p>}
+      {textOnly && <p className="text-xs text-ui-muted">本轮未运行分析工具，也没有可引用的结果数据。</p>}
       {task.status === "failed" && <p role="alert" className="text-xs text-ui-danger">{task.error || "任务执行失败"}</p>}
       {task.status === "interrupted" && <div className="space-y-2"><p role="alert" className="text-xs text-ui-warning">服务重启中断了本次任务；原有记录仍保留。</p><button disabled={retryDisabled} onClick={onRetry} className="rounded-md border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body disabled:opacity-50">重新运行任务</button></div>}
       {task.status === "needs_review" && <p role="alert" className="text-xs text-ui-warning">外部执行状态不确定。请在模拟盘账本核对，系统不会自动重复提交。</p>}
@@ -227,7 +239,7 @@ function EvidenceCard({ item }: { item: AgentEvidence }) {
 
 function Inspector({ task, paperId, paperName, overlay, onClose }: { task?: AgentTask; paperId?: string | null; paperName: string; overlay?: boolean; onClose: () => void }) {
   return <aside aria-label="任务证据与方案" className={`fixed inset-y-0 right-0 z-50 flex w-[min(100vw,360px)] min-h-0 flex-col border-l border-ui-line bg-ui-panel shadow-xl ${overlay ? "" : "xl:static xl:w-[252px] xl:shrink-0 xl:shadow-none"}`}>
-    <div className="flex h-[58px] items-center justify-between border-b border-ui-line px-4"><div className="flex min-w-0 items-center gap-2"><strong className="whitespace-nowrap text-sm font-medium">任务档案</strong><span className="truncate text-xs text-ui-muted">{task ? statusText[task.status] ?? task.status : "待命"}</span></div><button aria-label="收起任务档案" onClick={onClose} className="rounded p-1 text-ui-muted hover:bg-ui-hover"><PanelRightClose className="h-4 w-4" /></button></div>
+    <div className="flex h-[58px] items-center justify-between border-b border-ui-line px-4"><div className="flex min-w-0 items-center gap-2"><strong className="whitespace-nowrap text-sm font-medium">任务档案</strong><span className="truncate text-xs text-ui-muted">{task ? isTextOnlyAnswer(task) ? "仅文字回答" : statusText[task.status] ?? task.status : "待命"}</span></div><button aria-label="收起任务档案" onClick={onClose} className="rounded p-1 text-ui-muted hover:bg-ui-hover"><PanelRightClose className="h-4 w-4" /></button></div>
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 text-sm">
       {paperId && <section><h3 className="agent-section-title">账户范围</h3><strong className="mt-2 block truncate text-sm font-medium" title={paperId}>{paperName}</strong><div className="mt-1 flex min-w-0 items-center gap-2"><code className="min-w-0 flex-1 truncate text-xs text-ui-muted" title={paperId}>{paperId}</code><button type="button" aria-label="复制账户 ID" title="复制账户 ID" onClick={() => { void navigator.clipboard?.writeText(paperId); }} className="shrink-0 text-ui-muted hover:text-ui-accent"><Copy className="h-3.5 w-3.5" /></button></div><Link to={`/paper?session=${encodeURIComponent(paperId)}`} className="mt-2 inline-flex items-center gap-1 whitespace-nowrap text-xs text-ui-accent">查看完整账本 <ArrowRight className="h-3 w-3" /></Link></section>}
       <section className={paperId ? "border-t border-ui-line pt-4" : ""}><h3 className="agent-section-title">当前目标</h3><p className="mt-2 break-words text-sm leading-6 text-ui-body">{task?.goal || "输入交易问题后，这里显示目标、证据和结果。"}</p></section>
@@ -291,6 +303,8 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
       : loadingRequested ? null : scoped[0]?.id ?? null;
   const detail = useQuery({ queryKey: ["agent-conversation", currentId], queryFn: () => getAgentConversation(currentId!), enabled: Boolean(currentId), refetchInterval: 4000 });
   const paperStatus = useQuery({ queryKey: ["agent-paper-status", paperId], queryFn: () => getPaperStatus(paperId!), enabled: Boolean(paperId), retry: false, staleTime: 30_000 });
+  const modelConfig = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig, retry: false, staleTime: 30_000 });
+  const activeModel = modelConfig.data?.agent_model || modelConfig.data?.quick_think_llm;
   const paperName = paperStatus.data?.session?.session_id === paperId
     ? paperDisplayName(paperStatus.data.session.config_name, paperStatus.data.session.strategy, paperStatus.data.kind === "composite")
     : "模拟盘账户";
@@ -473,7 +487,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     </aside>}
 
     <section aria-label="交易 Agent 对话" className="flex min-w-0 flex-1 flex-col bg-ui-canvas">
-      <header className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-ui-line bg-ui-panel px-4 sm:px-5"><div className="min-w-0"><p className="truncate text-[15px] font-medium" title={detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperName}>{detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperId ? paperName : "交易 Agent"}</p><p className="truncate text-xs text-ui-muted">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? `${paperName} · 已绑定模拟盘` : "分析 · 取证 · 风险核对"}</p></div><div className="flex shrink-0 items-center gap-2">{embedded && paperId && <Link to={`/chat?paper_session=${encodeURIComponent(paperId)}${currentId ? `&conversation=${encodeURIComponent(currentId)}` : ""}`} className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-ui-line px-2 py-1 text-xs text-ui-accent hover:bg-ui-accentSoft">在工作台继续 <ArrowRight className="h-3.5 w-3.5" /></Link>}{running && <span className="hidden items-center gap-1 whitespace-nowrap text-xs text-ui-accent sm:flex">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!showInspector && <button onClick={() => { setInspectedTaskId(null); setShowInspector(true); }} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}{!embedded && <ThemeToggle />}</div></header>
+      <header className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-ui-line bg-ui-panel px-4 sm:px-5"><div className="min-w-0"><p className="truncate text-[15px] font-medium" title={detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperName}>{detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperId ? paperName : "交易 Agent"}</p><p className="truncate text-xs text-ui-muted">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? `${paperName} · 已绑定模拟盘` : "分析 · 取证 · 风险核对"}</p></div><div className="flex shrink-0 items-center gap-2">{embedded && paperId && <Link to={`/chat?paper_session=${encodeURIComponent(paperId)}${currentId ? `&conversation=${encodeURIComponent(currentId)}` : ""}`} className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-ui-line px-2 py-1 text-xs text-ui-accent hover:bg-ui-accentSoft">在工作台继续 <ArrowRight className="h-3.5 w-3.5" /></Link>}{running && <span className="hidden items-center gap-1 whitespace-nowrap text-xs text-ui-accent sm:flex">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!showInspector && <button onClick={() => { setInspectedTaskId(null); setShowInspector(true); }} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}{!embedded && <Link to="/settings" aria-label="配置交易 Agent 模型" title={`当前模型：${activeModel || "未配置"}`} className="inline-flex min-w-0 items-center gap-1 rounded p-1 text-ui-muted hover:bg-ui-hover hover:text-ui-accent"><Settings2 className="h-4 w-4 shrink-0" /><span className="hidden max-w-[110px] truncate text-xs lg:inline">{activeModel || "模型配置"}</span></Link>}{!embedded && <ThemeToggle />}</div></header>
       {(embedded || scoped.length > 0) && <div className={`flex items-center gap-2 border-b border-ui-line bg-ui-panel px-3 py-2 ${embedded ? "" : "md:hidden"}`}><select aria-label="选择 Agent 对话" value={currentId ?? ""} onChange={(event) => { if (event.target.value) selectConversation(event.target.value); else void newConversation(); }} className="min-w-0 flex-1 rounded border border-ui-line bg-ui-panel px-2 py-1.5 text-xs"><option value="">新对话</option>{scoped.map((item) => <option key={item.id} value={item.id}>{conversationTitle(item.title, paperId, paperName)}</option>)}</select>{conversations.hasNextPage && <button disabled={conversations.isFetchingNextPage} onClick={() => void conversations.fetchNextPage()} aria-label="加载更多对话" className="shrink-0 text-xs text-ui-accent disabled:opacity-50">更多</button>}<button disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" className="rounded border border-ui-line p-1.5 text-ui-accent disabled:opacity-50"><MessageSquarePlus className="h-4 w-4" /></button></div>}
       {error && <div role="alert" className="flex items-center justify-between border-b border-ui-danger bg-ui-danger/10 px-4 py-2 text-xs text-ui-danger">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X className="h-3.5 w-3.5" /></button></div>}
       <div ref={scrollRef} className="agent-thread min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8"><div className="relative mx-auto max-w-[720px] space-y-6">
