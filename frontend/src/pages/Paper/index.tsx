@@ -257,6 +257,15 @@ export default function Paper() {
     if (id) void client.invalidateQueries({ queryKey: queryKeys.paperSession(id) });
   };
 
+  const chooseToday = () => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(new Date());
+    const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+    setTargetDate(`${value("year")}-${value("month")}-${value("day")}`);
+    document.getElementById("paper-advance-controls")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
   const snapshot = status.data?.snapshot;
   const positionsCount = Object.keys(snapshot?.positions ?? {}).length;
   const initialCash = status.data?.session?.initial_cash ?? active?.initial_cash ?? 0;
@@ -323,7 +332,7 @@ export default function Paper() {
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(310px,0.82fr)_minmax(0,1.5fr)]">
         <div ref={agentSection} className="h-[620px] min-w-0 scroll-mt-12 xl:sticky xl:top-0 xl:h-[calc(100vh-170px)]"><Chat key={id} paperSessionId={id} embedded promptRequest={agentPrompt?.sessionId === id ? agentPrompt : undefined} /></div>
         <div ref={ledgerSection} role="region" aria-label="模拟盘账本" className="min-w-0 space-y-4 scroll-mt-12">
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ui-line bg-ui-panel/70 px-4 py-3 text-xs text-ui-muted"><span className="rounded-full bg-ui-accent/10 px-2 py-1 text-ui-accent">Paper · {status.data?.kind === "composite" ? "组合策略" : "单策略"}</span><span>最新快照 · {snapshot?.as_of_date ?? "尚未推进"}</span><span>唯一模拟账本：StockManager</span></div>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ui-line bg-ui-panel/70 px-4 py-3 text-xs text-ui-muted"><span className="rounded-full bg-ui-accent/10 px-2 py-1 text-ui-accent">Paper · {status.data?.kind === "composite" ? "组合策略" : "单策略"}</span><span>最新快照 · {snapshot?.as_of_date ?? "尚未推进"}</span><div className="flex items-center gap-3"><span>唯一模拟账本：StockManager</span>{!isCompositeChild && <button type="button" onClick={chooseToday} className="whitespace-nowrap font-medium text-ui-accent hover:underline">选择今天推进 →</button>}</div></div>
         <section className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
           <div className={card}><p className="text-xs text-ui-muted">总权益</p><p className="mt-2 text-xl font-semibold">{money(snapshot?.equity)}</p><p className="mt-1 text-xs text-ui-faint">截至 {snapshot?.as_of_date ?? "尚未推进"}</p></div>
           <div className={card}><p className="text-xs text-ui-muted">累计收益</p><p className="mt-2 text-xl font-semibold">{percent(returnPct)}</p><p className="mt-1 text-xs text-ui-faint">初始 {money(initialCash)}</p></div>
@@ -343,7 +352,7 @@ export default function Paper() {
 
         <TradesCard key={id} trades={trades.data} totalCount={status.data?.trades_count} />
 
-        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}>{!isCompositeChild && <><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}</>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
+        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}>{!isCompositeChild && <><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}<p className="w-full text-xs text-ui-faint">目标日期是推进上限；实际账本日以 StockManager 返回为准。若当日行情尚未就绪，账本可能停在此前交易日。</p></>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
         </div>
         </div>
       </>}

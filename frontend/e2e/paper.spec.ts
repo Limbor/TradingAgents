@@ -34,7 +34,9 @@ test("composite paper compares account, two sleeves and SSE while exposing ledge
         { code: "000001.SZ", name: "平安银行", action: "SKIP", diff_value: 0, reason: "交易约束" }] };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
-  await mockAgentTasks(page);
+  await mockAgentTasks(page, "已核对模拟盘账本。", [
+    "Authoritative unified executable ledger. Sleeve curves are read-only allocator signals, not account equity.",
+  ]);
 
   await page.goto("/paper?session=paper%3Acomparison");
   const legend = page.getByLabel("收益曲线图例");
@@ -42,6 +44,23 @@ test("composite paper compares account, two sleeves and SSE while exposing ledge
   await expect(legend.getByRole("button", { name: /wfo_max_cagr/ })).toContainText("+5.00%");
   await expect(legend.getByRole("button", { name: /csi800_breakout/ })).toContainText("-2.00%");
   await expect(legend.getByRole("button", { name: /上证指数/ })).toContainText("+2.00%");
+  await page.getByRole("button", { name: "选择今天推进" }).click();
+  await expect(page.getByLabel("推进至交易日")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
+  await page.getByRole("button", { name: "总结当前权益、持仓和近期成交" }).click();
+  await expect(page.getByText("已核对模拟盘账本。", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
+  const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
+  await expect(inspector).toBeVisible();
+  const drawerLayout = await inspector.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const content = element.children[1] as HTMLElement;
+    const topmost = document.elementFromPoint(bounds.right - 12, bounds.top + 120);
+    return { portalled: element.parentElement === document.body, abovePage: element.contains(topmost),
+      withinViewport: bounds.bottom <= window.innerHeight, noHorizontalOverflow: content.scrollWidth <= content.clientWidth + 1 };
+  });
+  expect(drawerLayout).toEqual({ portalled: true, abovePage: true, withinViewport: true, noHorizontalOverflow: true });
+  if (process.env.CAPTURE_INSPECTOR_QA) await page.screenshot({ path: "test-results/paper-inspector.png" });
+  await page.getByRole("button", { name: "收起任务档案" }).click();
   if (process.env.CAPTURE_PAPER_QA) {
     await page.getByRole("img", { name: /累计收益对比/ }).scrollIntoViewIfNeeded();
     await page.mouse.move(0, 0);

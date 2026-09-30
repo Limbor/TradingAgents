@@ -2,7 +2,7 @@ import type { Page } from "@playwright/test";
 
 const timestamp = "2026-09-25T08:00:00Z";
 
-export async function mockAgentTasks(page: Page, answer: string | ((paperId: string | null) => string) = "已核对模拟盘账本。") {
+export async function mockAgentTasks(page: Page, answer: string | ((paperId: string | null) => string) = "已核对模拟盘账本。", evidenceWarnings: string[] = []) {
   const conversations: Array<{ id: string; title: string; paper_session_id: string | null; created_at: string; updated_at: string; latest_status: string | null }> = [];
   const messages = new Map<string, Array<Record<string, unknown>>>();
   const tasks = new Map<string, Array<Record<string, unknown>>>();
@@ -36,7 +36,7 @@ export async function mockAgentTasks(page: Page, answer: string | ((paperId: str
           const taskId = `task-${submissions.length}`;
           const evidence = { id: `evidence-${submissions.length}`, task_id: taskId, tool_name: conversation.paper_session_id ? "get_paper_session" : "get_portfolio_summary",
             source: conversation.paper_session_id ? "StockManager ledger" : "local_db", as_of_date: "2026-09-25", retrieved_at: timestamp,
-            summary: conversation.paper_session_id ? "模拟盘账本" : "手工持仓 1 只", warnings: [], result: {} };
+            summary: conversation.paper_session_id ? "模拟盘账本" : "手工持仓 1 只", warnings: evidenceWarnings, result: {} };
           const task = { id: taskId, conversation_id: id, goal: request.message, status: "completed", result: { content: reply, citations: [evidence], read_only: true },
             error: null, created_at: timestamp, updated_at: timestamp,
             events: [{ task_id: taskId, seq: 1, event_type: "plan_created", payload: { steps: [{ id: "paper", label: "读取账户数据" }] }, created_at: timestamp },
