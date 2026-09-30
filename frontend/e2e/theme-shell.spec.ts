@@ -1,5 +1,25 @@
 import { expect, test } from "@playwright/test";
 
+test("desktop sidebar names each icon on hover", async ({ page }) => {
+  await page.route("**/api/v1/**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
+  await page.goto("/chat");
+
+  const navigation = page.getByRole("navigation", { name: "主导航" });
+  const agentLink = navigation.getByRole("link", { name: "交易 Agent" });
+  const tooltip = agentLink.locator("span");
+  await expect(tooltip).toBeHidden();
+  await agentLink.hover();
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toHaveText("交易 Agent");
+  const bounds = await tooltip.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThan(56);
+  expect(bounds!.x + bounds!.width).toBeLessThan(page.viewportSize()!.width);
+
+  await navigation.getByRole("link", { name: "模拟盘" }).hover();
+  await expect(tooltip).toBeHidden();
+});
+
 test("workspace theme applies to Agent, research, and paper pages", async ({ page }) => {
   await page.addInitScript(() => {
     if (!window.sessionStorage.getItem("theme-test-started")) {
