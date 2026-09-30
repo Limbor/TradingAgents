@@ -50,8 +50,12 @@ _STOCK_REFERENCE = re.compile(
 )
 _MAX_EVIDENCE_CHARS = 60_000
 _MAX_PLAN_STEPS = 4
-_ADVANCE_TARGET = re.compile(r"推进(?:(?:组合|策略)?模拟盘)?(?:至|到)\s*(\d{4}-\d{2}-\d{2})")
-_ADVANCE_TODAY = re.compile(r"推进(?:(?:组合|策略)?模拟盘)?(?:至|到)\s*(今天|今日)")
+_ADVANCE_PREFIX = r"推进(?:(?:组合|策略)?模拟盘)?(?:至|到)\s*"
+_ADVANCE_INTENT = re.compile(_ADVANCE_PREFIX + r"\S")
+_ADVANCE_TARGET = re.compile(_ADVANCE_PREFIX + r"(\d{4}-\d{2}-\d{2})")
+_ADVANCE_CHINESE_DATE = re.compile(_ADVANCE_PREFIX + r"(\d{4})年(\d{1,2})月(\d{1,2})(?:日|号)")
+_ADVANCE_SHORT_DATE = re.compile(_ADVANCE_PREFIX + r"(?:(\d{1,2})月)?(\d{1,2})(?:日|号)")
+_ADVANCE_TODAY = re.compile(_ADVANCE_PREFIX + r"(今天|今日)")
 _ADVANCE_NON_ACTION = re.compile(
     r"(?:不要|别|无需|不需要|取消|如何|怎么|为什么|能否|能不能|是否|可不可以|不能|不可以|无法|没法|已经).{0,12}推进"
 )
@@ -1435,7 +1439,7 @@ class TradingAgentHarness:
                             "steps": [retry], "reason": "证据日期与账户或当前市场基准日冲突，只读重试一次",
                         })
                     if (step_index == len(plan) and not replanned and
-                            not self._advance_target(goal, paper_session_id) and
+                            not self._is_advance_request(goal, paper_session_id) and
                             any(item["result"].get("error") for item in _latest_evidence(evidence)) and
                             not (paper_session_id and any(
                                 item["tool_name"] == "get_paper_session" and item["result"].get("error")
@@ -1453,8 +1457,8 @@ class TradingAgentHarness:
                 enforce_budget()
                 self.store.set_status(task_id, "reviewing")
                 self.store.event(task_id, "review_started", {"evidence_count": len(evidence)})
-                advance_target = self._advance_target(goal, conversation.get("paper_session_id"))
-                if advance_target and evidence and not evidence[0]["result"].get("error"):
+                advance_requested = self._is_advance_request(goal, conversation.get("paper_session_id"))
+                if advance_requested and evidence and not evidence[0]["result"].get("error"):
                     session = evidence[0]["result"].get("session") or {}
                     if (session.get("params") or {}).get("composite_child") is True:
                         content = ("该账户是组合模拟盘的子策略账本，只能随所属组合推进。"
@@ -1465,6 +1469,25 @@ class TradingAgentHarness:
                         self.store.event(task_id, "action_blocked", {"reason": "composite_child"})
                         return
                     baseline_date = evidence[0]["as_of_date"]
+                    advance_target = self._advance_target(
+                        goal, conversation.get("paper_session_id"), baseline_date
+                    )
+                    if not advance_target:
+                        content = (f"无法从“{goal}”唯一确定目标日期。当前账本日为 {baseline_date or '未知'}，"
+                                   f"北京时间今天为 {_shanghai_today()}。请明确写出“推进到 YYYY-MM-DD”。")
+                        self.store.add_message(conversation["id"], "assistant", content, task_id)
+                        self.store.set_status(task_id, "needs_input", result={"content": content})
+                        self.store.event(task_id, "task_needs_input", {
+                            "content": content, "reason": "advance_target_date",
+                        })
+                        return
+                    if not _ADVANCE_TARGET.search(goal):
+                        self.store.event(task_id, "target_date_resolved", {
+                            "target_date": advance_target,
+                            "source": ("explicit_date" if _ADVANCE_CHINESE_DATE.search(goal)
+                                       else "ledger_bounded_date"),
+                            "ledger_date": baseline_date, "timezone": "Asia/Shanghai",
+                        })
                     if not baseline_date or advance_target <= baseline_date:
                         content = ("无法准备推进操作：当前账本基准日未知或目标日期没有晚于基准日。"
                                    "请核对模拟盘日期后重新提出请求。")
@@ -1498,9 +1521,18 @@ class TradingAgentHarness:
                         })
                         return
                     enforce_budget()
+                    action_step = {"id": "advance-proposal", "label": "核对日期并准备模拟盘推进提案",
+                                   "tool": "prepare_paper_advance", "args": {"target_date": advance_target}}
+                    self.store.event(task_id, "plan_revised", {
+                        "steps": [action_step], "reason": "账本与目标日期已核对，准备需要确认的操作提案",
+                    })
+                    self.store.event(task_id, "step_started", action_step)
                     proposal = self.store.create_proposal(
                         task_id, conversation["paper_session_id"], advance_target, baseline
                     )
+                    self.store.event(task_id, "step_completed", {
+                        "id": action_step["id"], "status": "completed",
+                    })
                     content = (f"已根据 {baseline_date} 的账本准备尝试推进至 {advance_target}。"
                                "请核对右侧动作卡中的账户和日期，再决定是否执行；"
                                "实际推进结果以 StockManager 完成后的账本为准。")
@@ -1636,17 +1668,51 @@ class TradingAgentHarness:
         return bool(re.search(rf"{ability}.{{0,8}}{action}|{action}.{{0,8}}{ability}", goal))
 
     @staticmethod
-    def _advance_target(goal: str, paper_session_id: str | None) -> str | None:
+    def _is_advance_request(goal: str, paper_session_id: str | None) -> bool:
+        return bool(paper_session_id and not _ADVANCE_NON_ACTION.search(goal) and
+                    not goal.rstrip().endswith(("?", "？", "吗", "么")) and
+                    _ADVANCE_INTENT.search(goal))
+
+    @staticmethod
+    def _advance_target(goal: str, paper_session_id: str | None,
+                        baseline_date: str | None = None) -> str | None:
         if (not paper_session_id or _ADVANCE_NON_ACTION.search(goal) or
                 goal.rstrip().endswith(("?", "？", "吗", "么"))):
             return None
         match = _ADVANCE_TARGET.search(goal)
-        if not match:
+        if match:
+            try:
+                return date.fromisoformat(match.group(1)).isoformat()
+            except ValueError:
+                return None
+        match = _ADVANCE_CHINESE_DATE.search(goal)
+        if match:
+            try:
+                return date(*(int(part) for part in match.groups())).isoformat()
+            except ValueError:
+                return None
+        match = _ADVANCE_SHORT_DATE.search(goal)
+        if not match or not baseline_date:
             return None
         try:
-            return date.fromisoformat(match.group(1)).isoformat()
+            baseline = date.fromisoformat(baseline_date)
+            today = date.fromisoformat(_shanghai_today())
+            month = int(match.group(1)) if match.group(1) else None
+            day = int(match.group(2))
         except ValueError:
             return None
+        # A short date is safe only when exactly one day matches the known
+        # ledger-to-today interval. Never let a model guess the month or year.
+        candidates: list[date] = []
+        for year in range(baseline.year, today.year + 1):
+            for candidate_month in ([month] if month is not None else range(1, 13)):
+                try:
+                    candidate = date(year, candidate_month, day)
+                except ValueError:
+                    continue
+                if baseline < candidate <= today:
+                    candidates.append(candidate)
+        return candidates[0].isoformat() if len(candidates) == 1 else None
 
     async def _build_plan(self, goal: str, paper_session_id: str | None,
                           intent_hint: dict | None, *,
@@ -1654,7 +1720,7 @@ class TradingAgentHarness:
                           model: str | None = None) -> tuple[list[dict], str]:
         fallback = self._plan(goal, paper_session_id, intent_hint, tickers=tickers)
         if (not self.config.get("agent_model_planning_enabled", True) or
-                self._advance_target(goal, paper_session_id) or
+                self._is_advance_request(goal, paper_session_id) or
                 (intent_hint or {}).get("skill_id")):
             return fallback, "rules"
         proposed = await self._request_model_plan(goal, paper_session_id,
@@ -1845,7 +1911,7 @@ class TradingAgentHarness:
         elif any(word in goal for word in _HOLDING_WORDS):
             plan.append({"id": "portfolio", "label": "读取当前手工持仓",
                          "tool": "get_portfolio_summary", "args": {}})
-        if not self._advance_target(goal, paper_session_id):
+        if not self._is_advance_request(goal, paper_session_id):
             for ticker in goal_tickers:
                 if self._needs_factor(goal):
                     plan.append({"id": f"factor-{ticker}", "label": f"读取 {ticker} 因子快照",
@@ -1854,7 +1920,7 @@ class TradingAgentHarness:
                     plan.append({"id": f"announcements-{ticker}",
                                  "label": f"扫描 {ticker} 风险公告关键词",
                                  "tool": "get_mcp_risk_announcements", "args": {"ts_code": ticker}})
-        if (not self._advance_target(goal, paper_session_id) and
+        if (not self._is_advance_request(goal, paper_session_id) and
                 len(plan) < _MAX_PLAN_STEPS and self._asks_artifacts(goal)):
             # Artifact search is advisory context. It is never a substitute
             # for the current paper ledger or a fresh account snapshot.
