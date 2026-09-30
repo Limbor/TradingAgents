@@ -2715,6 +2715,42 @@ async def test_restart_never_replays_submitted_paper_action(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_running_job_reports_progress_then_finishes_without_reposting(tmp_path, monkeypatch):
+    harness, store, task, proposal = await _proposed_advance(tmp_path)
+    assert store.claim_proposal(proposal["id"])
+    store.set_proposal_status(proposal["id"], "unknown", {
+        "job_id": "job:slow", "error": "推进任务仍在运行，请核对",
+    })
+    store.set_status(task["id"], "needs_review")
+    job_state = "running"
+    calls = []
+
+    async def paper_request(config, method, path, payload=None):
+        calls.append((method, path))
+        if path == "/api/jobs/job:slow":
+            if job_state == "running":
+                return {"state": "running", "progress": 74}
+            return {"state": "success", "result": {"data": {
+                "session_id": "paper:advance", "last_date": "2026-09-28", "advanced_days": 1,
+            }}}
+        ledger = _paper_status("2026-09-28", equity=101_000, cash=101_000)["data"]
+        ledger["advance_operation"] = {"job_id": "job:slow", "state": "completed"}
+        return {"data": ledger}
+
+    monkeypatch.setattr("tradingagents.core.stockmanager_paper.paper_request", paper_request)
+    running = await harness.reconcile(proposal["id"])
+    assert running["status"] == "unknown"
+    assert running["result"]["job_state"] == "running"
+    assert running["result"]["job_progress"] == 74
+    assert "error" not in running["result"]
+    job_state = "success"
+    finished = await harness.reconcile(proposal["id"])
+    assert finished["status"] == "completed"
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert all(method == "GET" for method, _ in calls)
+
+
+@pytest.mark.asyncio
 async def test_reconcile_submitted_job_after_restart_without_reposting(tmp_path, monkeypatch):
     _, store, task, proposal = await _proposed_advance(tmp_path)
     assert store.claim_proposal(proposal["id"])

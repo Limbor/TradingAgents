@@ -53,7 +53,13 @@ export default function Paper() {
   const allocatorOptions = Array.isArray(allocators.data) ? allocators.data : [];
   const listed = selected ? rows.find((row) => row.session_id === selected) : undefined;
   const requestedId = selected || rows[0]?.session_id || "";
-  const status = useQuery({ queryKey: [...queryKeys.paperSession(requestedId), "status"], queryFn: () => getPaperStatus(requestedId), enabled: !!requestedId, retry: false });
+  const status = useQuery({
+    queryKey: [...queryKeys.paperSession(requestedId), "status"],
+    queryFn: () => getPaperStatus(requestedId), enabled: !!requestedId, retry: false,
+    refetchInterval: (query) => query.state.status === "error" || ["queued", "running", "needs_review"].includes(
+      query.state.data?.advance_operation?.state ?? "",
+    ) ? 15_000 : false,
+  });
   const direct = selected && !listed && status.data?.session?.session_id === selected
     ? status.data.session : undefined;
   const active = selected ? listed ?? direct : rows[0];
@@ -69,6 +75,15 @@ export default function Paper() {
   }, [id]);
   const serverOperation = status.data?.advance_operation;
   const serverLocked = !!serverOperation && ["queued", "running", "needs_review"].includes(serverOperation.state);
+  useEffect(() => {
+    if (!id || !job || job.sessionId !== id || job.state !== "error" ||
+        serverOperation?.job_id !== job.job_id ||
+        !["completed", "reviewed"].includes(serverOperation.state)) return;
+    window.localStorage.removeItem(`paper-advance-job:${id}`);
+    window.localStorage.removeItem(`paper-advance-request:${id}`);
+    setJob(null);
+    setError((previous) => previous.startsWith("账本无法复读") ? "" : previous);
+  }, [id, job, serverOperation]);
   const curve = useQuery({ queryKey: [...queryKeys.paperSession(id), "equity"], queryFn: () => getPaperCurve(id), enabled: !!id, retry: false });
   const trades = useQuery({ queryKey: [...queryKeys.paperSession(id), "trades"], queryFn: () => getPaperTrades(id), enabled: !!id, retry: false });
   const plan = useQuery({ queryKey: [...queryKeys.paperSession(id), "plan"], queryFn: () => getPaperPlan(id), enabled: !!id, retry: false });

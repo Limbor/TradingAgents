@@ -1034,8 +1034,11 @@ class TradingAgentHarness:
                           "receipt_state": receipt_state, "observed_date": observed_date,
                           "observed_state_fingerprint": observed_fingerprint,
                           "baseline_state_unchanged": unchanged_account,
-                          "job_state": state, "job_error": job_error, "ledger_error": ledger_error,
+                          "job_state": state, "job_progress": job.get("progress") if job else None,
+                          "job_error": job_error, "ledger_error": ledger_error,
                           "checked_at": _now()}
+                if state in {"queued", "running"} and not ledger_error:
+                    result.pop("error", None)
                 if composite_failed:
                     result["error"] = review_reason
                     result["job_message"] = str(job.get("message") or "")[:500]

@@ -139,6 +139,9 @@ function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile,
   if (!proposal) return null;
   const childLedgers = Array.isArray(proposal.result.child_ledgers)
     ? proposal.result.child_ledgers.map(asObject).filter((item) => typeof item.session_id === "string") : [];
+  const jobState = proposal.result.job_state;
+  const jobRunning = jobState === "queued" || jobState === "running";
+  const jobProgress = typeof proposal.result.job_progress === "number" ? proposal.result.job_progress : null;
   return <div className="mt-4 overflow-hidden rounded-lg border border-ui-line bg-ui-panel text-sm">
     <div className="flex items-center justify-between gap-2 border-b border-ui-line px-4 py-3"><strong className="text-xs font-medium">模拟盘动作预览</strong><span className="shrink-0 rounded-full bg-ui-accentSoft px-2 py-1 text-xs text-ui-accent">{proposalStatusText[proposal.status] ?? proposal.status}</span></div>
     <div className="p-4">
@@ -155,9 +158,13 @@ function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile,
     {proposal.status === "no_change" && <p role="status" className="mt-3 text-xs leading-5 text-ui-warning">StockManager 作业已结束，但账本日期仍为 {String(proposal.result.as_of_date || proposal.baseline.as_of_date)}；目标日期 {proposal.args.target_date} 尚未达到。</p>}
     {proposal.status === "stale" && <p role="status" className="mt-3 text-xs leading-5 text-ui-warning">确认前账户账本已变化，原提案失效且未执行。请重新核对账户后提出请求。</p>}
     {(proposal.status === "unknown" || task.status === "needs_review") && <div className="mt-3 space-y-2 text-xs text-ui-warning">
-      <p>执行结果待核对{proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。</p>
+      <p>{jobRunning
+        ? `StockManager 作业仍在运行${jobProgress === null ? "" : `（${jobProgress}%）`}；完成后会自动核对。请勿重复提交。`
+        : `执行结果待核对${proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。`}</p>
       {typeof proposal.result?.observed_date === "string" && <p>最近核对的账本日期：{proposal.result.observed_date}</p>}
       {typeof proposal.result?.error === "string" && <p>{proposal.result.error}</p>}
+      {typeof proposal.result?.job_error === "string" && <p>作业状态暂不可读：{proposal.result.job_error}</p>}
+      {typeof proposal.result?.ledger_error === "string" && <p>账本暂不可读：{proposal.result.ledger_error}</p>}
       {(childLedgers.length > 0 || typeof proposal.result.child_audit_error === "string") && <div className="rounded border border-ui-warning/40 p-2">
         <strong className="block font-medium">子策略账本核对</strong>
         {childLedgers.map((item) => <div key={String(item.session_id)} className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -170,7 +177,7 @@ function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile,
         {typeof proposal.result.child_audit_error === "string" && <p className="mt-2">{proposal.result.child_audit_error}</p>}
       </div>}
       <div className="flex flex-wrap gap-2"><button disabled={busy} onClick={onReconcile} className="whitespace-nowrap rounded-md border border-ui-warning px-3 py-2 font-medium disabled:opacity-50">核对执行结果</button>
-      <button disabled={busy} onClick={onCloseReview} className="whitespace-nowrap rounded-md border border-ui-warning px-3 py-2 font-medium disabled:opacity-50">已核对账本，关闭提案</button></div>
+      {!jobRunning && <button disabled={busy} onClick={onCloseReview} className="whitespace-nowrap rounded-md border border-ui-warning px-3 py-2 font-medium disabled:opacity-50">已核对账本，关闭提案</button>}</div>
     </div>}
     {proposal.status === "reviewed" && <p role="status" className="mt-3 text-xs text-ui-muted">人工核对已记录。账本日期：{String(proposal.result.reviewed_date || "未知")}。此记录不代表作业成功。</p>}
     </div>
@@ -314,12 +321,32 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     ? paperDisplayName(paperStatus.data.session.config_name, paperStatus.data.session.strategy, paperStatus.data.kind === "composite")
     : "模拟盘账户";
   const latestTask = detail.data?.tasks[detail.data.tasks.length - 1];
+  const uncertainProposal = latestTask?.proposal?.status === "unknown" ? latestTask.proposal : null;
+  const uncertainJobState = uncertainProposal?.result.job_state;
+  const uncertainJobId = uncertainProposal?.result.job_id;
   const streamTaskId = latestTask && streamingStatuses.has(latestTask.status) ? latestTask.id : null;
   const inspectedTask = detail.data?.tasks.find((task) => task.id === inspectedTaskId) ?? latestTask;
   const running = Boolean(latestTask && activeStatuses.has(latestTask.status));
   const listedCurrent = scoped.find((item) => item.id === currentId);
   const legacyArchive = Boolean((detail.data?.id === currentId ? detail.data.legacy_archive : undefined) ?? listedCurrent?.legacy_archive);
   const messages = detail.data?.messages ?? [];
+
+  useEffect(() => {
+    if (!currentId || !uncertainProposal?.id || typeof uncertainJobId !== "string" ||
+        (uncertainJobState && uncertainJobState !== "queued" && uncertainJobState !== "running")) return;
+    let checking = false;
+    const timer = window.setInterval(async () => {
+      if (checking || document.visibilityState === "hidden") return;
+      checking = true;
+      try {
+        await reconcileAgentProposal(uncertainProposal.id);
+        await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] });
+        await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
+      } catch { /* Keep the manual check available when StockManager is temporarily offline. */ }
+      finally { checking = false; }
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [currentId, uncertainProposal?.id, uncertainJobId, uncertainJobState, queryClient]);
 
   const selectConversation = useCallback((id: string) => {
     setSelectedId(id);

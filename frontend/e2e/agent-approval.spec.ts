@@ -101,6 +101,46 @@ test("uncertain paper action can be reconciled without another approval", async 
   await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
 });
 
+test("running paper job is checked automatically and clears the review card when complete", async ({ page }) => {
+  const time = "2026-09-30T08:00:00Z";
+  let checks = 0;
+  let completed = false;
+  const conversation = { id: "slow-conversation", title: "模拟盘", paper_session_id: "paper:slow",
+    created_at: time, updated_at: time, latest_status: completed ? "completed" : "needs_review" };
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/agent/conversations") body = [conversation];
+    else if (path === "/api/v1/agent/conversations/slow-conversation") body = {
+      ...conversation,
+      messages: [{ id: "m1", conversation_id: conversation.id, task_id: "slow-task", role: "user",
+        content: "推进到 2026-09-30", created_at: time }],
+      tasks: [{ id: "slow-task", conversation_id: conversation.id, goal: "推进到 2026-09-30",
+        status: completed ? "completed" : "needs_review", result: {}, error: null,
+        created_at: time, updated_at: time, events: [], evidence: [], proposal: {
+          id: "slow-proposal", task_id: "slow-task", action_type: "advance_paper_day",
+          session_id: "paper:slow", args: { target_date: "2026-09-30" },
+          baseline: { as_of_date: "2026-09-29", equity: 109000 },
+          status: completed ? "completed" : "unknown",
+          result: completed ? { as_of_date: "2026-09-30", equity: 110000, advanced_days: 1 }
+            : { job_id: "job:slow", job_state: "running", job_progress: 74 },
+          expires_at: time,
+        } }],
+    };
+    else if (path === "/api/v1/agent/proposals/slow-proposal/reconcile") {
+      checks += 1;
+      completed = true;
+      body = { status: "completed" };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/chat?paper_session=paper%3Aslow");
+  await expect(page.getByText("StockManager 作业仍在运行（74%）", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "已核对账本，关闭提案" })).toHaveCount(0);
+  await expect.poll(() => checks, { timeout: 20_000 }).toBeGreaterThan(0);
+  await expect(page.getByText("执行后账本")).toBeVisible();
+});
+
 test("reviewed ledger can close an uncertain Agent proposal", async ({ page }) => {
   const time = "2026-09-25T08:00:00Z";
   let closed = false;
