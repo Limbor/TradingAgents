@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { MessageSquareText, RefreshCw } from "lucide-react";
 import {
   acknowledgePaperAdvanceReview, advancePaper, createPaperSession, getPaperAdvanceReceipt, getPaperCurve, getPaperJob, getPaperPlan,
@@ -11,14 +10,17 @@ import {
 import { queryKeys } from "@/api/queryKeys";
 import { ApiHttpError } from "@/api/client";
 import { CompositeDecision } from "./CompositeDecision";
+import { PerformanceChart } from "./PerformanceChart";
+import { HoldingsCard, TradesCard } from "./AccountDetails";
+import { PlanCard } from "./PlanCard";
 import Chat from "../AgentWorkspace";
 
 const money = (value: number | null | undefined) =>
-  value == null ? "—" : `¥${Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
+  value == null || !Number.isFinite(value) ? "—" : `¥${value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
+const signedMoney = (value: number | null) =>
+  value == null ? "—" : value === 0 ? money(0) : `${value > 0 ? "+" : "-"}${money(Math.abs(value))}`;
 const percent = (value: number | null | undefined) =>
-  value == null ? "—" : `${(value * 100).toFixed(2)}%`;
-const chartDate = (value: string | number) => String(value).slice(0, 10);
-const axisDate = (value: string | number) => chartDate(value).slice(5);
+  value == null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(2)}%`;
 const card = "rounded-xl border border-ui-line bg-ui-panel p-4";
 type ActiveJob = PaperJob & { sessionId: string };
 
@@ -256,10 +258,18 @@ export default function Paper() {
   };
 
   const snapshot = status.data?.snapshot;
-  const positions = Object.entries(snapshot?.positions ?? {});
-  const daily = curve.data?.daily_records ?? [];
+  const positionsCount = Object.keys(snapshot?.positions ?? {}).length;
   const initialCash = status.data?.session?.initial_cash ?? active?.initial_cash ?? 0;
   const returnPct = snapshot && initialCash > 0 ? snapshot.equity / initialCash - 1 : null;
+  const recordedEquity = [...(curve.data?.daily_records ?? [])]
+    .filter((record) => Number.isFinite(record.equity) && record.equity > 0 && record.date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const latestEquity = recordedEquity[recordedEquity.length - 1];
+  const previousEquity = recordedEquity[recordedEquity.length - 2];
+  const dayChange = latestEquity && previousEquity && latestEquity.date.slice(0, 10) === snapshot?.as_of_date
+    ? latestEquity.equity - previousEquity.equity : null;
+  const dayChangePct = dayChange != null && previousEquity && previousEquity.equity > 0
+    ? dayChange / previousEquity.equity : null;
   const connectionError = sessions.error instanceof Error ? sessions.error.message : "";
   const sectionError = [...(missingSession ? [] : [status]), curve, trades, plan]
     .map((query) => query.error instanceof Error ? query.error.message : "")
@@ -317,23 +327,21 @@ export default function Paper() {
         <section className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
           <div className={card}><p className="text-xs text-ui-muted">总权益</p><p className="mt-2 text-xl font-semibold">{money(snapshot?.equity)}</p><p className="mt-1 text-xs text-ui-faint">截至 {snapshot?.as_of_date ?? "尚未推进"}</p></div>
           <div className={card}><p className="text-xs text-ui-muted">累计收益</p><p className="mt-2 text-xl font-semibold">{percent(returnPct)}</p><p className="mt-1 text-xs text-ui-faint">初始 {money(initialCash)}</p></div>
-          <div className={card}><p className="text-xs text-ui-muted">现金</p><p className="mt-2 text-xl font-semibold">{money(snapshot?.cash)}</p><p className="mt-1 text-xs text-ui-faint">{positions.length} 只持仓</p></div>
-          <div className={card}><p className="text-xs text-ui-muted">成交笔数</p><p className="mt-2 text-xl font-semibold">{status.data?.trades_count ?? "—"}</p><p className="mt-1 text-xs text-ui-faint">{status.data?.kind === "composite" ? "组合策略" : "单策略"}</p></div>
+          <div className={card}><p className="text-xs text-ui-muted">现金</p><p className="mt-2 text-xl font-semibold">{money(snapshot?.cash)}</p><p className="mt-1 text-xs text-ui-faint">{positionsCount} 只持仓</p></div>
+          <div className={card}><p className="text-xs text-ui-muted">最近账本日变动</p><p className="mt-2 text-xl font-semibold tabular-nums">{signedMoney(dayChange)}</p><p className="mt-1 text-xs text-ui-faint">{snapshot?.as_of_date ?? "—"} · {dayChangePct == null ? "无前一日记录" : `${dayChangePct >= 0 ? "+" : ""}${percent(dayChangePct)}`}</p></div>
         </section>
 
-        <section className={card}>
-          <div className="mb-3 flex items-center justify-between"><h2 className="font-medium">净值曲线</h2><span className="text-xs text-ui-faint">{daily.length} 个交易日</span></div>
-          {daily.length > 0 ? <div className="h-56"><ResponsiveContainer width="100%" height="100%"><LineChart data={daily}><CartesianGrid stroke="rgb(var(--ui-line))" strokeDasharray="3 3" /><XAxis dataKey="date" tick={{ fill: "rgb(var(--ui-muted))", fontSize: 12 }} tickFormatter={axisDate} minTickGap={48} /><YAxis tick={{ fill: "rgb(var(--ui-muted))", fontSize: 12 }} domain={["auto", "auto"]} width={75} /><Tooltip contentStyle={{ backgroundColor: "rgb(var(--ui-panel))", color: "rgb(var(--ui-ink))", border: "1px solid rgb(var(--ui-strong))", borderRadius: 6 }} labelFormatter={chartDate} formatter={(value) => money(Number(value))} /><Line type="monotone" dataKey="equity" stroke="rgb(var(--ui-accent))" strokeWidth={2} dot={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div> : <p className="py-8 text-center text-sm text-ui-faint">推进到交易日后显示净值曲线</p>}
-        </section>
+        <PerformanceChart curve={curve.data} status={status.data} />
 
-        <div className="grid gap-4 2xl:grid-cols-2">
-          <section className={card}><div className="mb-3 flex items-center justify-between"><h2 className="font-medium">当前持仓</h2><button className="text-xs text-ui-accent" onClick={() => askAgent("分析这个模拟盘的当前持仓和风险")}>问 Agent</button></div>{positions.length ? <div className="overflow-x-auto"><table className="w-full min-w-[650px] text-left text-sm"><thead className="text-xs text-ui-faint"><tr><th className="pb-2">标的</th><th>数量</th><th>成本 / 现价</th><th>市值 / 权重</th><th>浮动盈亏</th><th>当日盈亏</th></tr></thead><tbody>{positions.map(([code, pos]) => <tr key={code} className="border-t border-ui-line"><td className="py-2">{pos.name || code}<span className="block text-xs text-ui-faint">{code}</span></td><td>{pos.shares}</td><td>{money(pos.avg_cost)}<span className="block text-xs text-ui-faint">{money(pos.last_price)}</span></td><td>{money(pos.value)}<span className="block text-xs text-ui-faint">{snapshot?.equity ? percent(pos.value / snapshot.equity) : "—"}</span></td><td>{money((pos.last_price - pos.avg_cost) * pos.shares)}</td><td>{money(pos.day_pnl)}</td></tr>)}</tbody></table></div> : <p className="text-sm text-ui-faint">暂无持仓</p>}</section>
-          <section className={card}><div className="mb-3 flex items-center justify-between"><h2 className="font-medium">下一日计划</h2><button className="text-xs text-ui-accent" onClick={() => askAgent("解释这个模拟盘的下一日计划及依据")}>问 Agent</button></div><p className="mb-2 text-xs text-ui-faint">信号日期 {plan.data?.signal_date ?? "—"}{plan.data?.active_sleeve ? ` · 当前子策略 ${plan.data.active_sleeve}` : ""}</p>{plan.data?.reason && <p className="mb-2 text-sm text-ui-body">{plan.data.reason}</p>}{plan.data?.items?.length ? <div className="space-y-2">{plan.data.items.map((item, index) => <div key={`${item.code}-${index}`} className="rounded border border-ui-line p-2 text-sm"><span className="font-medium text-ui-accent">{item.action}</span> {item.name || item.code} <span className="text-ui-faint">{item.code}</span><p className="text-xs text-ui-muted">{item.reason || `预计变化 ${money(item.diff_value)}`}</p></div>)}</div> : <p className="text-sm text-ui-faint">{plan.isLoading ? "正在读取计划…" : plan.data ? "当前信号无调仓动作" : "尚无计划"}</p>}</section>
+        <div className="grid gap-4">
+          <HoldingsCard snapshot={snapshot} onAsk={() => askAgent("分析这个模拟盘的当前持仓和风险")} />
+          <PlanCard key={id} plan={plan.data} status={status.data} loading={plan.isLoading}
+            onAsk={() => askAgent("解释这个模拟盘的下一日计划及依据")} />
         </div>
 
         {status.data?.kind === "composite" && <CompositeDecision status={status.data} onAsk={() => askAgent("为什么这个组合策略选择或切换了当前子策略？请用模拟盘决策和成交解释")} />}
 
-        <section className={card}><h2 className="mb-3 font-medium">最近成交</h2>{trades.data?.length ? <div className="max-h-72 overflow-auto"><table className="w-full text-left text-sm"><thead className="text-xs text-ui-faint"><tr><th>日期</th><th>标的</th><th>方向</th><th>数量</th><th>价格</th></tr></thead><tbody>{trades.data.slice(0, 30).map((trade, index) => <tr key={index} className="border-t border-ui-line"><td className="py-2">{trade.trade_date}</td><td>{trade.name || trade.code}</td><td>{trade.side}</td><td>{trade.shares}</td><td>{money(trade.price)}</td></tr>)}</tbody></table></div> : <p className="text-sm text-ui-faint">暂无成交</p>}</section>
+        <TradesCard key={id} trades={trades.data} totalCount={status.data?.trades_count} />
 
         <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}>{!isCompositeChild && <><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}</>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
         </div>

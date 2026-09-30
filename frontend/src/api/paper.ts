@@ -27,6 +27,7 @@ export interface PaperPosition {
   last_price: number;
   value: number;
   day_pnl?: number | null;
+  day_pnl_pct?: number | null;
 }
 
 export interface PaperStatus {
@@ -82,6 +83,7 @@ export interface PaperStatus {
     equity?: number | null;
     last_date?: string | null;
   }>;
+  sleeve_curves?: Record<string, Array<{ date: string; equity: number }>>;
   caveat?: string;
 }
 
@@ -98,6 +100,7 @@ export interface PaperTrade {
   shares: number;
   price: number;
   amount: number;
+  fee?: number;
   note?: string;
 }
 

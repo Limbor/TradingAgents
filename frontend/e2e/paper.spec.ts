@@ -1,6 +1,70 @@
 import { expect, test } from "@playwright/test";
 import { mockAgentTasks } from "./agentMock";
 
+test("composite paper compares account, two sleeves and SSE while exposing ledger details", async ({ page }) => {
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const session = { session_id: "paper:comparison", mode: "paper", strategy: "allocator",
+      config_name: "demo", initial_cash: 100000, last_date: "2026-09-28", params: { kind: "composite" } };
+    let body: unknown = {};
+    if (path === "/api/v1/paper/sessions") body = [session];
+    else if (path.endsWith("/status")) body = {
+      session, kind: "composite", trades_count: 2,
+      snapshot: { as_of_date: "2026-09-28", equity: 110000, cash: 5000,
+        positions: { "600519.SH": { name: "贵州茅台", shares: 50, avg_cost: 1000,
+          last_price: 1200, value: 60000, day_pnl: 1000 } } },
+      sleeve_curves: {
+        wfo_max_cagr: [{ date: "2026-09-25", equity: 100000 }, { date: "2026-09-28", equity: 105000 }],
+        csi800_breakout: [{ date: "2026-09-25", equity: 100000 }, { date: "2026-09-28", equity: 98000 }],
+      },
+    };
+    else if (path.endsWith("/equity")) body = {
+      daily_records: [{ date: "2026-09-25T00:00:00", equity: 100000, cash: 100000 },
+        { date: "2026-09-28T00:00:00", equity: 110000, cash: 5000 }],
+      benchmark_curve: [{ date: "2026-09-25", equity: 3000 }, { date: "2026-09-28", equity: 3060 }],
+    };
+    else if (path.endsWith("/trades")) body = [
+      { trade_date: "2026-09-28", code: "600519.SH", name: "贵州茅台", side: "BUY",
+        shares: 50, price: 1200, amount: 60000, fee: 18, note: "策略入场" },
+      { trade_date: "2026-09-25", code: "000001.SZ", name: "平安银行", side: "SELL",
+        shares: 100, price: 10, amount: 1000, fee: 5 },
+    ];
+    else if (path.endsWith("/next-plan")) body = { signal_date: "2026-09-28", equity: 110000,
+      items: [{ code: "600519.SH", name: "贵州茅台", action: "HOLD", diff_value: 0 },
+        { code: "000001.SZ", name: "平安银行", action: "SKIP", diff_value: 0, reason: "交易约束" }] };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await mockAgentTasks(page);
+
+  await page.goto("/paper?session=paper%3Acomparison");
+  const legend = page.getByLabel("收益曲线图例");
+  await expect(legend.getByRole("button", { name: /模拟盘账户/ })).toContainText("+10.00%");
+  await expect(legend.getByRole("button", { name: /wfo_max_cagr/ })).toContainText("+5.00%");
+  await expect(legend.getByRole("button", { name: /csi800_breakout/ })).toContainText("-2.00%");
+  await expect(legend.getByRole("button", { name: /上证指数/ })).toContainText("+2.00%");
+  if (process.env.CAPTURE_PAPER_QA) {
+    await page.getByRole("img", { name: /累计收益对比/ }).scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    await page.screenshot({ path: "test-results/paper-comparison.png" });
+  }
+  await legend.getByRole("button", { name: /wfo_max_cagr/ }).click();
+  await expect(legend.getByRole("button", { name: /wfo_max_cagr/ })).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByText("虚线为子策略影子信号，非组合账户权益。")).toBeVisible();
+  await expect(page.getByRole("region", { name: "模拟盘账本" })).toContainText("+¥10,000");
+  const trades = page.getByRole("heading", { name: "成交与操作流水" }).locator("xpath=ancestor::section[1]");
+  await expect(trades).toContainText("策略入场");
+  await trades.getByRole("button", { name: "卖出" }).click();
+  await expect(trades).toContainText("平安银行");
+  await expect(trades).not.toContainText("策略入场");
+  const plan = page.getByRole("heading", { name: "下一交易日计划" }).locator("xpath=ancestor::section[1]");
+  await expect(plan).toContainText("跳过 1");
+  await plan.getByRole("button", { name: "全部" }).click();
+  await expect(plan).toContainText("持有 1");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { name: "累计收益对比" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
+});
+
 test("unknown paper deep link does not switch to another account", async ({ page }) => {
   const ledgerRequests: string[] = [];
   await page.route("**/api/v1/**", async (route) => {
