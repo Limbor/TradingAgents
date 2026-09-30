@@ -1959,7 +1959,7 @@ async def test_paper_advance_today_resolves_date_and_prepares_review(tmp_path, m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prompt", ["推进到29号", "把组合模拟盘推进至9月29日", "推进到2026年9月29日"])
+@pytest.mark.parametrize("prompt", ["推进到29", "推进到29号", "推进到9月29", "把组合模拟盘推进至9月29日", "推进到2026年9月29日"])
 async def test_paper_advance_short_date_prepares_audited_proposal(tmp_path, monkeypatch, prompt):
     async def paper(session_id):
         ledger = {"session_id": session_id, "source": "StockManager ledger",
@@ -1985,6 +1985,110 @@ async def test_paper_advance_short_date_prepares_audited_proposal(tmp_path, monk
                event["payload"]["tool"] == "prepare_paper_advance" for event in events)
     assert any(event["event_type"] == "target_date_resolved" and
                event["payload"]["target_date"] == "2026-09-29" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_paper_advance_uses_native_model_tool_call(tmp_path, monkeypatch):
+    async def paper(session_id):
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
+                  "as_of_date": "2026-09-28", "session": {"session_id": session_id},
+                  "snapshot": {"as_of_date": "2026-09-28", "equity": 100000,
+                               "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    monkeypatch.setattr("tradingagents.core.agent_harness._shanghai_today",
+                        lambda: "2026-09-30")
+    harness.config["agent_model_planning_enabled"] = False
+    choice = AsyncMock(return_value={"called": True, "target_date": "2026-09-29"})
+    harness._request_paper_advance_tool = choice
+    conversation = store.create_conversation("组合模拟盘", "paper:advance")
+    task = harness.submit(conversation["id"], "帮我把这个模拟盘推进到下一交易日")
+    await harness._active[task["id"]]
+
+    choice.assert_awaited_once()
+    assert store.proposal_for_task(task["id"])["args"] == {"target_date": "2026-09-29"}
+    assert any(event["event_type"] == "target_date_resolved" and
+               event["payload"]["source"] == "model_tool_call"
+               for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
+async def test_paper_model_cannot_override_explicit_day(tmp_path, monkeypatch):
+    async def paper(session_id):
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
+                  "as_of_date": "2026-09-28", "session": {"session_id": session_id},
+                  "snapshot": {"as_of_date": "2026-09-28", "equity": 100000,
+                               "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    monkeypatch.setattr("tradingagents.core.agent_harness._shanghai_today",
+                        lambda: "2026-09-30")
+    harness._request_paper_advance_tool = AsyncMock(
+        return_value={"called": True, "target_date": "2026-09-30"})
+    conversation = store.create_conversation("组合模拟盘", "paper:advance")
+    task = harness.submit(conversation["id"], "推进到29")
+    await harness._active[task["id"]]
+
+    assert store.proposal_for_task(task["id"]) is None
+    assert store.get_task(task["id"])["status"] == "needs_input"
+    assert any(event["event_type"] == "model_target_rejected"
+               for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
+async def test_paper_model_no_tool_call_recovers_clear_command(tmp_path, monkeypatch):
+    async def paper(session_id):
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
+                  "as_of_date": "2026-09-28", "session": {"session_id": session_id},
+                  "snapshot": {"as_of_date": "2026-09-28", "equity": 100000,
+                               "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    monkeypatch.setattr("tradingagents.core.agent_harness._shanghai_today",
+                        lambda: "2026-09-30")
+    harness.config["agent_model_planning_enabled"] = False
+    harness._request_paper_advance_tool = AsyncMock(return_value={"called": False})
+    conversation = store.create_conversation("组合模拟盘", "paper:advance")
+    task = harness.submit(conversation["id"], "推进到29")
+    await harness._active[task["id"]]
+
+    assert store.proposal_for_task(task["id"])["args"] == {"target_date": "2026-09-29"}
+    assert store.get_task(task["id"])["status"] == "awaiting_approval"
+
+
+@pytest.mark.asyncio
+async def test_paper_advance_selection_sends_native_tool_schema(tmp_path, monkeypatch):
+    async def paper(_session_id):
+        return {}
+
+    harness, _ = _harness(tmp_path, paper_handler=paper)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    seen = {}
+
+    class FakeModel:
+        def bind_tools(self, schemas):
+            seen["schemas"] = schemas
+            return self
+
+        async def ainvoke(self, messages):
+            seen["messages"] = messages
+            return SimpleNamespace(tool_calls=[{"name": "prepare_paper_advance",
+                                                "args": {"target_date": "2026-09-29"}}])
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: FakeModel()))
+    selected = await harness._request_paper_advance_tool("推进到29", "2026-09-28")
+
+    assert selected == {"called": True, "target_date": "2026-09-29"}
+    assert seen["schemas"][0]["name"] == "prepare_paper_advance"
+    assert seen["schemas"][0]["parameters"]["required"] == ["target_date"]
+    assert len(seen["messages"]) == 2
 
 
 @pytest.mark.asyncio

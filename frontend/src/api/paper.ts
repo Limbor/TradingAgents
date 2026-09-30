@@ -88,7 +88,7 @@ export interface PaperStatus {
 }
 
 export interface PaperCurve {
-  daily_records: Array<{ date: string; equity: number; cash: number }>;
+  daily_records: Array<{ date: string; equity: number; cash: number; positions_value?: number }>;
   benchmark_curve: Array<{ date: string; equity: number }>;
 }
 

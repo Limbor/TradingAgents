@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { PaperStatus, PaperTrade } from "@/api/paper";
+import type { PaperCurve, PaperStatus, PaperTrade } from "@/api/paper";
+import { buildRecentPaperPnl } from "./dailyPnl";
 
 const currency = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value)
@@ -45,6 +46,29 @@ export function HoldingsCard({ snapshot, onAsk }: {
       })}</tbody>
     </table></div> : <p className="py-7 text-center text-sm text-ui-faint">当前账本没有持仓。</p>}
     {positions.length > 0 && <p className="mt-3 text-xs text-ui-faint">浮动盈亏按账本成本和最新估值估算，未扣除未来卖出费用；“—”表示源数据未提供。</p>}
+  </section>;
+}
+
+export function DailyPnlCard({ curve, ledgerDate }: { curve?: PaperCurve; ledgerDate?: string | null }) {
+  const history = useMemo(() => buildRecentPaperPnl(curve, ledgerDate), [curve, ledgerDate]);
+  return <section className="rounded-xl border border-ui-line bg-ui-panel p-4">
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div><h2 className="font-medium">近 7 个账本交易日盈亏</h2><p className="mt-1 text-xs text-ui-faint">按 StockManager 每日账户权益核算，最新账本日 {history.asOfDate ?? "—"}</p></div>
+      <div className="text-right text-xs text-ui-muted">区间合计 <strong className={`ml-1 text-sm tabular-nums ${pnlTone(history.change)}`}>{signedCurrency(history.change)}</strong>
+        <span className="ml-1 tabular-nums">{history.changePct == null ? "" : `(${history.changePct >= 0 ? "+" : ""}${ratio(history.changePct)})`}</span></div>
+    </div>
+    {history.rows.length ? <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm">
+      <thead className="text-xs text-ui-faint"><tr><th className="pb-2 font-medium">账本日</th><th className="pb-2 text-right font-medium">账户权益</th><th className="pb-2 text-right font-medium">当日盈亏</th><th className="pb-2 text-right font-medium">当日收益率</th><th className="pb-2 text-right font-medium">现金</th><th className="pb-2 text-right font-medium">持仓市值</th></tr></thead>
+      <tbody>{history.rows.map((row) => <tr key={row.date} className="border-t border-ui-line tabular-nums">
+        <td className="py-2.5 whitespace-nowrap text-ui-body">{row.date}</td>
+        <td className="py-2.5 text-right">{currency(row.equity)}</td>
+        <td className={`py-2.5 text-right font-medium ${pnlTone(row.change)}`}>{signedCurrency(row.change)}</td>
+        <td className={`py-2.5 text-right ${pnlTone(row.change)}`}>{row.changePct == null ? "—" : `${row.changePct >= 0 ? "+" : ""}${ratio(row.changePct)}`}</td>
+        <td className="py-2.5 text-right">{currency(row.cash)}</td>
+        <td className="py-2.5 text-right">{currency(row.positionsValue)}</td>
+      </tr>)}</tbody>
+    </table></div> : <p className="py-7 text-center text-sm text-ui-faint">尚无逐日权益记录，模拟盘推进后显示。</p>}
+    <p className="mt-3 text-xs leading-5 text-ui-faint">当日盈亏＝本日权益－上一账本交易日权益，包含已实现与未实现变动；首日若无前一日记录则显示“—”。这是账户合计，不是逐只持仓的历史盈亏。</p>
   </section>;
 }
 

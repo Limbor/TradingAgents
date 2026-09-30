@@ -11,7 +11,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { ApiHttpError } from "@/api/client";
 import { CompositeDecision } from "./CompositeDecision";
 import { PerformanceChart } from "./PerformanceChart";
-import { HoldingsCard, TradesCard } from "./AccountDetails";
+import { DailyPnlCard, HoldingsCard, TradesCard } from "./AccountDetails";
 import { PlanCard } from "./PlanCard";
 import Chat from "../AgentWorkspace";
 
@@ -344,6 +344,7 @@ export default function Paper() {
 
         <div className="grid gap-4">
           <HoldingsCard snapshot={snapshot} onAsk={() => askAgent("分析这个模拟盘的当前持仓和风险")} />
+          <DailyPnlCard curve={curve.data} ledgerDate={snapshot?.as_of_date} />
           <PlanCard key={id} plan={plan.data} status={status.data} loading={plan.isLoading}
             onAsk={() => askAgent("解释这个模拟盘的下一日计划及依据")} />
         </div>

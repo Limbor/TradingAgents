@@ -19,8 +19,8 @@ test("composite paper compares account, two sleeves and SSE while exposing ledge
       },
     };
     else if (path.endsWith("/equity")) body = {
-      daily_records: [{ date: "2026-09-25T00:00:00", equity: 100000, cash: 100000 },
-        { date: "2026-09-28T00:00:00", equity: 110000, cash: 5000 }],
+      daily_records: [{ date: "2026-09-25T00:00:00", equity: 100000, cash: 100000, positions_value: 0 },
+        { date: "2026-09-28T00:00:00", equity: 110000, cash: 5000, positions_value: 105000 }],
       benchmark_curve: [{ date: "2026-09-25", equity: 3000 }, { date: "2026-09-28", equity: 3060 }],
     };
     else if (path.endsWith("/trades")) body = [
@@ -70,6 +70,9 @@ test("composite paper compares account, two sleeves and SSE while exposing ledge
   await expect(legend.getByRole("button", { name: /wfo_max_cagr/ })).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByText("虚线为子策略影子信号，非组合账户权益。")).toBeVisible();
   await expect(page.getByRole("region", { name: "模拟盘账本" })).toContainText("+¥10,000");
+  const dailyPnl = page.getByRole("heading", { name: "近 7 个账本交易日盈亏" }).locator("xpath=ancestor::section[1]");
+  await expect(dailyPnl.getByRole("row", { name: /2026-09-28/ })).toContainText("+¥10,000");
+  await expect(dailyPnl.getByRole("row", { name: /2026-09-28/ })).toContainText("¥105,000");
   const trades = page.getByRole("heading", { name: "成交与操作流水" }).locator("xpath=ancestor::section[1]");
   await expect(trades).toContainText("策略入场");
   await trades.getByRole("button", { name: "卖出" }).click();
@@ -212,7 +215,7 @@ test("strategy paper workbench creates, reads, and advances a StockManager sessi
   await page.getByLabel("起始日期").fill("2026-01-02");
   await page.getByLabel("初始资金").fill("100000");
   await page.getByRole("button", { name: "创建", exact: true }).click();
-  await expect(page.getByText("¥102,000")).toBeVisible();
+  await expect(page.getByText("¥102,000").first()).toBeVisible();
   await expect(page.getByText("贵州茅台").first()).toBeVisible();
   const equityLine = page.locator(".recharts-line path").first();
   await expect(equityLine).toHaveCSS("stroke", "rgb(8, 125, 104)");
