@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from tradingagents.core.agent_harness import (
@@ -408,6 +409,288 @@ def _harness(tmp_path, *, paper_handler, chat=None):
         handler=paper_handler,
     ))
     return TradingAgentHarness(store, tools, chat or _Chat(), None, _Skills(), {}), store
+
+
+@pytest.mark.asyncio
+async def test_native_tool_loop_returns_tool_results_for_another_model_round(tmp_path, monkeypatch):
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.tools.register(LightweightTool(
+        name="get_portfolio_summary", description="portfolio", parameters={"type": "object"},
+        handler=lambda: asyncio.sleep(0, result={"holdings": [], "total_symbols": 0}),
+    ))
+    harness.tools.register(LightweightTool(
+        name="get_recent_runs", description="runs", parameters={"type": "object",
+            "properties": {"limit": {"type": "integer"}}},
+        handler=lambda **_kwargs: asyncio.sleep(0, result={"runs": [{"id": "run-1"}]}),
+    ))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    class FakeModel:
+        def __init__(self):
+            self.rounds = 0
+            self.schemas = []
+
+        def bind_tools(self, schemas):
+            self.schemas = schemas
+            return self
+
+        async def ainvoke(self, messages):
+            self.rounds += 1
+            if self.rounds == 1:
+                assert any("server_verified_tool" in str(message.content) and
+                           "get_portfolio_summary" in str(message.content)
+                           for message in messages)
+                return AIMessage(content="", tool_calls=[{
+                    "name": "get_recent_runs", "args": {"limit": 5},
+                    "id": "call-runs", "type": "tool_call",
+                }])
+            assert any(isinstance(message, ToolMessage) and
+                       message.tool_call_id == "call-runs" and "run-1" in message.content
+                       for message in messages)
+            return AIMessage(content="已取到证据")
+
+    fake = FakeModel()
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: fake))
+    harness._synthesize = AsyncMock(return_value="已核对持仓和运行记录。")
+    conversation = store.create_conversation("工作台", None)
+    task = harness.submit(conversation["id"], "查看当前持仓和最近运行")
+    await harness._active[task["id"]]
+
+    assert fake.rounds == 2
+    assert {schema["name"] for schema in fake.schemas} == {"get_recent_runs"}
+    assert [item["tool_name"] for item in store.list_evidence(task["id"])] == [
+        "get_portfolio_summary", "get_recent_runs",
+    ]
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert any(event["event_type"] == "plan_created" and
+               event["payload"]["source"] == "native_tool_calls"
+               for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
+async def test_native_tool_loop_rejects_out_of_scope_symbol(tmp_path, monkeypatch):
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    calls = []
+
+    async def factor(ts_code, **_kwargs):
+        calls.append(ts_code)
+        return {"ts_code": ts_code, "as_of_date": "2026-09-29", "snapshot": {}}
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", scope="symbol",
+        parameters={"type": "object", "properties": {"ts_code": {"type": "string"}},
+                    "required": ["ts_code"]}, handler=factor,
+    ))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    class FakeModel:
+        def __init__(self):
+            self.rounds = 0
+
+        def bind_tools(self, _schemas):
+            return self
+
+        async def ainvoke(self, messages):
+            self.rounds += 1
+            if self.rounds == 2:
+                assert any(isinstance(message, ToolMessage) and
+                           "symbol_out_of_scope" in message.content for message in messages)
+            if self.rounds < 3:
+                return AIMessage(content="", tool_calls=[{
+                    "name": "get_mcp_factor_snapshot",
+                    "args": {"ts_code": "000001.SZ" if self.rounds == 1 else "600519.SH"},
+                    "id": f"call-{self.rounds}", "type": "tool_call",
+                }])
+            return AIMessage(content="证据已齐")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: FakeModel()))
+    harness._synthesize = AsyncMock(return_value="分析完成")
+    conversation = store.create_conversation("工作台", None)
+    task = harness.submit(conversation["id"], "分析 600519.SH 的因子")
+    await harness._active[task["id"]]
+
+    assert calls == ["600519.SH"]
+    assert any(event["event_type"] == "tool_call_rejected" and
+               event["payload"]["reason"] == "symbol_out_of_scope"
+               for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
+async def test_native_tool_loop_prepares_paper_proposal_without_write(tmp_path, monkeypatch):
+    async def paper(session_id):
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
+                  "as_of_date": "2026-09-28", "session": {"session_id": session_id},
+                  "snapshot": {"as_of_date": "2026-09-28", "equity": 100000,
+                               "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setattr("tradingagents.core.agent_harness._shanghai_today",
+                        lambda: "2026-09-30")
+
+    class FakeModel:
+        def bind_tools(self, schemas):
+            assert {schema["name"] for schema in schemas} == {"prepare_paper_advance"}
+            return self
+
+        async def ainvoke(self, _messages):
+            return AIMessage(content="", tool_calls=[{
+                "name": "prepare_paper_advance", "args": {"target_date": "2026-09-29"},
+                "id": "call-advance", "type": "tool_call",
+            }])
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: FakeModel()))
+    harness._request_paper_advance_tool = AsyncMock(side_effect=AssertionError("不应另开模型调用"))
+    conversation = store.create_conversation("组合模拟盘", "paper:advance")
+    task = harness.submit(conversation["id"], "推进到29")
+    await harness._active[task["id"]]
+
+    assert store.proposal_for_task(task["id"])["args"] == {"target_date": "2026-09-29"}
+    assert store.get_task(task["id"])["status"] == "awaiting_approval"
+    assert any(event["event_type"] == "target_date_resolved" and
+               event["payload"]["source"] == "native_tool_loop"
+               for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
+async def test_native_tool_loop_failure_uses_rule_fallback(tmp_path, monkeypatch):
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    seen = []
+
+    async def factor(ts_code):
+        seen.append(ts_code)
+        return {"ts_code": ts_code, "as_of_date": "2026-09-29", "snapshot": {}}
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", scope="symbol",
+        parameters={"type": "object", "properties": {"ts_code": {"type": "string"}},
+                    "required": ["ts_code"]}, handler=factor,
+    ))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    class FailingModel:
+        def bind_tools(self, _schemas):
+            return self
+
+        async def ainvoke(self, _messages):
+            raise TimeoutError("provider unavailable")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: FailingModel()))
+    harness._synthesize = AsyncMock(return_value="规则取证完成")
+    conversation = store.create_conversation("工作台", None)
+    task = harness.submit(conversation["id"], "分析 600519.SH 的估值")
+    await harness._active[task["id"]]
+
+    assert seen == ["600519.SH"]
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert any(event["event_type"] == "tool_loop_fallback"
+               for event in store.list_events(task["id"]))
+
+
+@pytest.mark.asyncio
+async def test_native_tool_loop_can_run_allowlisted_analysis_skill(tmp_path, monkeypatch):
+    async def unused_paper(session_id):
+        raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
+
+    harness, store = _harness(tmp_path, paper_handler=unused_paper)
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "stock_analysis" else None)
+    harness._run_skill = AsyncMock(return_value={"source": "TradingAgents Skill: stock_analysis",
+                                                 "summary": "分析完成"})
+    harness._synthesize = AsyncMock(return_value="已核对分析结果")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    class FakeModel:
+        def __init__(self):
+            self.rounds = 0
+
+        def bind_tools(self, schemas):
+            assert "run_analysis_skill" in {schema["name"] for schema in schemas}
+            return self
+
+        async def ainvoke(self, messages):
+            self.rounds += 1
+            if self.rounds == 1:
+                return AIMessage(content="", tool_calls=[{
+                    "name": "run_analysis_skill",
+                    "args": {"skill_id": "stock_analysis", "args": {"ticker": "600519.SH"}},
+                    "id": "call-skill", "type": "tool_call",
+                }])
+            assert any(isinstance(message, ToolMessage) and
+                       message.tool_call_id == "call-skill" for message in messages)
+            return AIMessage(content="分析结束")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: FakeModel()))
+    conversation = store.create_conversation("工作台", None)
+    task = harness.submit(conversation["id"], "运行股票分析")
+    await harness._active[task["id"]]
+
+    harness._run_skill.assert_awaited_once_with(task["id"], "stock_analysis",
+                                                {"ticker": "600519.SH"})
+    assert [item["tool_name"] for item in store.list_evidence(task["id"])] == ["skill"]
+
+
+@pytest.mark.asyncio
+async def test_native_tool_loop_does_not_offer_action_for_explanation(tmp_path, monkeypatch):
+    async def paper(session_id):
+        ledger = {"session_id": session_id, "source": "StockManager ledger",
+                  "as_of_date": "2026-09-28", "session": {"session_id": session_id},
+                  "snapshot": {"as_of_date": "2026-09-28", "equity": 100000,
+                               "cash": 100000, "positions": {}}}
+        ledger["state_fingerprint"] = _paper_state_fingerprint(ledger)
+        return ledger
+
+    harness, store = _harness(tmp_path, paper_handler=paper)
+    harness.tools.register(LightweightTool(
+        name="get_recent_runs", description="runs", parameters={"type": "object"},
+        handler=lambda: asyncio.sleep(0, result={"runs": []}),
+    ))
+    harness._synthesize = AsyncMock(return_value="这是操作说明")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    class FakeModel:
+        def __init__(self):
+            self.rounds = 0
+
+        def bind_tools(self, schemas):
+            assert "prepare_paper_advance" not in {schema["name"] for schema in schemas}
+            return self
+
+        async def ainvoke(self, _messages):
+            self.rounds += 1
+            if self.rounds == 1:
+                return AIMessage(content="", tool_calls=[{
+                    "name": "prepare_paper_advance", "args": {"target_date": "2026-09-29"},
+                    "id": "call-unallowed", "type": "tool_call",
+                }])
+            return AIMessage(content="只回答说明")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: FakeModel()))
+    conversation = store.create_conversation("组合模拟盘", "paper:advance")
+    task = harness.submit(conversation["id"], "解释为什么不能推进到29号")
+    await harness._active[task["id"]]
+
+    assert store.proposal_for_task(task["id"]) is None
+    assert store.get_task(task["id"])["status"] == "completed"
+    assert any(event["event_type"] == "tool_call_rejected" and
+               event["payload"]["tool"] == "prepare_paper_advance"
+               for event in store.list_events(task["id"]))
 
 
 @pytest.mark.asyncio
@@ -1852,7 +2135,7 @@ async def test_failed_required_portfolio_source_does_not_search_unrequested_arch
     assert [item["tool_name"] for item in detail["evidence"]] == ["get_portfolio_summary"]
     assert not any(event["event_type"] == "plan_revised" for event in detail["events"])
     assert "没有生成交易判断" in detail["result"]["content"]
-    assert len(requests) == 2
+    assert requests == []
 
 
 @pytest.mark.asyncio

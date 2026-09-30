@@ -81,9 +81,13 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   retryDisabled: boolean;
 }) {
   const steps = taskSteps(task);
-  const revised = task.events.some((event) => event.event_type === "plan_revised");
+  const nativeTools = task.events.some((event) => event.event_type === "plan_created" &&
+    event.payload.source === "native_tool_calls");
+  const revised = task.events.some((event) => event.event_type === "plan_revised" &&
+    event.payload.reason !== "模型原生工具调用");
   const revisionReasons = task.events.filter((event) => event.event_type === "plan_revised")
-    .map((event) => event.payload.reason).filter((reason): reason is string => typeof reason === "string");
+    .map((event) => event.payload.reason).filter((reason): reason is string =>
+      typeof reason === "string" && reason !== "模型原生工具调用");
   const revisionReason = revisionReasons[revisionReasons.length - 1];
   const stages = new Map<string, { label: string; status: string }>();
   for (const event of task.events) {
@@ -97,7 +101,7 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   const textOnly = isTextOnlyAnswer(task);
   return <div className="mt-5 border-y border-ui-line py-3 text-xs">
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-      <span className="font-medium text-ui-ink">执行过程{revised ? " · 已调整计划" : ""}</span>
+      <span className="font-medium text-ui-ink">执行过程{revised ? " · 已调整计划" : nativeTools ? " · 工具调用" : ""}</span>
       <div className="flex items-center gap-3 whitespace-nowrap"><span className="text-ui-accent">{textOnly ? "仅文字回答" : statusText[task.status] ?? task.status}</span>{task.evidence.length > 0 && <button onClick={onInspect} className="text-ui-accent underline-offset-2 hover:underline">查看证据</button>}</div>
     </div>
     {revisionReason && <p className="mt-2 leading-5 text-ui-muted">调整原因：{revisionReason}</p>}
