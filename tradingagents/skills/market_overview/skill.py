@@ -142,7 +142,8 @@ class MarketOverviewSkill(BaseSkill):
             description=(
                 "生成/刷新 A 股市场全景数据快照（大盘体制评级、行业多空矩阵、要闻打标），"
                 "支持通过 focus_industries 重点解释指定板块的驱动、阶段与持续性，"
-                "串行抓取全市场数据约 1-2 分钟。仅当用户明确要求生成/更新市场全景或大盘快照时使用；"
+                "串行抓取全市场数据约 1-2 分钟。适用于近期板块推荐、行业强弱比较、"
+                "以及生成/更新市场全景或大盘快照；板块推荐必须使用行业矩阵，不能用个股筛选代替。"
                 "解读某条新闻/事件的影响、评论市场观点等问答类请求不要调用本工具，应直接文本回答。"
                 "Generates the whole-market regime/industry/news snapshot artifact; "
                 "NOT for answering questions about a specific news item."

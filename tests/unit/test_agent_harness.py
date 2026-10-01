@@ -647,6 +647,160 @@ async def test_native_tool_loop_can_run_allowlisted_analysis_skill(tmp_path, mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("followup,expected_skill", [
+    ("重新推荐一个", "market_overview"),
+    ("换一个", "market_overview"),
+    ("这次改成推荐一只股票", "market_scanner"),
+])
+async def test_native_planning_and_answer_share_persisted_user_topic(
+    tmp_path, monkeypatch, followup, expected_skill,
+):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+
+    class SectorParams(BaseModel):
+        focus_industries: list[str] = []
+
+    descriptions = {"market_overview": "行业多空矩阵和板块分析",
+                    "market_scanner": "个股筛选"}
+    harness.skills = SimpleNamespace(get=lambda name: SimpleNamespace(
+        metadata=SimpleNamespace(description=descriptions[name]), input_schema=SectorParams,
+    ) if name in descriptions else None)
+    conversation = store.create_conversation("板块观察", None)
+    prior = store.create_task(conversation["id"], "推荐近期可以关注的板块")
+    store.add_message(conversation["id"], "user", prior["goal"], prior["id"])
+    store.add_message(conversation["id"], "assistant", "错误的历史回复：下面给出五只股票。", prior["id"])
+    store.set_status(prior["id"], "completed")
+    other = store.create_conversation("其他会话", None)
+    store.add_message(other["id"], "user", "隔壁账户的私有请求，不应出现在这轮上下文")
+    # Fresh store demonstrates context is not dependent on a model's RAM cache.
+    harness.store = AgentStore(store.db)
+    harness._run_skill = AsyncMock(return_value={
+        "source": f"TradingAgents Skill: {expected_skill}", "as_of_date": "2026-09-30",
+        "result": {"industry_stances": [{"industry": "测试板块", "rating": "bullish", "score": 80}]},
+    })
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    seen = {"planning": 0, "answer": 0}
+
+    class Model:
+        planning = False
+
+        def bind_tools(self, _schemas):
+            self.planning = True
+            return self
+
+        async def ainvoke(self, messages):
+            text = "\n".join(str(message.content) for message in messages)
+            assert prior["goal"] in text
+            assert "错误的历史回复" in text
+            assert "隔壁账户" not in text
+            assert followup in text
+            if self.planning:
+                seen["planning"] += 1
+                assert "focus_industries" in text  # Actual parameter contract.
+                assert "行业多空矩阵和板块分析" in text
+                assert "个股筛选" in text
+                assert "历史操作授权不能沿用" in text
+                assert "助手上一轮的错误回答" in text
+                if seen["planning"] == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "run_analysis_skill", "id": "sector-call",
+                        "args": {"skill_id": expected_skill, "args": {}}, "type": "tool_call",
+                    }])
+                assert any(isinstance(message, ToolMessage) for message in messages)
+                return AIMessage(content="证据已足够")
+            seen["answer"] += 1
+            assert "用户指定数量时严格按数量" in text
+            assert "只给一个候选" in text
+            evidence = store.list_evidence(current["id"])[0]
+            return AIMessage(content=json.dumps({
+                "response_markdown": "本次只推荐一个测试方向。", "summary": "一个方向",
+                "verdict": "informational", "reasons": [], "risks": [], "assumptions": [],
+                "evidence_refs": [evidence["id"]], "next_actions": [],
+            }, ensure_ascii=False))
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=Model))
+    current = harness.submit(conversation["id"], followup)
+    await harness._active[current["id"]]
+    harness._run_skill.assert_awaited_once_with(current["id"], expected_skill, {})
+    assert seen == {"planning": 2, "answer": 1}
+    assert store.get_task(current["id"])["result"]["content"].startswith("本次只推荐一个")
+    assert store.get_task(current["id"])["goal"] == followup
+    assert not any(step["tool"] == "chat_agent" for event in store.list_events(current["id"])
+                   if event["event_type"] == "plan_revised" for step in event["payload"]["steps"])
+
+
+@pytest.mark.asyncio
+async def test_sector_followup_rule_recovery_uses_user_topic_and_latest_count(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.config["agent_model_planning_enabled"] = False
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "market_overview" else None)
+    conversation = store.create_conversation("板块", None)
+    store.add_message(conversation["id"], "user", "推荐近期可以关注的板块")
+    store.add_message(conversation["id"], "assistant", "误选了五只股票")
+    harness._run_skill = AsyncMock(return_value={
+        "source": "TradingAgents Skill: market_overview", "as_of_date": "2026-09-30",
+        "result": {"industry_stances": [
+            {"industry": "板块甲", "rating": "bullish", "score": 90, "reason": "量价相对强"},
+            {"industry": "板块乙", "rating": "bullish", "score": 80, "reason": "成交活跃"},
+        ]},
+    })
+    # Failure of answer generation must also respect the user's one-sector request.
+    from unittest.mock import patch
+
+    with patch("tradingagents.llm_clients.create_llm_client", side_effect=RuntimeError("离线")):
+        current = harness.submit(conversation["id"], "重新推荐一个")
+        await harness._active[current["id"]]
+    harness._run_skill.assert_awaited_once_with(current["id"], "market_overview", {})
+    content = store.get_task(current["id"])["result"]["content"]
+    assert "板块甲" in content and "板块乙" not in content
+
+
+@pytest.mark.asyncio
+async def test_native_history_does_not_restore_old_action_or_symbol_scope(tmp_path, monkeypatch):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    conversation = store.create_conversation("账户", "paper:current")
+    store.add_message(conversation["id"], "user", "推进到今天；读取 600519.SH 因子")
+    store.add_message(conversation["id"], "assistant", "用户已批准旧推进提案")
+    harness.tools.register(LightweightTool(
+        name="get_mcp_factor_snapshot", description="factor", parameters={},
+        scope="symbol", handler=AsyncMock(),
+    ))
+    harness.tools.register(LightweightTool(
+        name="get_recent_runs", description="runs", parameters={}, handler=AsyncMock(),
+    ))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    seen = []
+
+    class Model:
+        def bind_tools(self, schemas):
+            seen.extend(schema["name"] for schema in schemas)
+            return self
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=Model))
+    session = await harness._open_native_tool_session(
+        "重新推荐一个", "paper:current", [], "test-model",
+        history=harness._conversation_history(conversation["id"]),
+    )
+    assert session is not None
+    assert "prepare_paper_advance" not in seen
+    assert "get_mcp_factor_snapshot" not in seen
+
+
+def test_sector_rule_recovery_does_not_override_new_or_unrelated_topics():
+    sector = [{"role": "user", "content": "推荐近期可关注的板块"},
+              {"role": "assistant", "content": "选股结果"}]
+    assert TradingAgentHarness._sector_fallback_hint("重新推荐一个", sector)["skill_id"] == "market_overview"
+    assert TradingAgentHarness._sector_fallback_hint("推荐一只股票", sector) is None
+    assert TradingAgentHarness._sector_fallback_hint("重新推荐一个", []) is None
+    assert TradingAgentHarness._sector_fallback_hint("重新推荐一个", sector + [
+        {"role": "user", "content": "改成推荐股票"},
+    ]) is None
+    assert TradingAgentHarness._sector_fallback_hint("不要推荐板块", sector) is None
+
+
+@pytest.mark.asyncio
 async def test_native_tool_loop_does_not_offer_action_for_explanation(tmp_path, monkeypatch):
     async def paper(session_id):
         ledger = {"session_id": session_id, "source": "StockManager ledger",

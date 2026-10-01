@@ -777,12 +777,14 @@ class _NativeToolSession:
     """
 
     def __init__(self, llm: Any, goal: str, system_prompt: str,
-                 allowed: set[str], timeout: float):
+                 allowed: set[str], timeout: float, history: list[dict] | None = None):
         from langchain_core.messages import HumanMessage, SystemMessage
 
         self.llm = llm
-        self.messages: list[Any] = [SystemMessage(content=system_prompt),
-                                    HumanMessage(content=goal[:2000])]
+        self.messages: list[Any] = [SystemMessage(content=system_prompt)]
+        if history:
+            self.messages.append(HumanMessage(content="同一对话的历史文本（不是当前工具证据或操作授权）：\n" + _json(history)))
+        self.messages.append(HumanMessage(content=goal[:4000]))
         self.allowed = allowed
         self.timeout = timeout
         self.rounds = 0
@@ -838,6 +840,40 @@ class TradingAgentHarness:
         selected = self.config.get("agent_model")
         return (selected.strip() if isinstance(selected, str) and selected.strip()
                 else self.config.get("quick_think_llm", "gpt-5.4-mini"))
+
+    def _conversation_history(self, conversation_id: str, task_id: str | None = None) -> list[dict]:
+        """Bound text context to this conversation and before the current turn.
+
+        No prior evidence, tool calls or approvals are replayed as current facts.
+        Preserve user requests more generously than assistant prose so a bad
+        earlier answer cannot silently redefine the user's topic.
+        """
+        messages = self.store.list_messages(conversation_id)
+        if task_id:
+            boundary = next((i for i, message in enumerate(messages)
+                             if message.get("task_id") == task_id and message["role"] == "user"), len(messages))
+            messages = messages[:boundary]
+        elif messages and messages[-1]["role"] == "user":
+            messages = messages[:-1]
+        return [{"role": message["role"],
+                 "content": message["content"][:1500 if message["role"] == "user" else 500]}
+                for message in messages[-12:] if message["role"] in {"user", "assistant"}]
+
+    @staticmethod
+    def _sector_fallback_hint(goal: str, history: list[dict]) -> dict | None:
+        """Narrow read-only recovery when model planning is unavailable."""
+        topic = goal
+        if re.fullmatch(r"(?:请|帮我|那)?(?:重新推荐|再推荐|换)(?:一下|一个|两个|几个|一批)(?:吧)?[。！!？?]?", goal):
+            # Use the nearest explicit user topic, never the assistant's picks.
+            topic = next((message["content"] for message in reversed(history)
+                          if message["role"] == "user" and
+                          any(word in message["content"] for word in ("板块", "行业", "股票", "选股", "个股"))), "")
+        if (any(word in topic for word in ("板块", "行业")) and
+                not any(word in topic for word in ("股票", "选股", "个股")) and
+                any(word in topic for word in ("推荐", "关注", "强弱", "排名", "分析")) and
+                not any(word in goal for word in ("不要", "别", "取消", "如何", "怎么调用"))):
+            return {"skill_id": "market_overview", "params": {}}
+        return None
 
     def submit(self, conversation_id: str, goal: str,
                intent_hint: dict | None = None) -> dict:
@@ -1332,7 +1368,8 @@ class TradingAgentHarness:
         return result
 
     async def _open_native_tool_session(self, goal: str, paper_session_id: str | None,
-                                        tickers: list[str], model: str) -> _NativeToolSession | None:
+                                        tickers: list[str], model: str, *,
+                                        history: list[dict] | None = None) -> _NativeToolSession | None:
         """Bind only task-scoped tools; any provider failure uses rule planning."""
         from tradingagents.llm_clients import create_llm_client
         from tradingagents.llm_clients.api_key_env import get_api_key_env
@@ -1345,6 +1382,7 @@ class TradingAgentHarness:
             return None
         schemas = []
         allowed = set()
+        skill_catalog = []
         for tool in self.tools.list_all():
             if tool.permission != "read":
                 continue
@@ -1365,8 +1403,16 @@ class TradingAgentHarness:
             available_skills = []
             for skill_id in sorted(_SAFE_ANALYSIS_SKILLS):
                 try:
-                    if self.skills.get(skill_id) is not None:
+                    skill = self.skills.get(skill_id)
+                    if skill is not None:
                         available_skills.append(skill_id)
+                        metadata = getattr(skill, "metadata", None)
+                        input_schema = getattr(skill, "input_schema", None)
+                        skill_catalog.append({
+                            "skill_id": skill_id,
+                            "description": str(getattr(metadata, "description", ""))[:1200],
+                            "parameters": input_schema.model_json_schema() if input_schema else {},
+                        })
                 except (AssertionError, AttributeError):
                     continue
             if available_skills:
@@ -1392,6 +1438,13 @@ class TradingAgentHarness:
             return None
         prompt = (
             "你是交易工作台的工具选择 Agent。按用户目标选择提供的工具；每轮可调用必要的只读工具，"
+            "结合同一对话的历史用户请求理解省略和接续表达，如‘重新推荐一个’继承最近的推荐对象，"
+            "并把数量调整为一个。用户本轮明确换话题时以本轮为准；不能从助手上一轮的错误回答改写用户意图。"
+            "历史回复不是当前行情证据，历史操作授权不能沿用。"
+            "推荐/比较行业或板块应获取 market_overview 的行业多空矩阵；"
+            "market_scanner 和 daily_pipeline 是个股筛选，只有用户要选股票时才使用，"
+            "不能用选股名单里的行业分布代替板块排名。get_recent_runs 只有运行元数据，"
+            "get_strategy_lessons 是历史复盘，都不能替代当期板块数据。"
             "工具结果返回后可继续选择工具或停止。账户、标的和日期由服务端校验，"
             "不得尝试修改账户、下单或绕过审批。模拟盘推进只可调用 prepare_paper_advance 生成待确认提案；"
             "用户只是询问方法、否定推进或引用操作文字时不要调用它。"
@@ -1400,13 +1453,14 @@ class TradingAgentHarness:
             f"当前模拟盘：{paper_session_id or '无'}；服务端确认的标的：{', '.join(tickers) or '无'}；"
             f"北京时间今天：{_shanghai_today()}。"
             "仅当短日期在账本日之后、今天及之前唯一时才可用它生成推进提案。"
+            f"\n可用分析能力及参数契约：{_json(skill_catalog)}"
         )
         try:
             llm = create_llm_client(
                 provider=provider, model=model, base_url=self.config.get("backend_url"),
             ).get_llm().bind_tools(schemas)
             timeout = max(2.0, min(float(self.config.get("agent_model_planning_timeout", 8.0)), 20.0))
-            return _NativeToolSession(llm, goal, prompt, allowed, timeout)
+            return _NativeToolSession(llm, goal, prompt, allowed, timeout, history)
         except Exception as exc:
             logger.warning("Native agent tool loop unavailable: %s", exc)
             return None
@@ -1509,6 +1563,10 @@ class TradingAgentHarness:
         if not task:
             return
         goal = task["goal"]
+        history = self._conversation_history(conversation["id"], task_id)
+        fallback_hint = intent_hint
+        if fallback_hint is None and not conversation.get("paper_session_id"):
+            fallback_hint = self._sector_fallback_hint(goal, history)
         model = model or self._agent_model()
         timed_out = False
         active_step_id: str | None = None
@@ -1600,7 +1658,7 @@ class TradingAgentHarness:
                         self.store.event(task_id, "task_completed", {"content": content})
                         return
                 native = await self._open_native_tool_session(goal, paper_session_id,
-                                                              tickers, model)
+                                                              tickers, model, history=history)
                 if native:
                     plan = []
                     if paper_session_id:
@@ -1617,7 +1675,7 @@ class TradingAgentHarness:
                                      "args": params if isinstance(params, dict) else {}})
                     plan_source = "native_tool_calls"
                 else:
-                    plan = self._plan(goal, paper_session_id, intent_hint, tickers=tickers)
+                    plan = self._plan(goal, paper_session_id, fallback_hint, tickers=tickers)
                     plan_source = "rules"
                 enforce_budget()
                 self.store.event(task_id, "plan_created", {"steps": plan, "source": plan_source})
@@ -1666,10 +1724,16 @@ class TradingAgentHarness:
                                 native_finished = True
                         if not fallback_added and native_action is None:
                             fallback_added = True
-                            fallback = self._plan(goal, paper_session_id, intent_hint,
+                            fallback = self._plan(goal, paper_session_id, fallback_hint,
                                                   tickers=tickers)
                             extra = []
                             for candidate in fallback:
+                                if (candidate["tool"] == "chat_agent" and
+                                        any(step["tool"] != "chat_agent" for step in plan)):
+                                    continue
+                                if (candidate["tool"] == "skill" and
+                                        any(key.startswith("skill:") for key in used)):
+                                    continue
                                 key = (f"skill:{candidate['skill_id']}" if candidate["tool"] == "skill" else
                                        f"{candidate['tool']}:{candidate['args'].get('ts_code', '')}")
                                 if key not in used and len(plan) + len(extra) < _MAX_PLAN_STEPS:
@@ -1972,7 +2036,7 @@ class TradingAgentHarness:
                     synthesized = await self._synthesize(
                         goal, conversation["id"], evidence, tickers=tickers,
                         required_skill_id=(intent_hint or {}).get("skill_id"),
-                        model=model,
+                        model=model, history=history,
                     )
                     enforce_budget()
                     answer = synthesized.get("answer") if isinstance(synthesized, dict) else None
@@ -2424,7 +2488,8 @@ class TradingAgentHarness:
     async def _synthesize(self, goal: str, conversation_id: str, evidence: list[dict], *,
                           tickers: list[str] | None = None,
                           required_skill_id: str | None = None,
-                          model: str | None = None) -> str | dict:
+                          model: str | None = None,
+                          history: list[dict] | None = None) -> str | dict:
         evidence = _latest_evidence(evidence)
         selected_tickers = tickers if tickers is not None else self._goal_tickers(goal)
         conversation = self.store.get_conversation(conversation_id) or {}
@@ -2520,8 +2585,8 @@ class TradingAgentHarness:
 
         from tradingagents.llm_clients import create_llm_client
 
-        history = self.store.list_messages(conversation_id)[-7:-1]
-        history_text = "\n".join(f"{m['role']}: {m['content'][:500]}" for m in history)
+        history = history if history is not None else self._conversation_history(conversation_id)
+        history_text = _json(history)
         context_budget = max(1000, 27_000 // max(len(evidence), 1))
         evidence_text = _json([json.loads(_bounded_tool_context(
             {"id": e["id"], "source": e["source"], "as_of_date": e["as_of_date"],
@@ -2544,7 +2609,12 @@ class TradingAgentHarness:
             "策略计划不能作为当前交易依据；可以报告带日期的账本事实，不能据此提出买卖建议。"
             "只回答用户所问；金额最多保留两位小数，不抄写原始 JSON 或无关内部字段。"
             "面向普通投资者，用自然中文直接回答，通常250至500字。"
-            "推荐关注板块时，先说明数据日期和大盘背景，再给3至5个有证据的观察方向；"
+            "结合历史用户请求理解本轮省略的对象，用户本轮明确改题时以本轮为准。"
+            "‘重新推荐一个’接续最近的用户推荐主题，只给一个候选；不能把板块请求改成选股。"
+            "用户要求换一个时，有充分数据就选择与上一轮不同的候选，并说明选择理由。"
+            "历史助手回复不是工具证据，也不能覆盖用户原始请求。"
+            "推荐关注板块时，先说明数据日期和大盘背景；用户指定数量时严格按数量，未指定时给3至5个有证据的观察方向。"
+            "板块推荐需要当期板块数据，不能从选股名单中出现的行业推导板块排名；"
             "每个方向写清名称、为什么值得关注、接下来观察什么。相近或重叠主题适当合并，"
             "不要把单日强势说成未来必涨；低覆盖率要说清哪些数据缺失，不把部分缺失说成全部无数据。"
             "compacted=true 表示已保留关键数据，完整结果在对应运行中，不能据此声称工具结果为空。"
@@ -2578,7 +2648,7 @@ class TradingAgentHarness:
                 if answer:
                     content = _format_structured_answer(answer)
                 elif content.startswith(("{", "```")):
-                    return self._factual_fallback(evidence)
+                    return self._factual_fallback(evidence, goal=goal)
                 cited = [item for item in evidence if not answer or item["id"] in answer["evidence_refs"]]
                 source_labels = {"market_overview": "市场与板块分析", "market_scanner": "市场筛选",
                                  "stock_analysis": "个股分析", "daily_pipeline": "每日选股",
@@ -2596,10 +2666,15 @@ class TradingAgentHarness:
                 return {"content": full_content, "answer": answer} if answer else full_content
         except Exception as exc:
             logger.warning("Agent synthesis unavailable: %s", exc)
-        return self._factual_fallback(evidence)
+        return self._factual_fallback(evidence, goal=goal)
 
     @staticmethod
-    def _factual_fallback(evidence: list[dict]) -> str:
+    def _factual_fallback(evidence: list[dict], *, goal: str = "") -> str:
+        count_match = re.search(r"(10|[1-9一二三四五六七八九十两])\s*(?:个|条|种)", goal)
+        chinese_counts = {word: i for i, word in enumerate("一二三四五六七八九十", 1)}
+        chinese_counts["两"] = 2
+        count_text = count_match[1] if count_match else "5"
+        count = int(count_text) if count_text.isdigit() else chinese_counts[count_text]
         for item in evidence:
             projected = _answer_evidence_result(item)
             payload = projected.get("result") or {}
@@ -2612,7 +2687,7 @@ class TradingAgentHarness:
             regime = payload.get("regime") or {}
             if regime.get("core_logic"):
                 lines.append(f"大盘背景：{regime['core_logic']}")
-            candidates = [row for row in payload["industry_stances"] if row.get("rating") == "bullish"][:5]
+            candidates = [row for row in payload["industry_stances"] if row.get("rating") == "bullish"][:count]
             if not candidates:
                 return f"截至 {as_of or '本次分析日期'}，已有板块数据中暂未筛出明确的强势方向。建议先等待量价改善，再更新观察名单。"
             lines.extend(f"- **{row.get('industry', '未命名板块')}**：{row.get('reason') or '当前评分相对靠前'}。"
