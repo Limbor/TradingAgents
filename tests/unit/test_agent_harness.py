@@ -15,6 +15,7 @@ from tradingagents.core.agent_harness import (
     AgentStore,
     TradingAgentHarness,
     _answer_evidence_result,
+    _bounded_tool_context,
     _is_daily_pipeline_run_request,
     _paper_state_fingerprint,
 )
@@ -1781,6 +1782,7 @@ async def test_structured_answer_keeps_only_current_task_evidence_refs(tmp_path,
             supplied = json.loads(messages[1].content.split("证据 JSON：\n", 1)[1])
             return SimpleNamespace(content=json.dumps({
                 "summary": "估值数据已读取，仍需核对缺失维度。",
+                "response_markdown": "估值数据已读到，但部分指标缺失。先观察，等数据补齐后再判断。",
                 "verdict": "conditional",
                 "reasons": ["因子快照的日期已标明。"],
                 "risks": ["缺失维度不能解释为中性。"],
@@ -1813,8 +1815,45 @@ async def test_structured_answer_keeps_only_current_task_evidence_refs(tmp_path,
     assert answer["verdict"] == "conditional"
     assert answer["evidence_refs"] == [detail["evidence"][0]["id"]]
     assert "other-task-evidence" not in detail["result"]["content"]
-    assert "判断：有条件判断" in detail["result"]["content"]
-    assert "风险：" in detail["result"]["content"]
+    assert "估值数据已读到，但部分指标缺失" in detail["result"]["content"]
+    assert "判断：" not in detail["result"]["content"]
+    assert "前提：" not in detail["result"]["content"]
+    assert answer["assumptions"] == ["仅讨论当前标的。"]
+
+
+def test_large_sector_evidence_keeps_dated_facts_in_storage_and_model_context(tmp_path):
+    store = AgentStore(Database(tmp_path / "agent.db"))
+    conversation = store.create_conversation("板块观察", None)
+    task = store.create_task(conversation["id"], "推荐近期可以关注的板块")
+    result = {"run_id": "market-run", "source": "TradingAgents Skill: market_overview", "result": {
+        "market_asof_date": "2026-09-30",
+        "regime": {"core_logic": "大盘偏弱，观察相对强势方向。", "confidence": "medium"},
+        "industry_stances": [{"industry": f"板块{index}", "score": 100 - index,
+                              "rating": "bullish", "pct_change": 2.1,
+                              "confidence": "low", "data_coverage": 0.5,
+                              "factor_scores": {"momentum": 80, "funds": None},
+                              "reason": "量价相对强，资金数据缺失。",
+                              "selection_industry_codes": ["irrelevant-taxonomy"] * 200}
+                             for index in range(77)],
+        "degraded": ["northbound_unavailable"],
+    }}
+    evidence = store.add_evidence(task["id"], "skill", result)
+    saved = store.list_evidence(task["id"])[0]
+    assert saved["as_of_date"] == "2026-09-30"
+    assert saved["result"]["compacted"] is True
+    assert "truncated" not in saved["result"]
+    assert saved["result"]["full_result_ref"] == {"type": "run", "id": "market-run"}
+    assert not any("完整结果未保存" in warning for warning in saved["warnings"])
+    model = json.loads(_bounded_tool_context(_answer_evidence_result(evidence)))
+    assert not model.get("truncated")
+    assert model["result"]["industry_total"] == 77
+    strongest = model["result"]["industry_stances"][0]
+    assert strongest["industry"] == "板块0"
+    assert strongest["factor_scores"]["funds"] is None
+    assert strongest["reason"] == "量价相对强，资金数据缺失。"
+    fallback = TradingAgentHarness._factual_fallback([saved])
+    assert "板块0" in fallback and "2026-09-30" in fallback
+    assert "证据不足" not in fallback
 
 
 @pytest.mark.asyncio
