@@ -1145,12 +1145,40 @@ async def test_cancel_stops_task_and_rejects_concurrent_submission(tmp_path):
                    for event in store.list_events(task["id"]))
 
 
+def _capture_task_expiry(monkeypatch):
+    """Fire the real Harness timeout callback after the tested work starts.
+
+    Preparation and SQLite writes can exceed 50ms on a loaded CI runner.
+    Queue deadline tests below retain the real wall-clock deadline coverage.
+    """
+    loop = asyncio.get_running_loop()
+    call_later = loop.call_later
+    callbacks = []
+
+    def capture(delay, callback, *args, context=None):
+        if callback.__module__ == TradingAgentHarness.__module__ and callback.__name__ == "expire":
+            assert 0 < delay <= 30
+            callbacks.append(callback)
+        return call_later(delay, callback, *args, context=context)
+
+    monkeypatch.setattr(loop, "call_later", capture)
+
+    def expire():
+        assert len(callbacks) == 1
+        callbacks[0]()
+
+    return expire
+
+
 @pytest.mark.asyncio
-async def test_total_task_budget_stops_read_and_records_timeout(tmp_path):
+async def test_total_task_budget_stops_read_and_records_timeout(tmp_path, monkeypatch):
+    expire = _capture_task_expiry(monkeypatch)
+    started = asyncio.Event()
     stopped = asyncio.Event()
 
     async def slow_paper(session_id):
         assert session_id == "paper:mine"
+        started.set()
         try:
             await asyncio.Event().wait()
         finally:
@@ -1158,9 +1186,11 @@ async def test_total_task_budget_stops_read_and_records_timeout(tmp_path):
 
     harness, store = _harness(tmp_path, paper_handler=slow_paper)
     harness.config.update(agent_model_planning_enabled=False,
-                          agent_task_timeout_seconds=0.05)
+                          agent_task_timeout_seconds=30)
     conversation = store.create_conversation("测试", "paper:mine")
     task = harness.submit(conversation["id"], "评估模拟盘风险")
+    await asyncio.wait_for(started.wait(), timeout=5)
+    expire()
     await asyncio.wait_for(harness._active[task["id"]], timeout=2)
 
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
@@ -1170,18 +1200,22 @@ async def test_total_task_budget_stops_read_and_records_timeout(tmp_path):
     assert "总时限" in detail["error"]
     assert detail["proposal"] is None
     assert next(event["payload"]["budget"]["total_seconds"] for event in events
-                if event["event_type"] == "task_created") == 0.05
+                if event["event_type"] == "task_created") == 30
     assert any(event["event_type"] == "step_completed" and
                event["payload"].get("reason") == "timeout" for event in events)
     assert any(event["event_type"] == "task_timed_out" for event in events)
 
 
 @pytest.mark.asyncio
-async def test_late_tool_result_cannot_create_paper_proposal(tmp_path):
+@pytest.mark.parametrize("preparation_delay", [0, 0.1])
+async def test_late_tool_result_cannot_create_paper_proposal(tmp_path, monkeypatch, preparation_delay):
+    expire = _capture_task_expiry(monkeypatch)
+    started = asyncio.Event()
     returned_after_cancel = asyncio.Event()
 
     async def slow_paper(session_id):
         assert session_id == "paper:mine"
+        started.set()
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
@@ -1190,9 +1224,18 @@ async def test_late_tool_result_cannot_create_paper_proposal(tmp_path):
 
     harness, store = _harness(tmp_path, paper_handler=slow_paper)
     harness.config.update(agent_model_planning_enabled=False,
-                          agent_task_timeout_seconds=0.05)
+                          agent_task_timeout_seconds=30)
+    open_session = harness._open_native_tool_session
+
+    async def delayed_preparation(*args, **kwargs):
+        await asyncio.sleep(preparation_delay)
+        return await open_session(*args, **kwargs)
+
+    harness._open_native_tool_session = delayed_preparation
     conversation = store.create_conversation("测试", "paper:mine")
     task = harness.submit(conversation["id"], "推进模拟盘到 2026-09-28")
+    await asyncio.wait_for(started.wait(), timeout=5)
+    expire()
     await asyncio.wait_for(harness._active[task["id"]], timeout=2)
 
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
@@ -1204,16 +1247,19 @@ async def test_late_tool_result_cannot_create_paper_proposal(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_late_model_answer_cannot_complete_task(tmp_path):
+async def test_late_model_answer_cannot_complete_task(tmp_path, monkeypatch):
+    expire = _capture_task_expiry(monkeypatch)
+    started = asyncio.Event()
     async def paper(session_id):
         assert session_id == "paper:mine"
         return _paper_status(as_of_date="2026-09-25")
 
     harness, store = _harness(tmp_path, paper_handler=paper)
     harness.config.update(agent_model_planning_enabled=False,
-                          agent_task_timeout_seconds=0.05)
+                          agent_task_timeout_seconds=30)
 
     async def slow_synthesis(*_args, **_kwargs):
+        started.set()
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
@@ -1222,6 +1268,8 @@ async def test_late_model_answer_cannot_complete_task(tmp_path):
     harness._synthesize = slow_synthesis
     conversation = store.create_conversation("测试", "paper:mine")
     task = harness.submit(conversation["id"], "这个模拟盘账户的权益如何？")
+    await asyncio.wait_for(started.wait(), timeout=5)
+    expire()
     await asyncio.wait_for(harness._active[task["id"]], timeout=2)
 
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
