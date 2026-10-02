@@ -279,7 +279,7 @@ test("composite decision is readable and Agent chat stays bound to its account",
   await expect(page.getByRole("combobox", { name: "组合配置" })).toHaveValue("config/allocators/demo.json");
   await expect(page.getByText(/测试组合配置/)).toBeVisible();
   await page.getByRole("button", { name: "问 Agent 原因" }).click();
-  await expect(page).toHaveURL(/\/paper$/);
+  await expect(page).toHaveURL((url) => url.pathname === "/paper" && url.searchParams.get("conversation") === "conversation-1");
   await expect.poll(() => submissions[0]?.paperSessionId).toBe(sessionId);
   await expect(page.getByRole("region", { name: "交易 Agent 对话" })).toContainText("已绑定模拟盘");
   await expect(page.getByText("当前由 wfo 子策略运行。")).toBeVisible();
