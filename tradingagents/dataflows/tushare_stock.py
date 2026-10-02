@@ -97,6 +97,8 @@ def load_ohlcv_ts(symbol: str, curr_date: str) -> pd.DataFrame:
             gap_end = curr_date_dt.strftime("%Y-%m-%d")
             gap = _download_ts_ohlcv(code_ts, gap_start, gap_end)
             if not gap.empty:
+                # Fresh TuShare dates are ISO strings; cached dates are parsed.
+                gap = _clean_dataframe(gap)
                 data = pd.concat([data, gap], ignore_index=True)
                 data = data.drop_duplicates(subset=["Date"]).sort_values("Date")
                 data.to_csv(data_file, index=False, encoding="utf-8")

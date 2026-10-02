@@ -11,6 +11,7 @@ import asyncio
 import os
 
 import pandas as pd
+import pytest
 
 from tradingagents.core.persistence import Database
 from tradingagents.core.run_manager import RunManager
@@ -180,6 +181,32 @@ def test_tushare_cache_file_is_per_code_not_per_date(tmp_path, monkeypatch):
     ts_files = [f for f in files if f.startswith("600519.SH-TS")]
     assert len(ts_files) == 1, f"expected one cache file, got {ts_files}"
     assert ts_files[0] == "600519.SH-TS-data.csv"
+
+
+@pytest.mark.parametrize("vendor", ["akshare", "tushare"])
+def test_cached_ohlcv_gap_normalizes_vendor_date_strings(tmp_path, monkeypatch, vendor):
+    from tradingagents.dataflows import akshare_stock, tushare_stock
+
+    module = akshare_stock if vendor == "akshare" else tushare_stock
+    filename = "600667-AKShare-data.csv" if vendor == "akshare" else "600667.SH-TS-data.csv"
+    loader = module.load_ohlcv_cn if vendor == "akshare" else module.load_ohlcv_ts
+    downloader = "_download_ak_ohlcv" if vendor == "akshare" else "_download_ts_ohlcv"
+    monkeypatch.setattr(module, "get_config", lambda: {"data_cache_dir": str(tmp_path)})
+    pd.DataFrame({"Date": ["2026-09-28"], "Close": [18.0]}).to_csv(tmp_path / filename, index=False)
+    calls = []
+
+    def download(code, start, end):
+        calls.append((start, end))
+        # Real vendors return ISO strings, unlike earlier date_range fixtures.
+        return pd.DataFrame({"Date": ["2026-09-29", "2026-09-30", "2026-10-01"],
+                             "Close": [17.8, 17.29, 99.0]})
+
+    monkeypatch.setattr(module, downloader, download)
+    data = loader("600667.SH", "2026-09-30")
+    assert list(data["Date"].dt.strftime("%Y-%m-%d")) == ["2026-09-28", "2026-09-29", "2026-09-30"]
+    assert list(data["Close"]) == [18.0, 17.8, 17.29]
+    pd.testing.assert_frame_equal(data.reset_index(drop=True), loader("600667.SH", "2026-09-30").reset_index(drop=True))
+    assert calls == [("2026-09-29", "2026-09-30")]
 
 
 # ---------------------------------------------------------------------------

@@ -651,10 +651,35 @@ def _answer_evidence_result(item: dict) -> dict:
             specialist = {key: row[key] for key in ("run_id", "role", "status", "model") if key in row}
             specialist["evidence_refs"] = (row.get("evidence_refs") or [])[:5]
             specialist["memory_refs"] = (row.get("memory_refs") or [])[:5]
-            reports = {key: value[:400] for key, value in (row.get("output") or {}).items()
+            report_limit = max(400, min(1200, 4000 // max(len(rows), 1)))
+            half = report_limit // 2
+            reports = {key: (value if len(value) <= report_limit else
+                            value[:half] + "\n[报告中段省略；以下为结尾]\n" + value[-half:])
+                       for key, value in (row.get("output") or {}).items()
                        if key.endswith("_report") and isinstance(value, str)}
             if reports:
                 specialist["report_excerpts"] = reports
+                specialist["reports_partial"] = any(len(value) > report_limit for key, value in
+                                                     (row.get("output") or {}).items()
+                                                     if key.endswith("_report") and isinstance(value, str))
+            observations = {}
+            for observation in row.get("tool_observations") or []:
+                name = observation.get("tool")
+                if not name:
+                    continue
+                previous = observations.get(name)
+                # Preserve the first successful retrieval, including its date
+                # window, instead of replacing it with older retry windows.
+                if previous and (previous.get("status") == "completed" or observation.get("status") != "completed"):
+                    continue
+                observations[name] = {key: observation[key] for key in
+                                      ("run_id", "tool", "status", "as_of_date", "error_type") if key in observation}
+                if "result_excerpt" in observation:
+                    excerpt_limit = 300 if name == "get_announcements" else 180
+                    observations[name]["result_excerpt"] = observation["result_excerpt"][:excerpt_limit]
+                    observations[name]["excerpt_truncated"] = observation.get("excerpt_truncated", False) or len(observation["result_excerpt"]) > excerpt_limit
+            if observations:
+                specialist["tool_observations"] = list(observations.values())
             specialists.append(specialist)
         return {"run_id": result.get("run_id"), "source": result.get("source"),
                 "as_of_date": result.get("as_of_date"), "compacted": True,
@@ -818,7 +843,8 @@ class _NativeToolSession(AgentSession):
     """Compatibility adapter for server-verified observations and compact evidence."""
     def __init__(self, llm, goal, system_prompt, allowed, timeout, history=None):
         super().__init__(llm, goal, system_prompt, allowed, timeout, history,
-                         max_rounds=_MAX_PLAN_STEPS + 2, encode=_bounded_tool_context)
+                         max_rounds=_MAX_PLAN_STEPS + 2,
+                         encode=lambda value: _bounded_tool_context(value, limit=16000))
 
     def observe_server_step(self, name, item):
         from langchain_core.messages import HumanMessage
@@ -1470,6 +1496,9 @@ class TradingAgentHarness:
             "get_strategy_lessons 是历史复盘，都不能替代当期板块数据。"
             "需要研究、筛选或风险判断时，可先按当前标的、行业和策略条件检索相关经验；"
             "取证结果与历史经验冲突时以本轮证据和硬性约束为准。"
+            "专业研究返回的 tool_observations 是实际工具执行记录；结合返回摘要核对哪些数据已取得，"
+            "不能仅凭报告开头的数据缺口声明，把财报或公告等已返回的内容说成未获取。"
+            "report_excerpts 只是报告片段，省略部分不代表没有相关信息。"
             "工具结果返回后可继续选择工具或停止。账户、标的和日期由服务端校验，"
             "不得尝试修改账户、下单或绕过审批。模拟盘推进只可调用 prepare_paper_advance 生成待确认提案；"
             "用户只是询问方法、否定推进或引用操作文字时不要调用它。"
@@ -2733,7 +2762,7 @@ class TradingAgentHarness:
             "成交或策略规则。区分账本事实、策略既有决策和你的分析。先简短结论，再写关键依据、"
             "风险与数据时点。只有 data_coverage=missing 的因子分数是占位值，不可引用；"
             "available 维度的分数仍是源数据，若没有评分定义，只报告数值，不称其为占位或中性。"
-            "风险公告工具只返回关键词命中日期，没有标题或原文；不能判断事件性质、严重程度，"
+            "get_mcp_risk_announcements 只返回关键词命中日期，没有标题或原文；不能判断事件性质、严重程度，"
             "也不能把零命中解释为没有风险公告。零命中仍是有效扫描结果，不能称工具不可用。"
             "不要承诺调用本轮未提供的公告接口；若需要原文，只能建议用户自行核对正式公告。"
             "若模拟盘 readiness.can_reference_plan=false 或 freshness.is_active_plan_current=false，"
@@ -2749,6 +2778,10 @@ class TradingAgentHarness:
             "每个方向写清名称、为什么值得关注、接下来观察什么。相近或重叠主题适当合并，"
             "不要把单日强势说成未来必涨；低覆盖率要说清哪些数据缺失，不把部分缺失说成全部无数据。"
             "compacted=true 表示已保留关键数据，完整结果在对应运行中，不能据此声称工具结果为空。"
+            "专业研究的 tool_observations 包含实际工具状态与返回片段；优先据此核对数据可得性。"
+            "行情失败不能抹去已取到的财报、新闻或公告；报告片段没写到某信息也不能推断未取到。"
+            "completed 只说明工具执行结束，仍需核对返回内容是否为空或有错误、以及数据日期。"
+            "get_announcements 若返回标题列表，可引用标题与日期，但不能声称已读到公告正文。"
             "评分只作相对筛选依据，不把内部评分直接当收益预测。历史复盘不能替代近期行情。"
             "若提供历史经验，在 memory_usage 数组中逐条说明 referenced 或 not_applicable，"
             "每条包含 lesson_id、status、reason，只引用本轮经验数据中的 id；"

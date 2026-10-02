@@ -52,6 +52,7 @@ class AgentResult(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     memory_refs: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    tool_observations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @dataclass
@@ -184,6 +185,26 @@ def role_node(node, spec):
         context = current_context()
         run.evidence_refs = list(context.evidence_refs)
         run.memory_refs = list(context.memory_refs)
+        if context.db is not None:
+            # wait_for/tool runners can execute in a copied ContextVar scope.
+            # Read durable child receipts rather than assuming their updates
+            # to evidence_refs propagated back to the role's caller.
+            children = [row for row in context.db.list_agent_runtime(context.root_id)
+                        if row.get("parent_id") == run.run_id and row.get("kind") == "tool"]
+            for child in children:
+                result = child.get("output") or {}
+                observation = {"run_id": child["run_id"], "tool": child["role"].removeprefix("tool:"),
+                               "status": child["status"], "as_of_date": child.get("as_of_date")}
+                if "result" in result:
+                    value = result["result"]
+                    text = value if isinstance(value, str) else _json(value)
+                    observation.update(result_excerpt=text[:800], excerpt_truncated=len(text) > 800)
+                elif result.get("error_type"):
+                    observation["error_type"] = result["error_type"]
+                run.tool_observations.append(observation)
+                if child["status"] == "completed":
+                    run.evidence_refs.append(child["run_id"])
+            run.evidence_refs = list(dict.fromkeys(run.evidence_refs))
         return {**output, "specialist_results": [{**run.model_dump(), "status": "completed"}],
                 "agent_evidence_refs": list(run.evidence_refs)}
 

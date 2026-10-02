@@ -94,6 +94,9 @@ def load_ohlcv_cn(symbol: str, curr_date: str) -> pd.DataFrame:
             gap_end = curr_date_dt.strftime("%Y-%m-%d")
             gap = _download_ak_ohlcv(code, gap_start, gap_end)
             if not gap.empty:
+                # Cache dates are Timestamps; vendor dates may be ISO strings.
+                # Normalize before sorting/merging, including duplicate dates.
+                gap = _clean_dataframe(gap)
                 data = pd.concat([data, gap], ignore_index=True)
                 data = data.drop_duplicates(subset=["Date"]).sort_values("Date")
                 data.to_csv(data_file, index=False, encoding="utf-8")

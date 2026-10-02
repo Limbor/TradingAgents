@@ -277,3 +277,57 @@ def test_specialists_receive_shared_memory_and_only_supplied_ids_are_recorded(tm
         assert all(row['memory_refs'] == ['lesson-approved'] for row in rows)
         assert all([u['lesson_id'] for u in row['output']['memory_usage']] == ['lesson-approved'] for row in rows)
     asyncio.run(run())
+
+
+def test_role_handoff_preserves_tool_receipts_across_async_contexts(tmp_path):
+    import json
+
+    from tradingagents.core.agent_harness import _answer_evidence_result, _NativeToolSession
+    from tradingagents.core.agent_runtime import role_node
+    from tradingagents.core.tool_registry import LightweightTool
+
+    db = Database(tmp_path / 'handoff.db')
+    context = AgentContext.root({}, root_id='handoff', db=db, as_of_date='2026-09-30')
+
+    async def announcements():
+        return '# Announcements (2026-06-01 -> 2026-09-30)\n# Rows: 25\n2026-09-18,累计诉讼、仲裁事项的公告'
+
+    async def missing_prices():
+        raise OSError('provider unavailable')
+
+    async def analyst(_state):
+        executor = ToolExecutor([
+            LightweightTool(name='get_announcements', description='', parameters={}, handler=announcements),
+            LightweightTool(name='get_stock_data', description='', parameters={}, handler=missing_prices),
+        ])
+        await executor.execute('get_announcements', {})
+        with pytest.raises(OSError):
+            await executor.execute('get_stock_data', {})
+        return {'fundamentals_report': '行情不可用\n' + '报告详细分析。' * 700 + '\n结论：已取得财报和诉讼公告，价格趋势尚待核实。'}
+
+    async def run():
+        with use_context(context):
+            result = await role_node(analyst, AgentSpec('Fundamentals Analyst')).ainvoke({})
+        specialist = result['specialist_results'][0]
+        receipts = {item['tool']: item for item in specialist['tool_observations']}
+        assert receipts['get_announcements']['status'] == 'completed'
+        assert receipts['get_stock_data']['status'] == 'failed'
+        assert receipts['get_stock_data']['error_type'] == 'OSError'
+        assert receipts['get_announcements']['run_id'] in specialist['evidence_refs']
+        assert receipts['get_announcements']['run_id'] in result['agent_evidence_refs']
+        projected = _answer_evidence_result({'tool_name': 'skill', 'result': {
+            'run_id': 'run', 'source': 'stock_analysis', 'as_of_date': '2026-09-30',
+            'result': {'ticker': '600667.SH', 'structured_conclusion': {'rating': 'Research'},
+                       'specialist_results': result['specialist_results']},
+        }})
+        compact = projected['result']['specialist_results'][0]
+        assert '已取得财报和诉讼公告' in compact['report_excerpts']['fundamentals_report']
+        assert compact['reports_partial'] is True
+        assert '累计诉讼' in compact['tool_observations'][0]['result_excerpt']
+        session = _NativeToolSession(None, 'goal', 'system', {'stock_analysis'}, 1)
+        session.tool_result('call', 'stock_analysis', projected)
+        encoded = json.loads(session.messages[-1].content)
+        assert 'result' in encoded and 'excerpt' not in encoded
+        assert next(row for row in db.list_agent_runtime('handoff') if row['kind'] == 'agent')['tool_observations'] == specialist['tool_observations']
+
+    asyncio.run(run())
