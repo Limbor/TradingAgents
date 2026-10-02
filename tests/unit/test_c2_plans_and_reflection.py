@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tradingagents.api.app import create_app
+from tradingagents.api.app import DEFAULT_CONFIG, create_app
 from tradingagents.core.persistence import Database
 from tradingagents.core.plan_evaluator import evaluate_plan
 from tradingagents.core.plan_monitor import evaluate_active_plans
@@ -254,38 +254,42 @@ def test_stock_analysis_enrolls_reflection_case():
     assert hold_case["eligible_for_strategy_learning"] is False
 
 
-def test_plans_api_and_advance_day_endpoint():
-    import os
-    db_path = Path(tempfile.mktemp(suffix=".db"))
-    os.environ["TRADINGAGENTS_APP_DB"] = str(db_path)
-    try:
-        app = create_app()
-        with TestClient(app) as c:
-            # create an active plan
-            r = c.post("/api/v1/plans", json={
-                "symbol": "600519.SH", "stop_loss": 1400.0, "targets": [1650.0],
-                "conditions": [{"kind": "stop", "description": "死叉"}],
-                "status": "active", "source": "analysis",
-            })
-            assert r.status_code == 200
-            pid = r.json()["id"]
-            # list active
-            assert len(c.get("/api/v1/plans?status=active").json()) == 1
-            # advance trading day (no holdings → empty refresh; no MCP → no evaluation crash)
-            r2 = c.post("/api/v1/portfolio/advance-trading-day")
-            assert r2.status_code == 200, r2.text
-            body = r2.json()
-            assert "refreshed_prices" in body and "plan_alerts" in body and "temporal_context" in body
-            assert body["temporal_context"]["market_asof_date"]
-            # reflection-cases returns due_date
-            c.post("/api/v1/candidate-actions", json={
-                "action": "private", "symbol": "600519.SH", "trade_date": "2026-07-04",
-                "payload": {"rating": "Buy"},
-            })
-            cases = c.get("/api/v1/reflection-cases?status=pending").json()
-            assert len(cases) >= 1
-            assert cases[0]["due_date"] is not None
-            # cleanup
-            assert c.delete(f"/api/v1/plans/{pid}").json()["deleted"] == 1
-    finally:
-        os.environ.pop("TRADINGAGENTS_APP_DB", None)
+def test_plans_api_and_advance_day_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "plans-api.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setattr(
+        "tradingagents.core.plan_evaluator._LiveDataProvider",
+        lambda _config: FakeProvider(price=1600.0),
+    )
+    app = create_app()
+    with TestClient(app) as c:
+        # create an active plan
+        r = c.post("/api/v1/plans", json={
+            "symbol": "600519.SH", "stop_loss": 1400.0, "targets": [1650.0],
+            "conditions": [{"kind": "stop", "description": "死叉"}],
+            "status": "active", "source": "analysis",
+        })
+        assert r.status_code == 200
+        pid = r.json()["id"]
+        # list active
+        assert len(c.get("/api/v1/plans?status=active").json()) == 1
+        # Empty holdings need no refresh; the plan uses a fixed quote so
+        # the complete endpoint workflow stays independent of vendors.
+        r2 = c.post("/api/v1/portfolio/advance-trading-day")
+        assert r2.status_code == 200, r2.text
+        body = r2.json()
+        assert "refreshed_prices" in body and "plan_alerts" in body and "temporal_context" in body
+        assert body["refreshed_prices"]["updated"] == 0
+        assert body["plan_alerts"] == []
+        assert body["temporal_context"]["market_asof_date"]
+        # reflection-cases returns due_date
+        c.post("/api/v1/candidate-actions", json={
+            "action": "private", "symbol": "600519.SH", "trade_date": "2026-07-04",
+            "payload": {"rating": "Buy"},
+        })
+        cases = c.get("/api/v1/reflection-cases?status=pending").json()
+        assert len(cases) >= 1
+        assert cases[0]["due_date"] is not None
+        # cleanup
+        assert c.delete(f"/api/v1/plans/{pid}").json()["deleted"] == 1

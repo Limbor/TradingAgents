@@ -87,6 +87,14 @@ class TestTokenBucket:
 
 @pytest.mark.unit
 class TestModuleBuckets:
+    @pytest.fixture(autouse=True)
+    def _isolated_buckets(self, monkeypatch):
+        # Fake-clock buckets must not survive into later vendor/API tests:
+        # their timestamp can be ahead of a fresh Linux runner's uptime.
+        monkeypatch.setattr(rate_limiter, "akshare_bucket", TokenBucket(rate=1.0))
+        monkeypatch.setattr(rate_limiter, "tushare_bucket", TokenBucket(rate=3.0))
+        monkeypatch.setattr(rate_limiter, "_config_synced", False)
+
     def test_module_level_buckets_exist(self):
         assert isinstance(rate_limiter.akshare_bucket, TokenBucket)
         assert isinstance(rate_limiter.tushare_bucket, TokenBucket)
@@ -102,11 +110,11 @@ class TestModuleBuckets:
         assert rate_limiter.akshare_bucket._rate == pytest.approx(4.0)
         assert rate_limiter.tushare_bucket._rate == pytest.approx(7.0)
 
-    def test_acquire_helpers_are_non_blocking_after_refill(self, fake_clock):
+    def test_acquire_helpers_are_non_blocking_after_refill(self, fake_clock, monkeypatch):
         # Fresh bucket -> first acquire should not sleep.
-        rate_limiter.akshare_bucket = TokenBucket(rate=2.0, capacity=2.0)
+        monkeypatch.setattr(rate_limiter, "akshare_bucket", TokenBucket(rate=2.0, capacity=2.0))
         t0 = fake_clock.t
-        rate_limiter._config_synced = True  # skip auto-sync
+        monkeypatch.setattr(rate_limiter, "_config_synced", True)  # skip auto-sync
         rate_limiter.acquire_akshare()
         assert fake_clock.t == pytest.approx(t0)
 
