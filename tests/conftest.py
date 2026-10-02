@@ -1,6 +1,7 @@
 """Shared pytest fixtures that prevent CI hangs when API keys are absent."""
 
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,6 +46,11 @@ def _offline_background_tasks(monkeypatch, request):
     from tradingagents.default_config import DEFAULT_CONFIG
 
     monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+    # Environment tests reload default_config. The API can still retain the
+    # previous dictionary imported during collection, so isolate that too.
+    app_module = sys.modules.get("tradingagents.api.app")
+    if app_module is not None and app_module.DEFAULT_CONFIG is not DEFAULT_CONFIG:
+        monkeypatch.setitem(app_module.DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
 
 
 @pytest.fixture(autouse=True)
