@@ -3372,3 +3372,43 @@ async def test_preapproval_ledger_conflict_prevents_paper_write(tmp_path, monkey
     assert calls == ["GET"]
     assert store.get_proposal(proposal["id"])["status"] == "stale"
     assert "未执行" in store.get_task(task["id"])["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_large_memory_keeps_structured_snapshots_and_receipts_match_prompt(tmp_path, monkeypatch):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    conversation = store.create_conversation("记忆预算", None)
+    task = store.create_task(conversation["id"], "分析市场背景")
+    lessons = [{"id": f"lesson-{i}", "scope": "global", "lesson_type": "risk_avoidance",
+                "finding": f"{i}" + "历史条件" * 125, "suggested_adjustment": "核对条件" * 75,
+                "created_at": "2026-01-01", "updated_at": "2026-01-01",
+                "confidence": "medium", "evidence_count": 5,
+                "examples": [{"id": f"case-{i}-{j}", "available_at": "2026-01-01",
+                              "outcome": "correct", "lesson": "历史案例" * 100} for j in range(2)]}
+               for i in range(5)]
+    evidence = [{"id": "memory", "task_id": task["id"], "tool_name": "get_strategy_lessons",
+                 "source": "历史经验库", "as_of_date": None, "warnings": [],
+                 "result": {"lessons": lessons, "context": {}, "memory_cutoff": "2026-01-15"}},
+                *[{"id": f"other-{i}", "task_id": task["id"], "tool_name": f"context-{i}",
+                   "source": "运行记录", "as_of_date": "2026-01-15", "warnings": [], "result": {"runs": []}}
+                  for i in range(3)]]
+    seen = []
+
+    class Model:
+        async def ainvoke(self, messages):
+            entries = json.loads(str(messages[-1].content).split("证据 JSON：\n", 1)[1])
+            assert "excerpt" not in entries[0]
+            injected = entries[0]["data"]["lessons"]
+            assert 0 < len(injected) < 5
+            seen.extend(row["id"] for row in injected)
+            return AIMessage(content=json.dumps({"summary": "观察市场", "verdict": "informational",
+                "reasons": [], "risks": [], "assumptions": [], "next_actions": [],
+                "evidence_refs": ["memory"], "response_markdown": "结合当前证据继续观察。", "memory_usage": []}))
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_: SimpleNamespace(get_llm=Model))
+    result = await harness._synthesize("分析市场背景", conversation["id"], evidence)
+    assert result["memory_trace"]["injected_ids"] == seen
+    assert len(result["memory_trace"]["retrieved_ids"]) == 5
+    receipt = next(e for e in store.list_events(task["id"]) if e["event_type"] == "memory_injected")
+    assert receipt["payload"]["lesson_ids"] == seen

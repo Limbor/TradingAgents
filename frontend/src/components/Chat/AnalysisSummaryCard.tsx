@@ -1,3 +1,4 @@
+import { MemoryDetails } from "@/pages/AgentWorkspace/MemoryPanel";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, Bell, ExternalLink, GitBranch, Plus, Shield, Target, TrendingDown, TrendingUp } from "lucide-react";
@@ -37,6 +38,7 @@ export interface TradePlanShape {
 }
 
 export interface AnalysisSummary {
+  memory_trace?: Record<string, unknown>;
   rating?: string;
   target_price?: string;
   confidence?: number;
@@ -304,6 +306,7 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
 
   return (
     <div className="space-y-3 rounded-lg border border-ui-line bg-ui-panel p-4">
+      {summary.memory_trace && <MemoryDetails trace={summary.memory_trace} />}
       {/* Header: Rating + Target + Confidence */}
       <div className="flex items-center gap-4">
         <RatingIcon rating={rating} />
@@ -450,6 +453,7 @@ export function parseAnalysisSummaryFromStructured(data: unknown, runId?: string
     name: typeof d.name === "string" ? d.name : undefined,
     runId,
     plan: toPlan(d.plan),
+    memory_trace: d.memory_trace && typeof d.memory_trace === "object" ? d.memory_trace as Record<string, unknown> : undefined,
     selection_alignment: d.selection_alignment && typeof d.selection_alignment === "object"
       ? d.selection_alignment as AnalysisSummary["selection_alignment"]
       : undefined,

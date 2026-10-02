@@ -24,7 +24,11 @@ from jsonschema.exceptions import ValidationError
 
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
 from tradingagents.core.persistence import Database
-from tradingagents.core.strategy_memory import select_strategy_lessons, validate_memory_usage
+from tradingagents.core.strategy_memory import (
+    load_strategy_lessons,
+    select_strategy_lessons,
+    validate_memory_usage,
+)
 
 logger = logging.getLogger(__name__)
 _PAPER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
@@ -1559,7 +1563,7 @@ class TradingAgentHarness:
                         reason = "duplicate_call"
                     if not reason:
                         used.add(key)
-                        steps.append({"id": f"model-{call_id}", "label": f"调用 {name}",
+                        steps.append({"id": f"model-{call_id}", "label": "检索适用的历史经验" if name == "get_strategy_lessons" else f"调用 {name}",
                                       "tool": name, "args": bound_args,
                                       "tool_call_id": call_id, "model_tool": name})
             if reason:
@@ -1825,6 +1829,10 @@ class TradingAgentHarness:
                     date_conflict = False
                     self.store.event(task_id, "step_started", step)
                     active_step_id = step["id"]
+                    if step["tool"] == "get_strategy_lessons":
+                        self.store.event(task_id, "memory_retrieving", {
+                            "message": "正在检索与当前标的、行业和策略条件相关的已批准经验",
+                        })
                     if (step["tool"] == "get_mcp_risk_announcements" and paper_session_id and
                             "end_date" not in step["args"]):
                         result = {"error": "模拟盘账本缺少有效基准日，不能查询对应时点的风险公告",
@@ -1908,10 +1916,17 @@ class TradingAgentHarness:
                         result.setdefault("source", tool_policy.data_source)
                     item = self.store.add_evidence(task_id, step["tool"], result)
                     evidence.append(item)
+                    if step["tool"] == "get_strategy_lessons" and result.get("error"):
+                        self.store.event(task_id, "memory_unavailable", {
+                            "message": "历史经验检索暂不可用，本轮继续依据当前数据分析",
+                        })
                     if step["tool"] == "get_strategy_lessons" and not result.get("error"):
                         self.store.event(task_id, "memory_retrieved", {
                             "evidence_id": item["id"], "cutoff": result.get("memory_cutoff"),
                             "lesson_ids": [row["id"] for row in result.get("lessons", [])],
+                            "example_count": sum(len(row.get("examples") or []) for row in result.get("lessons", [])),
+                            "message": (f"找到 {len(result.get('lessons') or [])} 条适用经验，正在核对与当前条件是否一致"
+                                        if result.get("lessons") else "未找到适用的已批准经验，本轮依据当前数据分析"),
                         })
                     self.store.event(task_id, "evidence_added", {
                         "evidence_id": item["id"], "source": item["source"],
@@ -2552,10 +2567,24 @@ class TradingAgentHarness:
         cutoff = next((item["as_of_date"] for item in reversed(evidence)
                        if item["tool_name"] != "get_strategy_lessons" and
                        not item["result"].get("error") and item["as_of_date"]), _shanghai_today())
-        evidence = [{**item, "result": {**item["result"], "lessons": select_strategy_lessons(
-            item["result"].get("lessons", []), item["result"].get("context") or {}, as_of_date=cutoff,
-        )}} if item["tool_name"] == "get_strategy_lessons" and not item["result"].get("error")
-            else item for item in evidence]
+        aligned_evidence = []
+        for item in evidence:
+            if item["tool_name"] == "get_strategy_lessons" and not item["result"].get("error"):
+                result = item["result"]
+                pool = result.get("lessons", [])
+                if result.get("memory_cutoff") and result["memory_cutoff"] != cutoff:
+                    try:
+                        pool = load_strategy_lessons(self.store.db, cutoff)
+                    except Exception:
+                        pool = []
+                    if item.get("task_id"):
+                        self.store.event(item["task_id"], "memory_aligned", {
+                            "message": f"按当前证据日期 {cutoff} 重新核对历史经验版本",
+                        })
+                item = {**item, "result": {**result, "memory_cutoff": cutoff,
+                    "lessons": select_strategy_lessons(pool, result.get("context") or {}, as_of_date=cutoff)}}
+            aligned_evidence.append(item)
+        evidence = aligned_evidence
         selected_tickers = tickers if tickers is not None else self._goal_tickers(goal)
         conversation = self.store.get_conversation(conversation_id) or {}
         required_tools: list[tuple[str, str | None]] = []
@@ -2653,13 +2682,18 @@ class TradingAgentHarness:
         history = history if history is not None else self._conversation_history(conversation_id)
         history_text = _json(history)
         context_budget = max(1000, 27_000 // max(len(evidence), 1))
-        evidence_text = _json([json.loads(_bounded_tool_context(
-            {"id": e["id"], "source": e["source"], "as_of_date": e["as_of_date"],
-             "warnings": e["warnings"], "data": _answer_evidence_result(e)},
-            limit=context_budget,
-        ))
-            for e in evidence
-        ])
+        context_entries = []
+        for item in evidence:
+            entry = {"id": item["id"], "source": item["source"], "as_of_date": item["as_of_date"],
+                     "warnings": item["warnings"], "data": _answer_evidence_result(item)}
+            if item["tool_name"] == "get_strategy_lessons":
+                # Keep valid structured lessons instead of an unreadable JSON
+                # excerpt when examples make the memory result exceed budget.
+                entry["data"] = {**entry["data"], "lessons": list(entry["data"].get("lessons") or [])}
+                while len(_json(entry)) > context_budget and entry["data"]["lessons"]:
+                    entry["data"]["lessons"].pop()
+            context_entries.append(json.loads(_bounded_tool_context(entry, limit=context_budget)))
+        evidence_text = _json(context_entries)
         injected_memory = [row for entry in json.loads(evidence_text)
                            for row in (entry.get("data") or {}).get("lessons", [])]
         ticker_context = (f"服务端确认的标的：{', '.join(selected_tickers)}\n\n"
@@ -2688,6 +2722,8 @@ class TradingAgentHarness:
             "评分只作相对筛选依据，不把内部评分直接当收益预测。历史复盘不能替代近期行情。"
             "若提供历史经验，在 memory_usage 数组中逐条说明 referenced 或 not_applicable，"
             "每条包含 lesson_id、status、reason，只引用本轮经验数据中的 id；"
+            "如果经验互有冲突，要结合周期、行业和数据覆盖说明差异，不按数量投票。"
+            "原始案例的收益是历史事实，不能外推当前收益或代替当期行情。"
             "这是你报告的参考情况，不代表因果效果或收益提升；未提供经验则返回空数组。"
             "如果数据不足，用两三句话说明能判断什么、缺什么和下一步，不写一整页内部故障报告。"
             "正文不得出现工具英文名、证据ID、RunManager、JSON字段名或‘开放受控取证环境’等内部术语；"
@@ -2706,6 +2742,11 @@ class TradingAgentHarness:
                 model=model or self._agent_model(),
                 base_url=self.config.get("backend_url"),
             ).get_llm()
+            if injected_memory and evidence[0].get("task_id"):
+                self.store.event(evidence[0]["task_id"], "memory_comparing", {
+                    "lesson_ids": [row["id"] for row in injected_memory], "as_of_date": cutoff,
+                    "message": f"正在结合当前证据核对 {len(injected_memory)} 条历史经验的适用条件",
+                })
             response = await asyncio.wait_for(llm.ainvoke([
                 SystemMessage(content=prompt),
                 HumanMessage(content=(f"北京时间当前日期：{_shanghai_today()}\n最近对话：\n{history_text}\n\n当前问题：{goal}\n"
@@ -2746,12 +2787,18 @@ class TradingAgentHarness:
                 if answer:
                     memory = injected_memory
                     return {"content": full_content, "answer": answer, "memory_trace": {
+                        "retrieved_ids": [row["id"] for item in evidence if item["tool_name"] == "get_strategy_lessons"
+                                          for row in item["result"].get("lessons", [])],
                         "injected_ids": [row["id"] for row in memory], "snapshots": memory,
                         "as_of_date": cutoff, "usage": answer.get("memory_usage", []),
                         "status": "model_reported" if answer.get("memory_usage") else "usage_not_reported",
                     } if memory else None}
                 return full_content
         except Exception as exc:
+            if injected_memory and evidence[0].get("task_id"):
+                self.store.event(evidence[0]["task_id"], "memory_unavailable", {
+                    "message": "本轮回答生成未完成，无法确认模型如何参考经验；已保留检索记录",
+                })
             logger.warning("Agent synthesis unavailable: %s", exc)
         return self._factual_fallback(evidence, goal=goal)
 

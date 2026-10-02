@@ -291,17 +291,16 @@ async def list_lesson_cases(request: Request, lesson_id: str):
     lesson = db.get_strategy_lesson(lesson_id)
     if not lesson:
         return []
-    payload = lesson.get("payload") or {}
-    evidence = payload.get("evidence_cases") if isinstance(payload, dict) else None
-    if not isinstance(evidence, list):
-        return []
+    from tradingagents.core.strategy_memory import lesson_case_ids
+
+    evidence = lesson_case_ids(lesson)
 
     from tradingagents.core.trading_time import advance_trading_days
 
     items: list[ReflectionCaseItem] = []
     seen: set[str] = set()
     for entry in evidence:
-        cid = str((entry or {}).get("id") if isinstance(entry, dict) else "") or ""
+        cid = entry
         if not cid or cid in seen:
             continue
         seen.add(cid)
@@ -493,3 +492,58 @@ async def mine_patterns(request: Request, background_tasks: BackgroundTasks):
         status="accepted",
         message="Pattern mining scheduled in background. Check strategy-lessons for results.",
     )
+
+
+@router.get("/strategy-lessons/{lesson_id}/versions")
+async def list_lesson_versions(request: Request, lesson_id: str):
+    """Content and approval history for a lesson (bounded immutable snapshots)."""
+    return request.app.state.db.list_strategy_lesson_versions(lesson_id)
+
+
+@router.get("/strategy-memory/overview")
+async def get_memory_overview(request: Request):
+    """Governance inventory and recent observed usage, not effectiveness claims."""
+    import json
+    from datetime import datetime, timezone
+
+    db = request.app.state.db
+    now = datetime.now(timezone.utc).isoformat()
+    with db._conn() as conn:
+        counts = conn.execute("""SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN active = 1 AND governance_status = 'approved'
+                AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) > julianday(?))
+                THEN 1 ELSE 0 END) AS available,
+            SUM(CASE WHEN governance_status IN ('candidate', 'validated') THEN 1 ELSE 0 END) AS pending,
+            SUM(CASE WHEN governance_status = 'retired' THEN 1 ELSE 0 END) AS retired,
+            SUM(CASE WHEN expires_at IS NOT NULL AND expires_at != ''
+                AND (julianday(expires_at) IS NULL OR julianday(expires_at) <= julianday(?)) THEN 1 ELSE 0 END) AS expired
+            FROM strategy_lessons""", (now, now)).fetchone()
+        tasks = conn.execute("SELECT id, result_json FROM agent_tasks ORDER BY created_at DESC LIMIT 200").fetchall()
+        versions = conn.execute("SELECT COUNT(*) FROM strategy_lesson_versions").fetchone()[0]
+        receipts = set()
+        if tasks:
+            placeholders = ",".join("?" for _ in tasks)
+            receipts = {row[0] for row in conn.execute(
+                f"SELECT DISTINCT task_id FROM agent_events WHERE event_type = 'memory_injected' "
+                f"AND task_id IN ({placeholders})", [row["id"] for row in tasks],
+            )}
+    usage = {"sampled_tasks": len(tasks), "injected_tasks": 0, "reported_tasks": 0,
+             "referenced": 0, "not_applicable": 0}
+    for task in tasks:
+        result = json.loads(task["result_json"] or "{}")
+        trace = result.get("memory_trace") or {}
+        usage["injected_tasks"] += bool(trace.get("injected_ids")) or task["id"] in receipts
+        usage["reported_tasks"] += bool(trace.get("usage"))
+        for entry in trace.get("usage") or []:
+            if entry.get("status") in {"referenced", "not_applicable"}:
+                usage[entry["status"]] += 1
+    artifacts = db.list_artifacts(limit=1, artifact_type="memory_evaluation")
+    evaluation = db.get_artifact(artifacts[0]["id"]) if artifacts else None
+    if evaluation:
+        report = evaluation.get("payload") or {}
+        evaluation = {"id": evaluation["id"], "created_at": evaluation["created_at"],
+                      **{key: value for key, value in report.items() if key != "rows"}}
+    return {"inventory": {key: int(value or 0) for key, value in dict(counts).items()},
+            "version_count": versions, "usage": usage, "evaluation": evaluation,
+            "as_of": now, "usage_scope": "最近 200 个工作台任务；模型报告的参考情况不代表收益改善"}

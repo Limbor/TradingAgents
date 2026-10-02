@@ -993,3 +993,17 @@ export async function healthCheck(): Promise<Record<string, unknown>> {
 export async function listProviders(): Promise<ProviderDetail[]> {
   return fetchJson(`${API_BASE}/config/providers`);
 }
+
+export interface MemoryOverviewData {
+  inventory: { total: number; available: number; pending: number; retired: number; expired: number };
+  version_count: number;
+  usage: { sampled_tasks: number; injected_tasks: number; reported_tasks: number; referenced: number; not_applicable: number };
+  evaluation: null | {
+    id: string; model: string; total_pairs: number; memory_pairs: number; min_samples: number;
+    sufficient_samples: boolean; changed_directions: number;
+    arms: Record<"with_memory" | "without_memory", { coverage: number | null; hit_rate: number | null }>;
+  };
+}
+export const getMemoryOverview = () => fetchJson<MemoryOverviewData>(`${API_BASE}/strategy-memory/overview`);
+export const listLessonVersions = (lessonId: string) =>
+  fetchJson<Array<StrategyLesson & { version_id: number }>>(`${API_BASE}/strategy-lessons/${encodeURIComponent(lessonId)}/versions`);

@@ -205,6 +205,15 @@ CREATE INDEX IF NOT EXISTS idx_strategy_lessons_active ON strategy_lessons(activ
 CREATE INDEX IF NOT EXISTS idx_strategy_lessons_type ON strategy_lessons(lesson_type);
 CREATE INDEX IF NOT EXISTS idx_strategy_lessons_scope ON strategy_lessons(scope, target);
 
+CREATE TABLE IF NOT EXISTS strategy_lesson_versions (
+    version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id TEXT NOT NULL,
+    effective_at TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lesson_versions_cutoff
+ON strategy_lesson_versions(lesson_id, effective_at);
+
 CREATE TABLE IF NOT EXISTS plans (
     id TEXT PRIMARY KEY,
     symbol TEXT NOT NULL,
@@ -567,6 +576,20 @@ class Database:
                     "UPDATE strategy_lessons SET governance_status = 'candidate', active = 0 "
                     "WHERE lesson_type = 'cross_symbol_pattern'"
                 )
+            # Capture every lesson mutation, including governance changes. A
+            # legacy row has only its last known version; never invent history.
+            conn.execute("""INSERT INTO strategy_lesson_versions
+                (lesson_id, effective_at, snapshot_json)
+                SELECT id, updated_at, json_object('id', id, 'lesson_type', lesson_type, 'scope', scope, 'target', target, 'finding', finding, 'suggested_adjustment', suggested_adjustment, 'evidence_count', evidence_count, 'confidence', confidence, 'active', active, 'governance_status', governance_status, 'expires_at', expires_at, 'payload_json', payload_json, 'created_at', created_at, 'updated_at', updated_at)
+                FROM strategy_lessons WHERE NOT EXISTS (
+                    SELECT 1 FROM strategy_lesson_versions v WHERE v.lesson_id = strategy_lessons.id
+                )""")
+            for operation in ("INSERT", "UPDATE"):
+                conn.execute(f"""CREATE TRIGGER IF NOT EXISTS lesson_version_{operation.lower()}
+                    AFTER {operation} ON strategy_lessons BEGIN
+                    INSERT INTO strategy_lesson_versions (lesson_id, effective_at, snapshot_json)
+                    VALUES (NEW.id, NEW.updated_at, json_object('id', NEW.id, 'lesson_type', NEW.lesson_type, 'scope', NEW.scope, 'target', NEW.target, 'finding', NEW.finding, 'suggested_adjustment', NEW.suggested_adjustment, 'evidence_count', NEW.evidence_count, 'confidence', NEW.confidence, 'active', NEW.active, 'governance_status', NEW.governance_status, 'expires_at', NEW.expires_at, 'payload_json', NEW.payload_json, 'created_at', NEW.created_at, 'updated_at', NEW.updated_at));
+                    END""")
             self._backfill_report_artifacts(conn)
             self._backfill_decision_records(conn)
             # One-time dedup of historical reflection_cases created before the
@@ -1989,7 +2012,8 @@ class Database:
                     evidence_count, confidence, active, governance_status, expires_at, payload_json,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        COALESCE((SELECT created_at FROM strategy_lessons WHERE id = ?), ?), ?)
                 """,
                 (
                     lesson_id,
@@ -2004,10 +2028,54 @@ class Database:
                     governance_status or ("approved" if active else "candidate"),
                     expires_at,
                     json.dumps(payload or {}, ensure_ascii=False),
+                    lesson_id,
                     now,
                     now,
                 ),
             )
+
+    @staticmethod
+    def _decode_lesson_version(row: dict) -> dict:
+        snapshot = json.loads(row["snapshot_json"])
+        snapshot["active"] = bool(snapshot.get("active"))
+        snapshot["payload"] = json.loads(snapshot.pop("payload_json", "{}") or "{}")
+        snapshot["version_id"] = row["version_id"]
+        return snapshot
+
+    def get_reflection_cases_by_ids(self, case_ids: list[str]) -> list[dict]:
+        """Batch resolve memory references without one DB connection per lesson."""
+        rows = []
+        with self._conn() as conn:
+            for start in range(0, len(case_ids), 500):
+                batch = case_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows.extend(conn.execute(
+                    f"SELECT * FROM reflection_cases WHERE id IN ({placeholders})", batch,
+                ).fetchall())
+        return [self._decode_reflection_case(dict(row)) for row in rows]
+
+    def list_strategy_lesson_versions(self, lesson_id: str, limit: int = 30) -> list[dict]:
+        """Immutable content/governance receipts, newest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_lesson_versions WHERE lesson_id = ? "
+                "ORDER BY julianday(effective_at) DESC, version_id DESC LIMIT ?",
+                (lesson_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [self._decode_lesson_version(dict(row)) for row in rows]
+
+    def list_strategy_lessons_as_of(self, cutoff: str, limit: int = 2000) -> list[dict]:
+        """Use the last version known at cutoff, including then-active retired lessons."""
+        with self._conn() as conn:
+            rows = conn.execute("""SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY lesson_id ORDER BY julianday(effective_at) DESC, version_id DESC
+                ) AS rank FROM strategy_lesson_versions
+                WHERE julianday(effective_at) <= julianday(?)
+            ) WHERE rank = 1 AND json_extract(snapshot_json, '$.active') = 1
+                AND json_extract(snapshot_json, '$.governance_status') = 'approved'
+            ORDER BY julianday(effective_at) DESC LIMIT ?""", (cutoff, max(1, min(limit, 2000)))).fetchall()
+        return [self._decode_lesson_version(dict(row)) for row in rows]
 
     def list_strategy_lessons(
         self,
@@ -2057,7 +2125,7 @@ class Database:
             item["payload"] = {}
         return item
 
-    def update_strategy_lesson(self, lesson_id: str, **fields: Any) -> dict | None:
+    def update_strategy_lesson(self, lesson_id: str, *, evidence_count_is_total: bool = False, **fields: Any) -> dict | None:
         """Incrementally update a strategy lesson's fields.
 
         Supports cumulative updates: when ``evidence_count`` is passed, it is
@@ -2076,7 +2144,7 @@ class Database:
             existing = dict(row)
 
         # Accumulate evidence_count if provided
-        if "evidence_count" in fields:
+        if "evidence_count" in fields and not evidence_count_is_total:
             current_count = int(existing.get("evidence_count", 1))
             fields["evidence_count"] = current_count + int(fields["evidence_count"])
 
@@ -2136,15 +2204,30 @@ class Database:
             return int(cur.rowcount or 0) > 0
 
     def approve_strategy_lesson(self, lesson_id: str) -> bool:
-        """Manually approve a reviewed candidate for strategy injection."""
+        """Approve the current version and freeze its supporting cases."""
+        from tradingagents.core.strategy_memory import lesson_case_ids, reflection_case_example
+
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
-            cur = conn.execute(
+            row = conn.execute("SELECT * FROM strategy_lessons WHERE id = ?", (lesson_id,)).fetchone()
+            if row is None or row["governance_status"] not in {"candidate", "validated"}:
+                return False
+            lesson = dict(row)
+            payload = json.loads(lesson["payload_json"] or "{}")
+            examples = []
+            for cid in lesson_case_ids({"payload": payload}):
+                case = conn.execute("SELECT * FROM reflection_cases WHERE id = ?", (cid,)).fetchone()
+                if case:
+                    example = reflection_case_example(self._decode_reflection_case(dict(case)))
+                    if example:
+                        examples.append(example)
+            payload["memory_examples"] = examples
+            conn.execute(
                 "UPDATE strategy_lessons SET active = 1, governance_status = 'approved', "
-                "updated_at = ? WHERE id = ? AND governance_status IN ('candidate', 'validated')",
-                (now, lesson_id),
+                "payload_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), now, lesson_id),
             )
-            return int(cur.rowcount or 0) > 0
+            return True
 
     def upsert_holding(
         self,

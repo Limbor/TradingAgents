@@ -163,3 +163,21 @@ def test_undated_legacy_memory_is_not_used_in_historical_analysis(tmp_path):
     log = TradingMemoryLog({"memory_log_path": str(path)})
     assert "旧经验" in log.get_past_context("000002.SZ")  # Old files remain readable.
     assert log.get_past_context("000002.SZ", as_of_date="2026-07-01") == ""
+
+
+def test_equivalent_lessons_are_deduplicated_and_opposing_lessons_flagged():
+    lessons = [_lesson("risk", lesson_type="risk_avoidance"),
+               _lesson("opportunity", lesson_type="opportunity_cost"),
+               _lesson("copy", finding="risk finding", lesson_type="risk_avoidance", confidence="low")]
+    selected = select_strategy_lessons(lessons, {"industry": "房地产"}, as_of_date="2026-07-01")
+    assert {row["id"] for row in selected} == {"risk", "opportunity"}
+    assert next(row for row in selected if row["id"] == "risk")["conflicting_ids"] == ["opportunity"]
+
+
+def test_legacy_industry_pattern_is_not_broadcast_to_unrelated_tasks():
+    lesson = _lesson("legacy", scope="global", target="", lesson_type="cross_symbol_pattern",
+                     payload={"dimension": "industry=医药生物"})
+    assert select_strategy_lessons([lesson], {"industry": "房地产"}, as_of_date="2026-07-01") == []
+    selected = select_strategy_lessons([lesson], {"industry": "医药"}, as_of_date="2026-07-01")
+    assert selected[0]["scope"] == "industry"
+    assert select_strategy_lessons(selected, {"industry": "房地产"}, as_of_date="2026-07-01") == []

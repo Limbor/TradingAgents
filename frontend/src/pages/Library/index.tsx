@@ -1,3 +1,4 @@
+import { MemoryDetails } from "@/pages/AgentWorkspace/MemoryPanel";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -24,6 +25,7 @@ const FILTERS = [
   { label: "风险报告", value: "risk_report" },
   { label: "组合报告", value: "portfolio_report" },
   { label: "反思记录", value: "reflection_report" },
+  { label: "记忆评测", value: "memory_evaluation" },
   { label: "收盘复盘", value: "daily_review_report" },
   { label: "次日计划", value: "next_day_plan" },
 ];
@@ -35,6 +37,7 @@ const PRIMARY_ARTIFACT_TYPES = new Set([
   "risk_report",
   "portfolio_report",
   "reflection_report",
+  "memory_evaluation",
   "daily_review_report",
 ]);
 
@@ -47,6 +50,7 @@ const TYPE_LABELS: Record<string, string> = {
   signal_pack: "信号包",
   decision_pack: "决策包",
   reflection_report: "反思记录",
+  memory_evaluation: "记忆评测",
   daily_review_report: "收盘复盘",
   next_day_plan: "次日计划",
 };
@@ -54,7 +58,7 @@ const TYPE_LABELS: Record<string, string> = {
 export default function Library() {
   const goChat = useGoChat();
   const [searchParams] = useSearchParams();
-  const [artifactType, setArtifactType] = useState("");
+  const [artifactType, setArtifactType] = useState(searchParams.get("artifact_type") || "");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const runId = searchParams.get("run_id") || undefined;
@@ -325,6 +329,13 @@ function StructuredArtifact({ artifact, onAnalyze }: { artifact: ArtifactInfo; o
     );
   }
 
+  if (artifact.artifact_type === "stock_report") {
+    return <MemoryDetails trace={(payload.structured_conclusion as Record<string, unknown> | undefined)?.memory_trace} />;
+  }
+  if (artifact.artifact_type === "memory_evaluation") {
+    return <MemoryEvaluationArtifact payload={payload} />;
+  }
+
   if (artifact.artifact_type === "risk_report") {
     return <RiskAlertList risks={parseRisks(payload.risks)} onAnalyze={onAnalyze} />;
   }
@@ -569,4 +580,20 @@ function Metric({ label, value }: { label: string; value: string }) {
       <div className="mt-1 font-mono text-lg font-semibold text-ui-ink">{value}</div>
     </div>
   );
+}
+
+function MemoryEvaluationArtifact({ payload }: { payload: Record<string, unknown> }) {
+  const rows = Array.isArray(payload.rows) ? payload.rows as Array<Record<string, unknown>> : [];
+  const pct = (value: unknown) => typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "—";
+  const viewNames: Record<string, string> = { positive: "看好", strong_positive: "强看好", neutral: "中性", negative: "谨慎", strong_negative: "强谨慎" };
+  return <div className="space-y-4 text-sm text-ui-body">
+    <p>{String(payload.model || "模型未知")} · {String(payload.total_pairs || 0)} 对样本 · {String(payload.memory_pairs || 0)} 对匹配经验</p>
+    <p className="text-xs leading-5 text-ui-muted">两组使用相同的信号时点数据，历史结果仅用于事后评分。比较判断质量，不等于账户收益。</p>
+    <div className="overflow-x-auto"><table className="w-full whitespace-nowrap text-left text-xs tabular-nums"><thead><tr className="border-b border-ui-line">{["日期", "标的", "无记忆", "有记忆", "实际超额", "经验数"].map(label => <th key={label} className="p-2 font-normal text-ui-muted">{label}</th>)}</tr></thead><tbody>{rows.map((row, i) => {
+      const without = row.without_memory as Record<string, unknown>;
+      const withMemory = row.with_memory as Record<string, unknown>;
+      return <tr key={i} className="border-b border-ui-line"><td className="p-2">{String(row.trade_date)}</td><td className="p-2">{String(row.symbol)}</td><td className="p-2">{viewNames[String(without?.view)] || "—"}</td><td className="p-2">{viewNames[String(withMemory?.view)] || "—"}</td><td className="p-2">{pct(row.excess_return)}</td><td className="p-2">{Array.isArray(row.memory_ids) ? row.memory_ids.length : 0}</td></tr>;
+    })}</tbody></table></div>
+    <p className="text-xs text-ui-faint">{payload.sufficient_samples ? "样本达到初步比较门槛，仍需重复和分组评测。" : "适用样本不足，暂不判断记忆是否有效。"}</p>
+  </div>;
 }

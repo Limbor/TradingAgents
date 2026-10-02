@@ -1,3 +1,4 @@
+import { MemoryDetails } from "@/pages/AgentWorkspace/MemoryPanel";
 import { Fragment, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ArrowRight, ChevronDown, ChevronRight, Info, Plus, RefreshCw, ShieldCheck, TrendingUp } from "lucide-react";
@@ -40,6 +41,7 @@ export interface CandidateRow {
   keyRisks?: string[];
   reasoning?: string;
   strategyLessonHits?: Array<Record<string, unknown>>;
+  memoryTrace?: Record<string, unknown>;
   lessonAdjustmentReason?: string;
   raw?: Record<string, unknown>;
 }
@@ -336,6 +338,7 @@ function CandidateExpanded({
         <ListBlock title="关键催化剂" items={row.keyCatalysts} empty="暂无明确催化剂" tone="emerald" />
         <ListBlock title="关键风险" items={row.keyRisks} empty="暂无显式风险" tone="amber" />
         <TradePlanBlock row={row} />
+        {row.memoryTrace && <MemoryDetails trace={row.memoryTrace} />}
         <QuantGateBlock row={row} />
         <DataCoverageBlock row={row} />
       </div>
@@ -349,12 +352,12 @@ function CandidateExpanded({
           onDaysChange={setChartDays}
           onRefresh={() => reviewQuery.refetch()}
         />
-        <ListBlock
+        {!row.memoryTrace && <ListBlock
           title="反思经验命中（历史案例复盘，非本次门控状态）"
           items={lessonHits.map((item) => String(item.finding || item.suggested_adjustment || item.id || ""))}
           empty="本次未命中历史策略经验"
           tone="purple"
-        />
+        />}
         {row.lessonAdjustmentReason && (
           <div className="rounded border border-ui-info/20 bg-ui-info/5 p-2 text-ui-info">
             {row.lessonAdjustmentReason}
@@ -762,6 +765,7 @@ export function parseCandidates(raw: unknown): CandidateRow[] {
         : typeof (row.llm_review as Record<string, unknown> | undefined)?.reasoning === "string"
           ? String((row.llm_review as Record<string, unknown>).reasoning)
           : undefined,
+      memoryTrace: row.memory_trace && typeof row.memory_trace === "object" ? row.memory_trace as Record<string, unknown> : undefined,
       strategyLessonHits: Array.isArray(row.strategy_lesson_hits)
         ? row.strategy_lesson_hits as Array<Record<string, unknown>>
         : undefined,

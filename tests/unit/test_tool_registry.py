@@ -407,6 +407,8 @@ class TestLightweightToolHandlers:
         mock_db.list_strategy_lessons.return_value = [
             {"id": "l1", "lesson_type": "ex_ante_miss", "scope": "global", "finding": "高估值+资金流缺失胜率下降", "suggested_adjustment": "降低权重", "confidence": "high", "evidence_count": 3, "created_at": "2026-01-01"},
         ]
+        mock_db.list_strategy_lessons_as_of.return_value = mock_db.list_strategy_lessons.return_value
+        mock_db.get_reflection_cases_by_ids.return_value = []
         handler = make_get_strategy_lessons(mock_db)
         result = await handler()
         assert result["total"] == 1

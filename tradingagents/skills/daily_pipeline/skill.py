@@ -147,7 +147,7 @@ class DailyPipelineSkill(BaseSkill):
         input_params = _apply_runtime_defaults(input_params, config, temporal_context)
         db = config.get("db") or Database()
         profile = db.get_user_profile()
-        strategy_lessons = _load_strategy_lessons(db)
+        strategy_lessons = _load_strategy_lessons(db, temporal_context.market_asof_date)
 
         # Adaptive alpha: when enabled, translate the measured prediction
         # scorecard into a production fusion-weight override. Gated by the
@@ -296,6 +296,13 @@ class DailyPipelineSkill(BaseSkill):
             candidates,
             strategy_lessons=strategy_lessons,
             alpha_override=alpha_override,
+        )
+        memory_traces = [row.get("memory_trace") or {} for row in candidates]
+        memory_count = sum(len(trace.get("injected_ids") or []) for trace in memory_traces)
+        yield skill_progress(
+            stage_id="strategy_memory", stage_label="核对历史经验", status="completed",
+            detail=(f"候选复核共提供 {memory_count} 次经验参考，可在候选详情查看理由"
+                    if memory_count else "本轮候选未注入适用经验，依据当前证据复核"),
         )
         yield skill_progress(
             stage_id="llm_review",
@@ -1978,11 +1985,11 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _load_strategy_lessons(db: Database) -> list[dict[str, Any]]:
+def _load_strategy_lessons(db: Database, as_of_date: str | None = None) -> list[dict[str, Any]]:
     try:
         from tradingagents.core.strategy_memory import load_strategy_lessons
 
-        return load_strategy_lessons(db)
+        return load_strategy_lessons(db, as_of_date)
     except Exception as exc:
         logger.warning("Failed to load strategy lessons for daily pipeline: %s", exc)
         return []

@@ -619,6 +619,12 @@ class CrossSymbolPatternMiner:
                 "n": bucket.scored_n,
             },
         )
+        if (merged and merged.get("governance_status") == "approved" and
+                merged.get("finding") == finding and merged.get("suggested_adjustment") == adjustment and
+                merged.get("confidence") == confidence and
+                {key: (merged.get("payload") or {}).get(key) for key in payload if key != "history"} ==
+                {key: value for key, value in payload.items() if key != "history"}):
+            return merged
         if merged:
             try:
                 updated = self._db.update_strategy_lesson(
@@ -627,12 +633,9 @@ class CrossSymbolPatternMiner:
                     suggested_adjustment=adjustment,
                     evidence_count=bucket.n,
                     confidence=confidence,
-                    governance_status=(
-                        merged.get("governance_status")
-                        if merged.get("governance_status") == "approved"
-                        else governance
-                    ),
-                    active=bool(merged.get("active")) and merged.get("governance_status") == "approved",
+                    governance_status=governance,
+                    active=False,
+                    evidence_count_is_total=True,
                     payload=payload,
                 )
                 result["lessons_updated"] += 1
@@ -967,6 +970,12 @@ class CrossSymbolPatternMiner:
                 "n": n,
             },
         )
+        if (merged and merged.get("governance_status") == "approved" and
+                merged.get("finding") == finding and merged.get("suggested_adjustment") == adjustment and
+                merged.get("confidence") == confidence and
+                {key: (merged.get("payload") or {}).get(key) for key in payload if key != "history"} ==
+                {key: value for key, value in payload.items() if key != "history"}):
+            return merged
         if merged:
             try:
                 updated = self._db.update_strategy_lesson(
@@ -975,12 +984,9 @@ class CrossSymbolPatternMiner:
                     suggested_adjustment=adjustment,
                     evidence_count=n,
                     confidence=confidence,
-                    governance_status=(
-                        merged.get("governance_status")
-                        if merged.get("governance_status") == "approved"
-                        else governance
-                    ),
-                    active=bool(merged.get("active")) and merged.get("governance_status") == "approved",
+                    governance_status=governance,
+                    active=False,
+                    evidence_count_is_total=True,
                     payload=payload,
                 )
                 result["lessons_updated"] += 1

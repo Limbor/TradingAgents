@@ -161,6 +161,12 @@ class MarketScannerSkill(BaseSkill):
                 input_params, config, candidates, trade_date=trade_date, style=style
             )
             warnings = [*warnings, *review_warnings]
+            memory_count = sum(len((row.get("memory_trace") or {}).get("injected_ids") or []) for row in candidates)
+            yield skill_progress(
+                stage_id="strategy_memory", stage_label="核对历史经验", status="completed",
+                detail=(f"候选复核共提供 {memory_count} 次经验参考，可在候选详情查看理由"
+                        if memory_count else "本轮候选未注入适用经验，依据当前证据复核"),
+            )
             yield skill_progress(
                 stage_id="llm_review",
                 stage_label="LLM 候选复核",
@@ -535,7 +541,7 @@ async def _apply_llm_reviews(
 
     memory_warnings = []
     try:
-        lessons = load_strategy_lessons(config.get("db"))
+        lessons = load_strategy_lessons(config.get("db"), trade_date)
     except Exception:
         lessons = []
         memory_warnings.append("历史经验检索不可用；本轮复核未注入策略经验。")

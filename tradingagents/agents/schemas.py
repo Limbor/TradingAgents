@@ -354,6 +354,12 @@ class SelectionReconciliation(BaseModel):
     )
 
 
+class StrategyMemoryUsage(BaseModel):
+    lesson_id: str = Field(description="Exact ID from the historical lesson context")
+    status: Literal["referenced", "not_applicable"]
+    reason: str = Field(description="Why this historical lesson applies or does not apply now", max_length=300)
+
+
 class PortfolioDecision(BaseModel):
     """Structured output produced by the Portfolio Manager.
 
@@ -363,6 +369,10 @@ class PortfolioDecision(BaseModel):
     the rating-scale guidance.
     """
 
+    memory_usage: list[StrategyMemoryUsage] = Field(
+        default_factory=list,
+        description="For each supplied historical lesson, report reference or non-applicability. Empty without lessons.",
+    )
     rating: PortfolioRating = Field(
         description=(
             "The final position rating. Exactly one of Buy / Overweight / Hold / "

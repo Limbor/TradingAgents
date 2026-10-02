@@ -19,6 +19,7 @@ from tradingagents.core.strategy_memory import (
     lesson_prompt_section,
     load_strategy_lessons,
     select_strategy_lessons,
+    validate_memory_usage,
 )
 from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.skills._shared import optional_float, resolve_temporal_context
@@ -171,7 +172,7 @@ class StockAnalysisSkill(BaseSkill):
         memory_error = None
         try:
             selected_memory = select_strategy_lessons(
-                load_strategy_lessons(db), {
+                load_strategy_lessons(db, temporal_context.market_asof_date), {
                     "symbol": input_params.ticker,
                     "industry": (input_params.selection_context or {}).get("industry") or
                                 (holding_context or {}).get("industry"),
@@ -211,6 +212,13 @@ class StockAnalysisSkill(BaseSkill):
                 "holding_context_available": bool(holding_context),
                 "selection_context_available": bool(input_params.selection_context),
             },
+        )
+        yield skill_progress(
+            stage_id="strategy_memory", stage_label="核对历史经验", status="completed",
+            detail=memory_error or (f"提供 {len(selected_memory)} 条适用经验供分析参考，使用情况以报告为准"
+                                   if selected_memory else "未找到适用的已批准经验，依据当前证据分析"),
+            data={"memory_trace": {"snapshots": selected_memory, "as_of_date": temporal_context.market_asof_date,
+                                   "status": "provided_to_analysis"}},
         )
         yield skill_progress(
             stage_id="prepare",
@@ -317,11 +325,15 @@ class StockAnalysisSkill(BaseSkill):
             holding_context,
             market=market,
         )
+        memory_usage = validate_memory_usage(
+            (structured_portfolio_decision or {}).get("memory_usage") or [], selected_memory,
+        )
         structured_conclusion["memory_trace"] = {
             "injected_ids": [row["id"] for row in selected_memory],
             "snapshots": selected_memory, "as_of_date": temporal_context.market_asof_date,
-            "status": "provided_to_analysis" if selected_memory else "not_injected",
-            "usage": [], "warning": memory_error,
+            "retrieved_ids": [row["id"] for row in selected_memory],
+            "status": "model_reported" if memory_usage else "provided_to_analysis" if selected_memory else "not_injected",
+            "usage": memory_usage, "warning": memory_error,
         }
         structured_conclusion["selection_alignment"] = reconcile_selection_analysis(
             input_params.selection_context,
@@ -520,6 +532,7 @@ class StockAnalysisSkill(BaseSkill):
                     "confidence": structured_conclusion.get("confidence"),
                     "reasons": structured_conclusion.get("reasons"),
                     "selection_context": selection_context,
+                    "memory_trace": structured_conclusion.get("memory_trace"),
                 },
                 # stock_analysis scope: Buy/Overweight/Sell/Underweight ->
                 # decision_grade; Hold/other -> candidate_pool.

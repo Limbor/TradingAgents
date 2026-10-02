@@ -18,6 +18,8 @@ import { ThemeToggle } from "@/components/Layout/Header";
 import type { ChatNavState, IntentHint } from "@/lib/chatNav";
 import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyChatImport";
 
+import { MemoryDetails, MemoryProgress, taskMemory } from "./MemoryPanel";
+
 interface Props {
   paperSessionId?: string;
   embedded?: boolean;
@@ -89,13 +91,13 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
     .map((event) => event.payload.reason).filter((reason): reason is string =>
       typeof reason === "string" && reason !== "模型原生工具调用");
   const revisionReason = revisionReasons[revisionReasons.length - 1];
-  const stages = new Map<string, { label: string; status: string }>();
+  const stages = new Map<string, { label: string; status: string; detail?: string }>();
   for (const event of task.events) {
     if (event.event_type !== "skill_progress" || event.payload.event_type !== "skill_progress") continue;
     const payload = asObject(event.payload.payload);
     if (typeof payload.stage_id !== "string" || typeof payload.stage_label !== "string") continue;
     const key = `${String(event.payload.run_id || "")}:${payload.stage_id}`;
-    stages.set(key, { label: payload.stage_label, status: String(payload.status || "running") });
+    stages.set(key, { label: payload.stage_label, status: String(payload.status || "running"), detail: typeof payload.detail === "string" ? payload.detail : undefined });
   }
   const skillStages = Array.from(stages.values()).slice(-5);
   const textOnly = isTextOnlyAnswer(task);
@@ -115,8 +117,9 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
         <span className="min-w-0">{step.label}</span><span className="whitespace-nowrap text-ui-faint">{step.status === "completed" ? "已完成" : step.status === "failed" ? failedStepReasonText[step.reason ?? ""] ?? "失败" : step.status === "running" ? "进行中" : "待执行"}</span>
       </div>)}</div> : <p className="text-ui-muted">{activeStatuses.has(task.status) ? "正在解析任务目标…" : "本任务没有可展示的执行步骤。"}</p>}
       {skillStages.length > 0 && <div className="space-y-1 border-l border-ui-line pl-3 text-xs text-ui-muted" aria-label="分析子任务进度">
-        {skillStages.map((stage, index) => <p key={index}>{stage.label} · {statusText[stage.status] ?? stage.status}</p>)}
+        {skillStages.map((stage, index) => <div key={index}><p>{stage.label} · {statusText[stage.status] ?? stage.status}</p>{stage.detail && <p className="mt-0.5 break-words leading-5 text-ui-faint">{stage.detail}</p>}</div>)}
       </div>}
+      <MemoryProgress task={task} />
       {task.status === "reviewing" && <p className="pl-6 text-xs text-ui-muted">正在核对证据并形成回答…</p>}
       {textOnly && <p className="text-xs text-ui-muted">本轮未运行分析工具，也没有可引用的结果数据。</p>}
       {task.status === "failed" && <p role="alert" className="text-xs text-ui-danger">{task.error || "任务执行失败"}</p>}
@@ -230,15 +233,16 @@ function EvidenceCard({ item }: { item: AgentEvidence }) {
   const facts = evidenceFacts(item);
   const failed = Boolean(item.result.error);
   const retrieved = new Date(item.retrieved_at);
-  const status = failed ? "读取失败" : item.warnings.length ? "有数据提示" : "已取证";
+  const historical = item.tool_name === "get_strategy_lessons";
+  const status = failed ? "读取失败" : historical ? "历史参考" : item.warnings.length ? "有数据提示" : "已取证";
   const skillRunId = (item.tool_name === "skill" || item.tool_name.startsWith("skill:")) && typeof item.result.run_id === "string"
     ? item.result.run_id : null;
   return <article className="border-b border-ui-line py-3 first:pt-0 last:border-b-0">
     <div className="flex items-start gap-2">{failed ? <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-ui-danger" /> : <Database className="mt-0.5 h-4 w-4 shrink-0 text-ui-accent" />}<p className="min-w-0 flex-1 break-words text-xs leading-5 text-ui-body">{item.summary}</p><span className={`shrink-0 whitespace-nowrap text-xs ${failed ? "text-ui-danger" : item.warnings.length ? "text-ui-warning" : "text-ui-accent"}`}>{status}</span></div>
     {facts.length > 0 && <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 pl-6">{facts.map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-ui-faint">{label}</dt><dd className="truncate text-sm font-medium tabular-nums text-ui-ink" title={value}>{value}</dd></div>)}</dl>}
     <dl className="mt-3 space-y-1 pl-6 text-xs leading-5 text-ui-muted">
-      <div className="flex gap-2"><dt className="w-12 shrink-0 text-ui-faint">来源</dt><dd className="min-w-0 truncate" title={item.source}>{item.source}</dd></div>
-      <div className="flex gap-2"><dt className="w-12 shrink-0 text-ui-faint">基准日</dt><dd>{item.as_of_date || "未知"}</dd></div>
+      <div className="flex gap-2"><dt className="w-12 shrink-0 text-ui-faint">来源</dt><dd className="min-w-0 truncate" title={item.source}>{historical ? "历史经验库" : item.source}</dd></div>
+      <div className="flex gap-2"><dt className="w-12 shrink-0 text-ui-faint">{historical ? "经验截止" : "基准日"}</dt><dd>{historical ? String(item.result.memory_cutoff || "未知") : item.as_of_date || "未知"}</dd></div>
       {!Number.isNaN(retrieved.getTime()) && <div className="flex gap-2"><dt className="w-12 shrink-0 text-ui-faint">获取于</dt><dd>{retrieved.toLocaleString("zh-CN")}</dd></div>}
     </dl>
     {item.warnings.map((warning, index) => <p key={index} className="mt-2 flex min-w-0 gap-1.5 text-xs leading-5 text-ui-warning"><CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span className="min-w-0 break-words [overflow-wrap:anywhere]">{warning}</span></p>)}
@@ -255,6 +259,7 @@ function Inspector({ task, paperId, paperName, overlay, onClose }: { task?: Agen
     <div className="min-h-0 min-w-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-5 text-sm">
       {paperId && <section><h3 className="agent-section-title">账户范围</h3><strong className="mt-2 block truncate text-sm font-medium" title={paperId}>{paperName}</strong><div className="mt-1 flex min-w-0 items-center gap-2"><code className="min-w-0 flex-1 truncate text-xs text-ui-muted" title={paperId}>{paperId}</code><button type="button" aria-label="复制账户 ID" title="复制账户 ID" onClick={() => { void navigator.clipboard?.writeText(paperId); }} className="shrink-0 text-ui-muted hover:text-ui-accent"><Copy className="h-3.5 w-3.5" /></button></div><Link to={`/paper?session=${encodeURIComponent(paperId)}`} className="mt-2 inline-flex items-center gap-1 whitespace-nowrap text-xs text-ui-accent">查看完整账本 <ArrowRight className="h-3 w-3" /></Link></section>}
       <section className={paperId ? "border-t border-ui-line pt-4" : ""}><h3 className="agent-section-title">当前目标</h3><p className="mt-2 break-words text-sm leading-6 text-ui-body">{task?.goal || "输入交易问题后，这里显示目标、证据和结果。"}</p></section>
+      {task && taskMemory(task) && <div className="border-t border-ui-line pt-4"><MemoryDetails trace={taskMemory(task)} /></div>}
       <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">证据快照 <span className="font-normal text-ui-faint">{task?.evidence.length ?? 0} 项</span></h3>
         {task?.evidence.length ? <div className="mt-3">{task.evidence.map((item) => <EvidenceCard key={item.id} item={item} />)}</div> : <p className="mt-2 text-xs leading-5 text-ui-faint">等待工具返回可核对的数据来源。</p>}
       </section>

@@ -8,6 +8,7 @@ import {
   getPredictionScorecard,
   getReflectionSummary,
   listLessonCases,
+  listLessonVersions,
   listReflectionCases,
   listStrategyLessons,
   minePatterns,
@@ -36,6 +37,8 @@ import {
   orderedBuckets,
   sparklinePoints,
 } from "./helpers";
+
+import MemoryOverview from "./MemoryOverview";
 
 const LOOKBACKS = [7, 30, 90] as const;
 const CASE_STATUSES = [
@@ -95,6 +98,7 @@ export default function Reflection() {
   };
 
   const refreshAll = () => {
+    qc.invalidateQueries({ queryKey: ["strategy-memory-overview"] });
     qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
     qc.invalidateQueries({ queryKey: ["reflection-cases"] });
     qc.invalidateQueries({ queryKey: ["reflections-summary"] });
@@ -107,7 +111,8 @@ export default function Reflection() {
       const res = await deactivateLesson(id);
       if (res.status === "ok") {
         setNotice("经验已停用，后续复核不再注入。");
-        qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
+        qc.invalidateQueries({ queryKey: ["strategy-memory-overview"] });
+    qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
       } else {
         setError("未找到该经验，可能已被移除。");
       }
@@ -122,7 +127,8 @@ export default function Reflection() {
       const res = await approveLesson(id);
       if (res.status === "ok") {
         setNotice("经验已人工批准，后续分析可使用该规则。");
-        qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
+        qc.invalidateQueries({ queryKey: ["strategy-memory-overview"] });
+    qc.invalidateQueries({ queryKey: ["reflection-lessons"] });
       } else {
         setError("该经验不是可批准候选，或已被处理。");
       }
@@ -190,6 +196,7 @@ export default function Reflection() {
         </p>
       </section>
 
+      <MemoryOverview />
       {/* Prediction-quality scorecard (read-only measurement) */}
       <ScorecardSection query={scorecard} lookback={lookback} />
 
@@ -306,6 +313,11 @@ function LessonCard({
     enabled: open,
   });
 
+  const versions = useQuery({
+    queryKey: ["lesson-versions", lesson.id, lesson.updated_at],
+    queryFn: () => listLessonVersions(lesson.id), enabled: open,
+  });
+
   const retire = async () => {
     setRetiring(true);
     try {
@@ -326,7 +338,7 @@ function LessonCard({
 
   return (
     <div className={`rounded-lg border p-3 ${lesson.active ? "border-ui-line bg-ui-subtle" : "border-ui-line/60 bg-ui-subtle/40 opacity-70"}`}>
-      <div className="mb-1.5 flex items-center gap-2">
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <ConfidenceBadge confidence={lesson.confidence} />
         <span className={`rounded px-1.5 py-0.5 text-xs ${m.isNeutral ? "border border-ui-info/30 text-ui-info" : "border border-ui-warning/30 text-ui-warning"}`}>
           {m.isNeutral ? "中性通道" : "方向通道"}
@@ -419,6 +431,16 @@ function LessonCard({
             )}
           </div>
 
+          <details className="border-t border-ui-line pt-2 text-xs text-ui-muted">
+            <summary className="cursor-pointer">版本与批准记录</summary>
+            {versions.isLoading && <p className="mt-2">正在读取版本…</p>}
+            {versions.isError && <p className="mt-2 text-ui-warning">版本记录暂不可用。</p>}
+            <div className="mt-2 space-y-2">{(versions.data ?? []).map(version => <div key={version.version_id} className="border-l border-ui-line pl-3 leading-5">
+              <p>版本 {version.version_id} · {new Date(version.updated_at).toLocaleString("zh-CN")} · {version.governance_status === "approved" ? "已批准" : version.governance_status === "retired" ? "已停用" : "等待批准"}</p>
+              <p className="break-words text-ui-body">{version.finding}</p>
+            </div>)}</div>
+            <p className="mt-2 text-ui-faint">历史分析使用当时可用的版本；早期记录仅保留迁移时已知的内容。</p>
+          </details>
           {/* Supporting evidence: the reflection cases behind this lesson. */}
           <div>
             <p className="mb-1 text-xs text-ui-faint">支撑证据</p>

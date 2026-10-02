@@ -56,7 +56,7 @@ export interface AgentTask {
   conversation_id: string;
   goal: string;
   status: string;
-  result: { content?: string; citations?: unknown[]; read_only?: boolean; answer?: AgentAnswer };
+  result: { content?: string; citations?: unknown[]; read_only?: boolean; answer?: AgentAnswer; memory_trace?: Record<string, unknown> };
   error: string | null;
   created_at: string;
   updated_at: string;

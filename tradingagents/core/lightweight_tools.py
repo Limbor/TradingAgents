@@ -484,7 +484,7 @@ def make_get_strategy_lessons(db: Any):
             date.fromisoformat(cutoff)
             context = {"symbol": symbol, "industries": industries or [], "board": board,
                        "factors": factors or [], "style": style, "regime": regime, "task_type": task_type}
-            lessons = select_strategy_lessons(load_strategy_lessons(db), context,
+            lessons = select_strategy_lessons(load_strategy_lessons(db, cutoff), context,
                                               as_of_date=cutoff, limit=limit)
         except Exception as exc:
             return {"error": f"Failed to retrieve strategy lessons: {exc}", "warnings": []}
