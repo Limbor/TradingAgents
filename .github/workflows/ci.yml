@@ -26,7 +26,9 @@ jobs:
       - name: Install locked test environment
         run: uv sync --frozen --extra dev --extra api --extra mcp
       - name: Run test suite
-        run: uv run pytest -q -m "not live"
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: uv run pytest -vv -m "not live" --durations=15 -o faulthandler_timeout=60
 
   frontend:
     name: frontend quality
