@@ -618,7 +618,7 @@ def test_execute_saves_fixed_id_artifact_when_llm_unavailable(monkeypatch):
     def fake_save(config, **kwargs):
         saved.update(kwargs)
 
-    def fake_fetch(trade_date, params, degraded):
+    def fake_fetch(trade_date, params, degraded, progress_callback=None):
         market_data = {
             "indices": [
                 {
@@ -692,7 +692,7 @@ def test_execute_rejects_empty_market_snapshot(monkeypatch):
     monkeypatch.setattr(
         mo,
         "_fetch_market_data",
-        lambda trade_date, params, degraded: (
+        lambda trade_date, params, degraded, progress_callback=None: (
             {
                 "indices": [],
                 "breadth": None,
@@ -746,7 +746,7 @@ def test_execute_degrades_when_industry_llm_times_out(monkeypatch):
     saved: dict = {}
     real_industry = mo._llm_industry_stances
 
-    def fake_fetch(trade_date, params, degraded):
+    def fake_fetch(trade_date, params, degraded, progress_callback=None):
         market_data = {
             "indices": [{"code": "sh000001", "name": "上证指数", "close": 3000.0}],
             "breadth": {"up": 3000, "down": 2000},

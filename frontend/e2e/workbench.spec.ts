@@ -158,7 +158,7 @@ test("analysis renders replayed WebSocket report content", async ({ page }) => {
   });
   await page.goto("/analysis/run-1");
   await expect(page.getByText("趋势保持强势")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Market", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "行情走势", exact: true })).toBeVisible();
 });
 
 test("chat renders a lightweight tool answer with provenance", async ({ page }) => {

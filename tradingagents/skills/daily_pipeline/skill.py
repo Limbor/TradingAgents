@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from tradingagents.agents.utils.memory import TradingMemoryLog
+from tradingagents.core.activity_labels import report_activity
 from tradingagents.core.adaptive_alpha import resolve_alpha_override
 from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.candidate_review_runner import apply_llm_reviews
@@ -283,20 +284,26 @@ class DailyPipelineSkill(BaseSkill):
         )
         yield skill_progress(
             stage_id="llm_review",
-            stage_label="LLM 候选复核",
+            stage_label="逐只复核候选股票",
             status="running",
             detail="正在检查催化剂、风险、公告和资金流上下文",
             agent="LLM Reviewer",
             progress_pct=60,
         )
-        review_warnings, review_meta = await _apply_llm_reviews(
-            input_params,
-            config,
-            profile,
-            candidates,
-            strategy_lessons=strategy_lessons,
-            alpha_override=alpha_override,
-        )
+        async for kind, value in drive_with_progress(
+            lambda on_progress: _apply_llm_reviews(
+                input_params,
+                {**config, "_activity_progress": on_progress},
+                profile,
+                candidates,
+                strategy_lessons=strategy_lessons,
+                alpha_override=alpha_override,
+            )
+        ):
+            if kind == "progress":
+                yield SkillEvent(event_type="skill_progress", data=value)
+            else:
+                review_warnings, review_meta = value
         memory_traces = [row.get("memory_trace") or {} for row in candidates]
         memory_count = sum(len(trace.get("injected_ids") or []) for trace in memory_traces)
         yield skill_progress(
@@ -306,24 +313,27 @@ class DailyPipelineSkill(BaseSkill):
         )
         yield skill_progress(
             stage_id="llm_review",
-            stage_label="LLM 候选复核",
+            stage_label="逐只复核候选股票",
             status="completed",
             detail=f"复核状态: {'可用' if review_meta.get('available') else '降级'}",
             agent="LLM Reviewer",
             progress_pct=78,
         )
         warnings = [*warnings, *review_warnings]
-        deep_warnings, deep_meta = await _apply_deep_analysis(
-            input_params,
-            config,
-            profile,
-            candidates,
-        )
+        async for kind, value in drive_with_progress(
+            lambda on_progress: _apply_deep_analysis(
+                input_params, {**config, "_activity_progress": on_progress}, profile, candidates,
+            )
+        ):
+            if kind == "progress":
+                yield SkillEvent(event_type="skill_progress", data=value)
+            else:
+                deep_warnings, deep_meta = value
         warnings = [*warnings, *deep_warnings]
         if deep_meta.get("enabled"):
             yield skill_progress(
                 stage_id="deep_analysis",
-                stage_label="Top N 深度分析",
+                stage_label="深入分析优先候选",
                 status="completed",
                 detail=(
                     f"深度分析 {deep_meta.get('analyzed', 0)} 只，"
@@ -368,10 +378,7 @@ class DailyPipelineSkill(BaseSkill):
                 ],
             },
         )
-        briefing = await _render_llm_briefing(candidates, warnings, temporal_context, config)
         report = _render_report(input_params, candidates, profile, mcp_used, warnings, temporal_context)
-        if briefing:
-            report = briefing + "\n" + report
         yield SkillEvent(
             event_type="agent_status",
             data={"agent": "Report Writer", "status": "正在生成每日选股早报"},
@@ -384,6 +391,10 @@ class DailyPipelineSkill(BaseSkill):
             agent="Report Writer",
             progress_pct=88,
         )
+        briefing = await _render_llm_briefing(candidates, warnings, temporal_context, config)
+        if briefing:
+            report = briefing + "\n" + report
+
         signal_result = _save_candidate_signals(db, str(config.get("run_id", "")), input_params.trade_date, candidates)
         _save_daily_pipeline_artifacts(
             config,
@@ -1745,6 +1756,8 @@ async def _apply_deep_analysis(
         if not symbol:
             continue
         selection_context = _selection_context_for(candidate, input_params.trade_date)
+        await report_activity(config, f"deep:{symbol}", "深入分析候选股票", "running",
+                              detail=f"标的 {symbol}", agent="Deep Analyst")
         try:
             conclusion = await asyncio.wait_for(
                 _run_deep_analysis_once(
@@ -1753,6 +1766,8 @@ async def _apply_deep_analysis(
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
+            await report_activity(config, f"deep:{symbol}", "深入分析候选股票", "failed",
+                                  detail=f"标的 {symbol} · 分析超时", agent="Deep Analyst")
             meta["failed"] = int(meta["failed"]) + 1
             warnings.append(
                 f"Deep analysis timed out for {symbol} after {timeout_seconds:.0f}s."
@@ -1764,10 +1779,16 @@ async def _apply_deep_analysis(
             )
             continue
         except Exception as exc:  # best-effort: one failure must not abort the batch
+            await report_activity(config, f"deep:{symbol}", "深入分析候选股票", "failed",
+                                  detail=f"标的 {symbol} · 分析未完成", agent="Deep Analyst")
             meta["failed"] = int(meta["failed"]) + 1
             warnings.append(f"Deep analysis failed for {symbol}: {exc}")
             logger.warning("Daily pipeline deep analysis failed for %s: %s", symbol, exc)
             continue
+        await report_activity(config, f"deep:{symbol}", "深入分析候选股票",
+                              "completed" if conclusion else "failed",
+                              detail=f"标的 {symbol}" + ("" if conclusion else " · 未返回分析结论"),
+                              agent="Deep Analyst")
         if conclusion:
             alignment = reconcile_selection_analysis(
                 selection_context,
@@ -1806,6 +1827,13 @@ async def _run_deep_analysis_once(
     )
     conclusion: dict[str, Any] = {}
     async for event in analysis_skill.execute(params, config):
+        if event.event_type == "skill_progress" and config.get("_activity_progress"):
+            payload = {**event.data}
+            payload["activity_id"] = f"deep:{symbol}:{payload.get('activity_id') or payload['stage_id']}"
+            payload["stage_id"] = payload["activity_id"]
+            payload["parent_activity_id"] = f"deep:{symbol}"
+            payload["detail"] = f"标的 {symbol} · {payload.get('detail') or ''}".rstrip(" ·")
+            await config["_activity_progress"](payload)
         if event.event_type == "skill_complete":
             conclusion = event.data.get("structured_conclusion") or {}
     return conclusion

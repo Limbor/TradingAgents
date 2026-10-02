@@ -1,3 +1,4 @@
+import { agentRole } from "@/utils/activityLabels";
 interface AgentStatus {
   agent: string;
   status: "pending" | "running" | "completed" | "failed";
@@ -9,19 +10,19 @@ interface AgentGraphProps {
 
 const PHASES = [
   {
-    label: "Analysts",
+    label: "证据分析",
     agents: ["Market Analyst", "Sentiment Analyst", "News Analyst", "Fundamentals Analyst"],
   },
   {
-    label: "Research",
+    label: "多空研究",
     agents: ["Bull Researcher", "Bear Researcher", "Research Manager"],
   },
-  { label: "Trading", agents: ["Trader"] },
+  { label: "交易计划", agents: ["Trader"] },
   {
-    label: "Risk",
+    label: "风险评估",
     agents: ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"],
   },
-  { label: "Decision", agents: ["Portfolio Manager"] },
+  { label: "最终判断", agents: ["Portfolio Manager"] },
 ];
 
 const statusStyle: Record<string, string> = {
@@ -61,7 +62,7 @@ export function AgentGraph({ agentStatuses }: AgentGraphProps) {
                   key={agent}
                   className={`flex min-h-8 items-center justify-between rounded-md border px-2.5 py-1.5 text-xs ${statusStyle[status]}`}
                 >
-                  <span className="truncate">{agent}</span>
+                  <span className="truncate">{agentRole(agent)}</span>
                   <span className={`h-1.5 w-1.5 rounded-full ${
                     status === "running"
                       ? "animate-pulse bg-ui-accent"

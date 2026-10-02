@@ -67,6 +67,7 @@ def skill_progress(
     status: SkillProgressStatus = "running",
     step_id: str | None = None,
     step_label: str | None = None,
+    activity_id: str | None = None,
     detail: str | None = None,
     agent: str | None = None,
     progress_pct: float | None = None,
@@ -88,6 +89,8 @@ def skill_progress(
         payload["step_id"] = step_id
     if step_label:
         payload["step_label"] = step_label
+    if activity_id:
+        payload["activity_id"] = activity_id
     if detail:
         payload["detail"] = detail
     if agent:

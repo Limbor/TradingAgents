@@ -3,6 +3,7 @@
  * Single source of truth for both Chat and Dashboard.
  */
 
+import { activityDetail, activityMessage, AGENT_ACTIONS, toolAction } from "./activityLabels";
 import type { WSMessage } from "@/api/ws";
 import type { ChatTaskStatus } from "@/stores/useChatStore";
 
@@ -38,18 +39,16 @@ export function skillTitle(skillId?: string): string {
 export function eventStepLabel(message: WSMessage): string {
   const typeLabels: Record<string, string> = {
     agent_status: "Agent 状态更新",
-    tool_call: `调用数据工具：${toolLabel(String(message.payload.tool ?? "unknown"))}`,
-    report_chunk: `生成 ${String(message.payload.section ?? "报告")} 片段`,
+    tool_call: activityMessage(toolAction(String(message.payload.tool ?? "")), String(message.payload.status ?? "running")),
+    report_chunk: `生成 ${({ market_report: "行情分析", sentiment_report: "情绪分析", news_report: "新闻分析", fundamentals_report: "基本面分析", investment_plan: "研究结论", trader_investment_plan: "交易计划", final_trade_decision: "最终判断" } as Record<string, string>)[String(message.payload.section)] ?? "报告"} 片段`,
     skill_complete: "技能执行完成",
     report_complete: "报告汇总完成",
   };
   if (message.type === "agent_status") {
     const agent = String(message.payload.agent ?? "Agent");
-    const label = AGENT_STAGE_LABELS[agent] ?? agent;
+    const label = AGENT_ACTIONS[agent] ?? AGENT_STAGE_LABELS[agent] ?? "分析任务";
     const status = String(message.payload.status ?? "running");
-    if (status === "completed") return `${label}完成`;
-    if (status === "failed") return `${label}失败`;
-    return `${label}进行中`;
+    return activityMessage(label, status);
   }
   return typeLabels[message.type] ?? message.type;
 }
@@ -114,7 +113,7 @@ export function formatPayloadBrief(payload: Record<string, unknown>): string | u
   if ("agent" in payload && "status" in payload) return undefined;
   if ("skill_id" in payload) return undefined;
   if ("tool" in payload) {
-    return formatKV(payload.args) ?? String(payload.tool);
+    return activityDetail(payload.args);
   }
   return formatKV(payload);
 }
@@ -165,5 +164,5 @@ export function toolLabel(tool: string): string {
   for (const [key, label] of Object.entries(labels)) {
     if (normalized.includes(key)) return label;
   }
-  return tool;
+  return "分析数据";
 }

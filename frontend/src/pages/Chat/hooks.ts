@@ -136,6 +136,7 @@ export function useChatWebSocket() {
         useChatStore.getState().setResponseScope(null);
       } else if (message.type === "skill_progress" || message.type === "progress_update") {
         addTaskStep(message.run_id, {
+          activityId: String(message.payload.activity_id ?? message.payload.stage_id ?? message.payload.step_id ?? "") || undefined,
           label: progressStepLabel(message.payload),
           detail: progressStepDetail(message.payload),
           status: normalizeTaskStatus(message.payload.status),
@@ -302,9 +303,10 @@ export function useChatWebSocket() {
         return;
       } else if (message.run_id) {
         addTaskStep(message.run_id, {
+          activityId: typeof message.payload.activity_id === "string" ? message.payload.activity_id : undefined,
           label: eventStepLabel(message),
           detail: formatPayloadBrief(message.payload),
-          status: "running",
+          status: normalizeTaskStatus(message.payload.status),
         });
       }
     });

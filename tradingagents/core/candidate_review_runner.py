@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tradingagents.core.activity_labels import report_activity
 from tradingagents.core.candidate_enrichment import CandidateContext, enrich_candidates
 from tradingagents.core.llm_candidate_review import (
     CandidateLLMReview,
@@ -118,18 +119,26 @@ async def apply_llm_reviews(
     # Enrich reviewed candidates with real-time data (news, announcements, flow).
     context_map: dict[str, CandidateContext] = {}
     if enrich and review_set:
+        await report_activity(config, "candidate_context", "查询候选股票的新闻、公告与资金信息", "running",
+                              detail=f"共 {len(review_set)} 只候选股票", agent="LLM Reviewer")
         try:
             context_map = await enrich_candidates(
                 review_set,
                 trade_date,
                 config,
             )
+            await report_activity(config, "candidate_context", "查询候选股票的新闻、公告与资金信息", "completed",
+                                  detail="已结束查询；缺失数据会在候选详情中说明", agent="LLM Reviewer")
         except Exception as exc:
+            await report_activity(config, "candidate_context", "查询候选股票的新闻、公告与资金信息", "failed",
+                                  detail="数据补充不可用，将依据已有证据复核", agent="LLM Reviewer")
             logger.warning("Candidate enrichment failed; proceeding without context: %s", exc)
 
     async def _do_review(candidate: dict[str, Any]) -> tuple[dict[str, Any], Any | None, Exception | None]:
+        symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
+        await report_activity(config, f"review:{symbol}", "复核候选股票的机会与风险", "running",
+                              detail=f"标的 {symbol}", agent="LLM Reviewer")
         try:
-            symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
             ctx = context_map.get(symbol)
             selector = getattr(reviewer, "select_memory", None)
             selected = (selector(candidate) if callable(selector) else select_strategy_lessons(
@@ -149,10 +158,14 @@ async def apply_llm_reviews(
                 "snapshots": injected, "as_of_date": trade_date,
                 "status": "pending" if injected else "not_injected",
             }
-            raw_review = await reviewer.review(candidate, **kwargs)
+            raw_review = coerce_llm_review(await reviewer.review(candidate, **kwargs))
+            await report_activity(config, f"review:{symbol}", "复核候选股票的机会与风险", "completed",
+                                  detail=f"标的 {symbol}", agent="LLM Reviewer")
             candidate["memory_trace"]["status"] = "injected" if injected else "not_injected"
             return candidate, raw_review, None
         except Exception as exc:
+            await report_activity(config, f"review:{symbol}", "复核候选股票的机会与风险", "failed",
+                                  detail=f"标的 {symbol} · 模型复核未完成", agent="LLM Reviewer")
             if candidate.get("memory_trace", {}).get("injected_ids"):
                 candidate["memory_trace"]["status"] = "review_failed"
             return candidate, None, exc

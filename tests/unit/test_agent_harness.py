@@ -1301,7 +1301,13 @@ async def test_same_skill_in_two_conversations_has_independent_cancel_and_final_
             if runs_started == 2:
                 started.set()
             yield SkillEvent(event_type="agent_status", data={"run_id": config["run_id"]})
+            yield SkillEvent(event_type="tool_call", data={
+                "tool": "get_stock_data", "activity_id": "price", "status": "running",
+            })
             await finish.wait()
+            yield SkillEvent(event_type="tool_call", data={
+                "tool": "get_stock_data", "activity_id": "price", "status": "completed",
+            })
             yield SkillEvent(event_type="skill_progress", data={
                 "stage_id": "done", "stage_label": "分析完成", "status": "completed",
             })
@@ -1351,7 +1357,7 @@ async def test_same_skill_in_two_conversations_has_independent_cancel_and_final_
     progress = [event for event in store.list_events(tasks[1]["id"])
                 if event["event_type"] == "skill_progress"]
     assert [event["payload"]["event_type"] for event in progress] == [
-        "agent_status", "skill_progress",
+        "agent_status", "tool_call", "tool_call", "skill_progress",
     ]
     assert store.list_evidence(tasks[1]["id"])[0]["result"]["run_id"] == run_ids[1]
 

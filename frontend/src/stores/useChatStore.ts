@@ -6,6 +6,7 @@ export type ChatMessageKind = "text" | "task" | "tool";
 export type ChatTaskStatus = "queued" | "running" | "completed" | "failed";
 
 export interface ChatTaskStep {
+  activityId?: string;
   id: string;
   label: string;
   detail?: string;
@@ -70,7 +71,7 @@ interface ChatState {
   }) => void;
   addTaskStep: (
     runId: string,
-    step: { label: string; detail?: string; status?: ChatTaskStatus }
+    step: { label: string; detail?: string; status?: ChatTaskStatus; activityId?: string }
   ) => void;
   appendTaskResult: (runId: string, content: string) => void;
   finishTask: (runId: string, status: "completed" | "failed", detail?: string) => void;
@@ -224,6 +225,15 @@ export const useChatStore = create<ChatState>()(
           message.taskStatus === "completed" || message.taskStatus === "failed";
         if (isTerminal && (nextStatus === "running" || nextStatus === "queued")) {
           return message;
+        }
+        if (step.activityId) {
+          const steps = [...(message.steps ?? [])];
+          const existing = steps.findIndex((s) => s.activityId === step.activityId);
+          const updated = { ...(existing >= 0 ? steps[existing]! : newStep(step.label, step.detail, nextStatus)),
+            label: step.label, detail: step.detail, status: nextStatus, activityId: step.activityId };
+          if (existing >= 0) steps[existing] = updated;
+          else steps.push(updated);
+          return { ...message, steps };
         }
         const lastStep = message.steps?.[message.steps.length - 1];
         if (

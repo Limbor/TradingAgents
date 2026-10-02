@@ -18,6 +18,7 @@ import { ThemeToggle } from "@/components/Layout/Header";
 import type { ChatNavState, IntentHint } from "@/lib/chatNav";
 import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyChatImport";
 
+import { ActivityTimeline, taskActivities } from "./ActivityTimeline";
 import { MemoryDetails, MemoryProgress, taskMemory } from "./MemoryPanel";
 
 interface Props {
@@ -63,7 +64,7 @@ function taskSteps(task: AgentTask) {
   return steps.map((step) => {
     const started = task.events.some((event) => event.event_type === "step_started" && event.payload.id === step.id);
     const finished = task.events.find((event) => event.event_type === "step_completed" && event.payload.id === step.id);
-    return { ...step, status: finished ? String(finished.payload.status) : started ? "running" : "queued",
+    return { ...step, status: finished ? String(finished.payload.status) : streamingStatuses.has(task.status) ? started ? "running" : "queued" : started ? "ended" : "not_run",
       reason: finished && typeof finished.payload.reason === "string" ? finished.payload.reason : null };
   });
 }
@@ -91,15 +92,6 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
     .map((event) => event.payload.reason).filter((reason): reason is string =>
       typeof reason === "string" && reason !== "模型原生工具调用");
   const revisionReason = revisionReasons[revisionReasons.length - 1];
-  const stages = new Map<string, { label: string; status: string; detail?: string }>();
-  for (const event of task.events) {
-    if (event.event_type !== "skill_progress" || event.payload.event_type !== "skill_progress") continue;
-    const payload = asObject(event.payload.payload);
-    if (typeof payload.stage_id !== "string" || typeof payload.stage_label !== "string") continue;
-    const key = `${String(event.payload.run_id || "")}:${payload.stage_id}`;
-    stages.set(key, { label: payload.stage_label, status: String(payload.status || "running"), detail: typeof payload.detail === "string" ? payload.detail : undefined });
-  }
-  const skillStages = Array.from(stages.values()).slice(-5);
   const textOnly = isTextOnlyAnswer(task);
   return <div className="mt-5 border-y border-ui-line py-3 text-xs">
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -108,17 +100,14 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
     </div>
     {revisionReason && <p className="mt-2 leading-5 text-ui-muted">调整原因：{revisionReason}</p>}
     <div className="mt-2 space-y-2.5">
-      {steps.length ? <div aria-label="执行步骤" className="flex flex-wrap items-center gap-x-3 gap-y-2">{steps.map((step, index) => <div key={step.id} className="flex min-w-0 items-center gap-1.5 text-ui-body">
-        {index > 0 && <span className="mr-1 text-ui-faint" aria-hidden="true">→</span>}
+      {steps.length ? <div aria-label="执行步骤" className="space-y-2">{steps.map((step) => <div key={step.id} className="flex min-w-0 items-center gap-1.5 text-ui-body">
         {step.status === "completed" ? <CircleCheck className="h-3.5 w-3.5 shrink-0 text-ui-accent" /> :
           step.status === "failed" ? <CircleAlert className="h-3.5 w-3.5 shrink-0 text-ui-warning" /> :
           step.status === "running" ? <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-ui-accent" /> :
           <Clock3 className="h-3.5 w-3.5 shrink-0 text-ui-faint" />}
-        <span className="min-w-0">{step.label}</span><span className="whitespace-nowrap text-ui-faint">{step.status === "completed" ? "已完成" : step.status === "failed" ? failedStepReasonText[step.reason ?? ""] ?? "失败" : step.status === "running" ? "进行中" : "待执行"}</span>
+        <span className="min-w-0 flex-1 break-words leading-5">{step.label}</span><span className="whitespace-nowrap text-ui-faint">{step.status === "completed" ? "已完成" : step.status === "failed" ? failedStepReasonText[step.reason ?? ""] ?? "失败" : step.status === "running" ? "进行中" : step.status === "ended" ? "状态未回传" : step.status === "not_run" ? "未执行" : "待执行"}</span>
       </div>)}</div> : <p className="text-ui-muted">{activeStatuses.has(task.status) ? "正在解析任务目标…" : "本任务没有可展示的执行步骤。"}</p>}
-      {skillStages.length > 0 && <div className="space-y-1 border-l border-ui-line pl-3 text-xs text-ui-muted" aria-label="分析子任务进度">
-        {skillStages.map((stage, index) => <div key={index}><p>{stage.label} · {statusText[stage.status] ?? stage.status}</p>{stage.detail && <p className="mt-0.5 break-words leading-5 text-ui-faint">{stage.detail}</p>}</div>)}
-      </div>}
+      <ActivityTimeline activities={taskActivities(task)} />
       <MemoryProgress task={task} />
       {task.status === "reviewing" && <p className="pl-6 text-xs text-ui-muted">正在核对证据并形成回答…</p>}
       {textOnly && <p className="text-xs text-ui-muted">本轮未运行分析工具，也没有可引用的结果数据。</p>}

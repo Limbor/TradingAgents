@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from tradingagents.core.activity_labels import SKILL_ACTIONS, tool_action
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
 from tradingagents.core.persistence import Database
 from tradingagents.core.strategy_memory import (
@@ -1528,7 +1529,7 @@ class TradingAgentHarness:
                         reason = "analysis_skill_budget"
                     else:
                         used.add(key)
-                        steps.append({"id": f"model-{call_id}", "label": f"运行 {skill_id} 分析",
+                        steps.append({"id": f"model-{call_id}", "label": SKILL_ACTIONS.get(skill_id, "运行交易分析"),
                                       "tool": "skill", "skill_id": skill_id, "args": params,
                                       "tool_call_id": call_id, "model_tool": name})
             else:
@@ -1563,7 +1564,7 @@ class TradingAgentHarness:
                         reason = "duplicate_call"
                     if not reason:
                         used.add(key)
-                        steps.append({"id": f"model-{call_id}", "label": "检索适用的历史经验" if name == "get_strategy_lessons" else f"调用 {name}",
+                        steps.append({"id": f"model-{call_id}", "label": tool_action(name),
                                       "tool": name, "args": bound_args,
                                       "tool_call_id": call_id, "model_tool": name})
             if reason:
@@ -1689,7 +1690,7 @@ class TradingAgentHarness:
                     skill_id = (intent_hint or {}).get("skill_id")
                     if skill_id in _SAFE_ANALYSIS_SKILLS and self.skills.get(skill_id) is not None:
                         params = (intent_hint or {}).get("params")
-                        plan.append({"id": "requested-skill", "label": f"运行 {skill_id} 分析",
+                        plan.append({"id": "requested-skill", "label": SKILL_ACTIONS.get(skill_id, "运行交易分析"),
                                      "tool": "skill", "skill_id": skill_id,
                                      "args": params if isinstance(params, dict) else {}})
                     plan_source = "native_tool_calls"
@@ -2505,7 +2506,7 @@ class TradingAgentHarness:
                 if (isinstance(skill_id, str) and skill_id in _SAFE_ANALYSIS_SKILLS and
                         isinstance(args, dict) and
                         len(_json(args)) <= 2048 and self.skills.get(skill_id) is not None):
-                    add("skill", f"运行 {skill_id} 分析", args, skill_id)
+                    add("skill", SKILL_ACTIONS.get(skill_id, "运行交易分析"), args, skill_id)
         return steps
 
     def _plan(self, goal: str, paper_session_id: str | None,
@@ -2527,7 +2528,7 @@ class TradingAgentHarness:
                     plan.append({"id": f"announcements-{ticker}",
                                  "label": f"扫描 {ticker} 风险公告关键词",
                                  "tool": "get_mcp_risk_announcements", "args": {"ts_code": ticker}})
-            plan.append({"id": "requested-skill", "label": f"运行 {skill_id} 分析",
+            plan.append({"id": "requested-skill", "label": SKILL_ACTIONS.get(skill_id, "运行交易分析"),
                          "tool": "skill", "skill_id": skill_id,
                          "args": params if isinstance(params, dict) else {}})
             return plan
@@ -2978,7 +2979,7 @@ class TradingAgentHarness:
             # cumulative sequence into the current tail before reading it.
             offset = run._event_seq - len(run.events)
             for event in run.events[max(0, seen - offset):]:
-                if event.event_type in {"skill_progress", "progress_update", "agent_status"}:
+                if event.event_type in {"skill_progress", "progress_update", "agent_status", "tool_call"}:
                     self.store.event(task_id, "skill_progress", {
                         "run_id": run.id, "event_type": event.event_type,
                         "payload": event.data,

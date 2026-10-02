@@ -13,6 +13,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tradingagents.core.activity_labels import (
+    AGENT_ACTIONS,
+    activity_detail,
+    activity_message,
+    tool_action,
+)
 from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
 from tradingagents.core.reflection_enroll import enroll_reflection_case
 from tradingagents.core.strategy_memory import (
@@ -259,22 +265,29 @@ class StockAnalysisSkill(BaseSkill):
                 yield skill_progress(
                     stage_id=stage_id,
                     stage_label=stage_label,
-                    status="completed" if status == "completed" else "running",
+                    status=status if status in {"completed", "failed"} else "running",
+                    activity_id=event_data.get("activity_id"),
                     step_id=agent.lower().replace(" ", "_") if agent else None,
-                    step_label=_agent_step_label(agent, status),
+                    step_label=activity_message(AGENT_ACTIONS.get(agent, stage_label), status),
+                    detail=f"标的 {input_params.ticker}",
                     agent=agent or None,
                 )
 
             if event_type == "tool_call":
                 tool_name = str(event_data.get("tool") or "unknown")
-                stage_id, stage_label, agent = _tool_stage(tool_name)
+                _, _, fallback_agent = _tool_stage(tool_name)
+                agent = event_data.get("agent") or fallback_agent
+                status = str(event_data.get("status") or "running")
+                action = tool_action(tool_name)
+                call_id = str(event_data.get("activity_id") or _safe_step_id(tool_name))
                 yield skill_progress(
-                    stage_id=stage_id,
-                    stage_label=stage_label,
-                    status="running",
-                    step_id=f"tool_{_safe_step_id(tool_name)}",
-                    step_label=f"调用数据工具：{_tool_label(tool_name)}",
-                    detail=_tool_detail(tool_name, event_data.get("args")),
+                    stage_id=f"tool_{call_id}",
+                    stage_label=action,
+                    activity_id=call_id,
+                    status=status if status in {"completed", "failed"} else "running",
+                    step_id=f"tool_{call_id}",
+                    step_label=activity_message(action, status),
+                    detail=activity_detail(event_data.get("args")),
                     agent=agent,
                     data={
                         "tool": tool_name,
@@ -649,16 +662,6 @@ class StockAnalysisSkill(BaseSkill):
         }, ticker)
 
 
-def _agent_step_label(agent: str, status: str) -> str:
-    stage = AGENT_PROGRESS_STAGES.get(agent)
-    label = stage[1] if stage else agent or "Agent"
-    if status == "completed":
-        return f"{label}完成"
-    if status == "failed":
-        return f"{label}失败"
-    return f"{label}进行中"
-
-
 def _tool_stage(tool_name: str) -> tuple[str, str, str | None]:
     normalized = tool_name.lower()
     if any(token in normalized for token in ("price", "stock_data", "indicator", "market", "daily", "ohlcv", "theme_heat", "snapshot")):
@@ -672,52 +675,6 @@ def _tool_stage(tool_name: str) -> tuple[str, str, str | None]:
     if any(token in normalized for token in ("northbound", "flow", "institutional")):
         return "analyst_market", "资金流分析", "Market Analyst"
     return "agent_tool", "数据工具", None
-
-
-def _tool_label(tool_name: str) -> str:
-    normalized = tool_name.lower()
-    labels = {
-        "get_stock_data": "行情数据",
-        "get_verified_market_snapshot": "市场快照",
-        "get_market_structure_snapshot": "市场结构",
-        "get_indicators": "技术指标",
-        "get_theme_heat": "主题热度",
-        "get_news": "新闻",
-        "get_announcements": "公告",
-        "get_risk_announcements": "风险公告",
-        "get_fundamentals": "基本面",
-        "get_balance_sheet": "资产负债表",
-        "get_cashflow": "现金流",
-        "get_income_statement": "利润表",
-        "get_northbound_flow": "北向资金",
-        "get_institutional_flow": "机构资金流",
-    }
-    for key, label in labels.items():
-        if key in normalized:
-            return label
-    return tool_name
-
-
-def _tool_detail(tool_name: str, args: Any) -> str:
-    if not isinstance(args, dict) or not args:
-        return tool_name
-    interesting = [
-        "ticker",
-        "symbol",
-        "ts_code",
-        "curr_date",
-        "date",
-        "start_date",
-        "end_date",
-        "look_back_days",
-        "indicator",
-        "top_n",
-    ]
-    parts = [f"{key}={args[key]}" for key in interesting if key in args]
-    if not parts:
-        parts = [f"{key}={value}" for key, value in list(args.items())[:4]]
-    detail = ", ".join(str(part) for part in parts)
-    return detail[:220]
 
 
 def _safe_step_id(value: str) -> str:

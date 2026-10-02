@@ -9,6 +9,8 @@ import { ReportPanel } from "./ReportPanel";
 import { ProgressTracker } from "./ProgressTracker";
 import { CircleSlash2, Layers3, RadioTower, ScrollText } from "lucide-react";
 
+import { ActivityTimeline, taskActivities } from "@/pages/AgentWorkspace/ActivityTimeline";
+
 export default function Analysis() {
   const { runId } = useParams<{ runId: string }>();
   const {
@@ -16,6 +18,8 @@ export default function Analysis() {
     agentStatuses,
     reportSections,
     toolCalls,
+    progressEvents,
+    addProgressEvent,
     error,
     startRun,
     updateAgentStatus,
@@ -31,7 +35,14 @@ export default function Analysis() {
 
     startRun(runId);
 
+    const relay = (msg: WSMessage) => addProgressEvent({
+      task_id: runId, seq: 0, event_type: "skill_progress", created_at: msg.timestamp,
+      payload: { run_id: runId, event_type: msg.type, payload: msg.payload },
+    });
+
     const unsubStatus = wsManager.on("agent_status", (msg: WSMessage) => {
+      relay(msg);
+      if (!["running", "completed", "failed"].includes(String(msg.payload.status))) return;
       updateAgentStatus({
         agent: msg.payload.agent as string,
         status: msg.payload.status as "running" | "completed" | "failed",
@@ -58,8 +69,14 @@ export default function Analysis() {
       }
     });
 
+    const unsubProgress = wsManager.on("skill_progress", relay);
+    const unsubLegacyProgress = wsManager.on("progress_update", relay);
+
     const unsubTool = wsManager.on("tool_call", (msg: WSMessage) => {
+      relay(msg);
       addToolCall({
+        activity_id: msg.payload.activity_id as string | undefined,
+        status: msg.payload.status as string | undefined,
         tool: msg.payload.tool as string,
         args: msg.payload.args as Record<string, unknown>,
         timestamp: msg.timestamp,
@@ -85,6 +102,8 @@ export default function Analysis() {
 
     return () => {
       unsubStatus();
+      unsubProgress();
+      unsubLegacyProgress();
       unsubReport();
       unsubReportComplete();
       unsubTool();
@@ -95,6 +114,7 @@ export default function Analysis() {
     };
   }, [
     addToolCall,
+    addProgressEvent,
     cancelRun,
     completeRun,
     failRun,
@@ -108,7 +128,7 @@ export default function Analysis() {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-ui-faint">
-          Start an analysis from the Dashboard to see results here.
+          从工作台开始分析后，可在这里查看执行过程。
         </p>
       </div>
     );
@@ -130,18 +150,18 @@ export default function Analysis() {
       <div className="flex flex-col justify-between gap-3 border-b border-ui-line pb-4 lg:flex-row lg:items-center">
         <div>
           <p className="font-mono text-xs text-ui-faint">Run {runId.slice(0, 8)}</p>
-          <h2 className="mt-1 text-xl font-semibold text-ui-ink">Live agent analysis</h2>
+          <h2 className="mt-1 text-xl font-semibold text-ui-ink">Agent 分析过程</h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Kpi icon={Layers3} label="Agents" value={completedAgents} />
-          <Kpi icon={ScrollText} label="Sections" value={sectionCount} />
-          <Kpi icon={RadioTower} label="Tools" value={toolCalls.length} />
+          <Kpi icon={Layers3} label="已完成 Agent" value={completedAgents} />
+          <Kpi icon={ScrollText} label="报告章节" value={sectionCount} />
+          <Kpi icon={RadioTower} label="数据查询" value={toolCalls.length} />
           <Link
             to={`/library?run_id=${runId}`}
             className="inline-flex items-center gap-2 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-2 text-xs font-medium text-ui-accent transition hover:border-ui-accent/60"
           >
             <ScrollText className="h-4 w-4" />
-            Library
+            研究产物
           </Link>
           <button
             onClick={handleCancel}
@@ -155,13 +175,17 @@ export default function Analysis() {
       </div>
 
       <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <div className="flex min-h-0 flex-col gap-4">
-          <section className="min-h-0 flex-1 rounded-lg border border-ui-line bg-ui-panel p-4">
-          <h3 className="mb-3 text-sm font-semibold text-ui-body">Execution Graph</h3>
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto">
+          <section className="shrink-0 rounded-lg border border-ui-line bg-ui-panel p-4">
+          <h3 className="mb-3 text-sm font-semibold text-ui-body">分析流程</h3>
           <AgentGraph agentStatuses={agentStatuses} />
           </section>
           <section className="rounded-lg border border-ui-line bg-ui-panel p-4">
           <ProgressTracker status={status} error={error} />
+          <div className="mt-3"><ActivityTimeline activities={taskActivities({
+            id: runId, conversation_id: "", goal: "", status, result: {}, error,
+            created_at: "", updated_at: "", evidence: [], events: progressEvents,
+          })} /></div>
           </section>
         </div>
 

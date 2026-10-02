@@ -1,3 +1,4 @@
+import { activityDetail, toolAction } from "@/utils/activityLabels";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,6 +11,7 @@ interface ReportSection {
 }
 
 interface ToolCall {
+  status?: string;
   tool: string;
   args: Record<string, unknown>;
   timestamp: string;
@@ -21,13 +23,13 @@ interface ReportPanelProps {
 }
 
 const SECTION_TITLES: Record<string, string> = {
-  market_report: "Market",
-  sentiment_report: "Sentiment",
-  news_report: "News",
-  fundamentals_report: "Fundamentals",
-  investment_plan: "Research",
-  trader_investment_plan: "Trading",
-  final_trade_decision: "Decision",
+  market_report: "行情走势",
+  sentiment_report: "市场情绪",
+  news_report: "新闻公告",
+  fundamentals_report: "基本面",
+  investment_plan: "多空研究",
+  trader_investment_plan: "交易计划",
+  final_trade_decision: "最终判断",
 };
 
 const SECTION_ORDER = [
@@ -52,8 +54,8 @@ export function ReportPanel({ sections, toolCalls }: ReportPanelProps) {
       {/* Top tabs: Report / Tools */}
       <div className="mb-3 flex items-center justify-between border-b border-ui-line pb-3">
         <div>
-          <h3 className="text-sm font-semibold text-ui-body">Research Report</h3>
-          <p className="text-xs text-ui-faint">Streaming sections and tool telemetry</p>
+          <h3 className="text-sm font-semibold text-ui-body">研究报告</h3>
+          <p className="text-xs text-ui-faint">分析结论与数据查询记录</p>
         </div>
         <div className="flex rounded-lg border border-ui-line bg-ui-subtle p-1">
         <button
@@ -61,14 +63,14 @@ export function ReportPanel({ sections, toolCalls }: ReportPanelProps) {
           className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${activeTab === "report" ? "bg-ui-hover text-ui-ink" : "text-ui-faint hover:text-ui-body"}`}
         >
           <FileText className="h-3.5 w-3.5" />
-          Report
+          报告
         </button>
         <button
           onClick={() => setActiveTab("tools")}
           className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${activeTab === "tools" ? "bg-ui-hover text-ui-ink" : "text-ui-faint hover:text-ui-body"}`}
         >
           <TerminalSquare className="h-3.5 w-3.5" />
-          Tools ({toolCalls.length})
+          数据查询 ({toolCalls.length})
         </button>
         </div>
       </div>
@@ -110,16 +112,16 @@ export function ReportPanel({ sections, toolCalls }: ReportPanelProps) {
       )}
 
       {activeTab === "tools" && (
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-ui-line bg-ui-subtle p-3 font-mono text-xs">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-ui-line bg-ui-subtle p-3 text-xs">
           {toolCalls.length === 0 ? (
-            <p className="text-ui-faint">No tool calls yet</p>
+            <p className="text-ui-faint">暂无数据查询记录</p>
           ) : (
             toolCalls.map((call, i) => (
               <div key={i} className="rounded-md border border-ui-line bg-ui-panel p-2">
-                <span className="text-ui-accent">{call.tool}</span>
+                <p className="break-words text-ui-body">{toolAction(call.tool)} · {call.status === "completed" ? "已完成" : call.status === "failed" ? "失败" : "已发起"}</p>
                 <span className="text-ui-faint">
                   {" "}
-                  ({JSON.stringify(call.args).slice(0, 120)})
+                  {activityDetail(call.args)}
                 </span>
               </div>
             ))

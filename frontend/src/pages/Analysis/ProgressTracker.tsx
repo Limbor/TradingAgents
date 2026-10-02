@@ -1,48 +1,15 @@
 interface ProgressTrackerProps {
-  status: "idle" | "running" | "completed" | "failed" | "cancelled";
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
   error: string | null;
 }
-
+const labels = { idle: '等待开始', running: '正在分析', completed: '分析已完成', failed: '分析失败', cancelled: '已取消' };
 export function ProgressTracker({ status, error }: ProgressTrackerProps) {
-  const percent =
-    status === "completed" ? 100 : status === "running" ? 58 : status === "idle" ? 0 : 100;
-  const tone =
-    status === "completed"
-      ? "bg-ui-success"
-      : status === "failed"
-        ? "bg-ui-danger"
-        : status === "cancelled"
-          ? "bg-ui-warning"
-          : "bg-ui-accent";
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-ui-body">Run State</h3>
-        <span className="font-mono text-xs text-ui-faint">{percent}%</span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-ui-hover">
-        <div className={`h-full ${tone} transition-all`} style={{ width: `${percent}%` }} />
-      </div>
-      <div className="flex items-center gap-2">
-        <span
-          className={`h-2 w-2 rounded-full ${
-            status === "running"
-              ? "animate-pulse bg-ui-accent"
-              : status === "completed"
-                ? "bg-ui-success"
-                : status === "failed"
-                  ? "bg-ui-danger"
-                  : status === "cancelled"
-                    ? "bg-ui-warning"
-                    : "bg-ui-faint"
-          }`}
-        />
-        <span className="text-sm capitalize text-ui-body">{status}</span>
-      </div>
-      {error && (
-        <p className="rounded-lg border border-ui-danger/30 bg-ui-danger/10 p-2 text-xs text-ui-danger">{error}</p>
-      )}
+  return <div className="space-y-3">
+    <div className="flex items-center justify-between gap-2">
+      <h3 className="text-sm font-semibold text-ui-body">执行状态</h3>
+      <span className="text-xs text-ui-muted">{labels[status]}</span>
     </div>
-  );
+    {status === 'running' && <p className="text-xs leading-5 text-ui-faint">下方实时显示各个分析师与数据查询的进度。</p>}
+    {error && <p role="alert" className="rounded-lg border border-ui-danger/30 bg-ui-danger/10 p-2 text-xs text-ui-danger">{error}</p>}
+  </div>;
 }

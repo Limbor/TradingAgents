@@ -37,4 +37,15 @@ describe("useChatStore", () => {
     expect(tasks[0]?.taskStatus).toBe("completed");
     expect(tasks[0]?.steps?.every((step) => step.status === "completed")).toBe(true);
   });
+  it("keeps identified parallel activities running independently", () => {
+    const store = useChatStore.getState();
+    store.createTask({ runId: "parallel", title: "股票分析" });
+    store.addTaskStep("parallel", { activityId: "price", label: "正在查询股票价格", status: "running" });
+    store.addTaskStep("parallel", { activityId: "news", label: "正在查询相关新闻", status: "running" });
+    store.addTaskStep("parallel", { activityId: "price", label: "查询股票价格完成", status: "completed" });
+    const steps = useChatStore.getState().messages[0]!.steps!;
+    expect(steps.filter(s => s.activityId).map(s => [s.activityId, s.status])).toEqual([
+      ["price", "completed"], ["news", "running"],
+    ]);
+  });
 });

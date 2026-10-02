@@ -629,8 +629,10 @@ class TradingAgentsGraph:
         else:
             graph = workflow.compile()
 
-        seen_agents = set()
         final_sections: dict[str, str] = {}
+        active_tools: dict[str, dict[str, Any]] = {}
+        tool_agents = {"tools_market": "Market Analyst", "tools_social": "Sentiment Analyst",
+                       "tools_news": "News Analyst", "tools_fundamentals": "Fundamentals Analyst"}
         structured_portfolio_decision: dict[str, Any] | None = None
 
         try:
@@ -643,17 +645,16 @@ class TradingAgentsGraph:
                 name = event.get("name", "")
                 data = event.get("data", {})
 
-                if kind == "on_chain_start" and name in AGENT_NAMES and name not in seen_agents:
+                if kind == "on_chain_start" and name in AGENT_NAMES:
                     yield {
                         "type": "agent_status",
-                        "data": {"agent": name, "status": "running"},
+                        "data": {"agent": name, "status": "running", "activity_id": str(event.get("run_id") or name)},
                     }
 
-                elif kind == "on_chain_end" and name in AGENT_NAMES and name not in seen_agents:
-                    seen_agents.add(name)
+                elif kind == "on_chain_end" and name in AGENT_NAMES:
                     yield {
                         "type": "agent_status",
-                        "data": {"agent": name, "status": "completed"},
+                        "data": {"agent": name, "status": "completed", "activity_id": str(event.get("run_id") or name)},
                     }
                     # Extract report sections from the node's output
                     output = data.get("output")
@@ -674,13 +675,26 @@ class TradingAgentsGraph:
                                 }
 
                 elif kind == "on_tool_start":
+                    call_id = str(event.get("run_id") or name)
+                    active_tools[call_id] = {
+                        "tool": name or "unknown", "args": data.get("input", {}),
+                        "activity_id": call_id,
+                        "agent": tool_agents.get((event.get("metadata") or {}).get("langgraph_node")),
+                    }
                     yield {
                         "type": "tool_call",
-                        "data": {
-                            "tool": name or "unknown",
-                            "args": data.get("input", {}),
-                        },
+                        "data": {**active_tools[call_id], "status": "running"},
                     }
+                elif kind in {"on_tool_end", "on_tool_error"}:
+                    call_id = str(event.get("run_id") or name)
+                    call = active_tools.pop(call_id, None)
+                    if call is not None:
+                        output = data.get("output")
+                        output_status = output.get("status") if isinstance(output, dict) else getattr(output, "status", None)
+                        failed = kind == "on_tool_error" or output_status == "error"
+                        yield {"type": "tool_call", "data": {
+                            **call, "status": "failed" if failed else "completed",
+                        }}
 
             # Emit complete report with all sections
             if final_sections:

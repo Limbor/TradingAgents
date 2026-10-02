@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import date, datetime
 from typing import Any
 
@@ -35,7 +35,7 @@ from tradingagents.core.industry_taxonomy import (
 )
 from tradingagents.core.llm_candidate_review import _provider_kwargs
 from tradingagents.llm_clients.factory import create_llm_client
-from tradingagents.skills._shared import resolve_temporal_context
+from tradingagents.skills._shared import drive_with_progress, resolve_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
 
 logger = logging.getLogger(__name__)
@@ -199,10 +199,22 @@ class MarketOverviewSkill(BaseSkill):
             1.0, float(config.get("market_overview_fetch_timeout_seconds", 180.0) or 180.0)
         )
         try:
-            market_data, board_rows, news_raw, macro_items, unlocks = await asyncio.wait_for(
-                asyncio.to_thread(_fetch_market_data, trade_date, input_params, degraded),
-                timeout=fetch_timeout,
-            )
+            async def fetch_with_progress(on_progress):
+                loop = asyncio.get_running_loop()
+
+                def relay(update):
+                    asyncio.run_coroutine_threadsafe(on_progress(update), loop)
+
+                return await asyncio.wait_for(
+                    asyncio.to_thread(_fetch_market_data, trade_date, input_params, degraded, relay),
+                    timeout=fetch_timeout,
+                )
+
+            async for kind, value in drive_with_progress(fetch_with_progress):
+                if kind == "progress":
+                    yield SkillEvent(event_type="skill_progress", data=value)
+                else:
+                    market_data, board_rows, news_raw, macro_items, unlocks = value
         except asyncio.TimeoutError as exc:
             raise RuntimeError(
                 f"市场数据抓取超过 {fetch_timeout:.0f} 秒，已停止本次全景更新；"
@@ -235,7 +247,7 @@ class MarketOverviewSkill(BaseSkill):
         # ---- Stage 2: regime judgment (1 structured call) ----
         yield skill_progress(
             stage_id="llm_regime",
-            stage_label="大盘体制判断",
+            stage_label="判断市场趋势与风险",
             status="running",
             agent="Market Regime",
             progress_pct=50,
@@ -260,8 +272,8 @@ class MarketOverviewSkill(BaseSkill):
             regime = None
         yield skill_progress(
             stage_id="llm_regime",
-            stage_label="大盘体制判断",
-            status="completed",
+            stage_label="判断市场趋势与风险",
+            status="completed" if regime else "failed",
             detail=regime["trend_band"] if regime else "AI 汇总不可用",
             agent="Market Regime",
             progress_pct=60,
@@ -270,7 +282,7 @@ class MarketOverviewSkill(BaseSkill):
         # ---- Stage 3: deterministic industry scores + optional LLM explanation ----
         yield skill_progress(
             stage_id="llm_industry",
-            stage_label="行业多因子评分",
+            stage_label="比较板块强弱与资金表现",
             status="running",
             agent="Industry Analyst",
             progress_pct=65,
@@ -304,7 +316,7 @@ class MarketOverviewSkill(BaseSkill):
         rated = len([row for row in industry_stances if row.get("rating")])
         yield skill_progress(
             stage_id="llm_industry",
-            stage_label="行业多因子评分",
+            stage_label="比较板块强弱与资金表现",
             status="completed",
             detail=f"{rated}/{len(industry_stances)} 个板块已评级",
             agent="Industry Analyst",
@@ -314,7 +326,7 @@ class MarketOverviewSkill(BaseSkill):
         # ---- Stage 4: news tagging (1 structured call) ----
         yield skill_progress(
             stage_id="llm_news",
-            stage_label="新闻利好利空打标",
+            stage_label="分析新闻对市场的影响",
             status="running",
             agent="News Tagger",
             progress_pct=80,
@@ -338,7 +350,7 @@ class MarketOverviewSkill(BaseSkill):
             news = _llm_tag_news(None, news_raw, input_params.news_limit, [])
         yield skill_progress(
             stage_id="llm_news",
-            stage_label="新闻利好利空打标",
+            stage_label="分析新闻对市场的影响",
             status="completed",
             detail=f"{len(news)} 条新闻",
             agent="News Tagger",
@@ -427,6 +439,7 @@ def _fetch_market_data(
     trade_date: str,
     params: MarketOverviewInput,
     degraded: list[str],
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, str]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Fetch all market blocks serially. Each block fails independently."""
     from tradingagents.dataflows.akshare_cn_specific import (
@@ -445,6 +458,15 @@ def _fetch_market_data(
         "turnover_amount": None, "macro_tail": [], "focus_concept_rows": [],
     }
 
+    def progress(key: str, action: str, status: str, available: bool = True) -> None:
+        if progress_callback:
+            progress_callback({"stage_id": f"fetch:{key}", "activity_id": f"fetch:{key}",
+                               "stage_label": action, "status": status if available else "failed",
+                               "step_label": f"正在{action}" if status == "running" else None,
+                               "agent": "Market Overview",
+                               "detail": f"基准日 {trade_date}" + ("" if available else " · 数据暂不可用")})
+
+    progress("indices", "查询指数行情", "running")
     try:
         idx = get_market_indices_overview(trade_date)
         market_data["indices"] = idx.get("indices") or []
@@ -455,6 +477,9 @@ def _fetch_market_data(
         logger.warning("market indices fetch failed: %s", exc)
         degraded.append("indices_unavailable")
 
+    progress("indices", "查询指数行情", "completed", bool(market_data["indices"]))
+
+    progress("breadth", "查询市场涨跌家数", "running")
     try:
         breadth = get_market_breadth(trade_date)
         if any(value is not None for value in breadth.values()):
@@ -465,6 +490,9 @@ def _fetch_market_data(
         logger.warning("market breadth fetch failed: %s", exc)
         degraded.append("breadth_unavailable")
 
+    progress("breadth", "查询市场涨跌家数", "completed", market_data["breadth"] is not None)
+
+    progress("northbound", "查询北向资金概况", "running")
     try:
         nb = get_northbound_summary(trade_date)
         if nb.get("latest_net") is not None:
@@ -475,9 +503,12 @@ def _fetch_market_data(
         logger.warning("northbound fetch failed: %s", exc)
         degraded.append("northbound_unavailable")
 
+    progress("northbound", "查询北向资金概况", "completed", market_data["northbound"] is not None)
+
     board_rows: list[dict[str, Any]] = []
     industry_rows: list[dict[str, Any]] = []
     industry_taxonomy = "CITICS"
+    progress("industry", "查询行业板块表现", "running")
     try:
         industry_rows = get_standard_industry_heat(
             trade_date,
@@ -510,6 +541,9 @@ def _fetch_market_data(
                 industry_rows = []
                 degraded.append("industry_boards_unavailable")
 
+    progress("industry", "查询行业板块表现", "completed", bool(industry_rows))
+
+    progress("concept", "查询概念板块热度", "running")
     try:
         # Pull the full concept catalogue when the Sina fallback is active so
         # priority themes (e.g. CPO) are retained even on weak trading days.
@@ -519,6 +553,8 @@ def _fetch_market_data(
         logger.warning("concept board heat fetch failed: %s", exc)
         concept_rows = []
         degraded.append("concept_boards_unavailable")
+
+    progress("concept", "查询概念板块热度", "completed", bool(concept_rows))
 
     board_rows = _build_readable_board_universe(industry_rows, concept_rows, limit=80)
     market_data["focus_concept_rows"] = concept_rows
@@ -536,6 +572,7 @@ def _fetch_market_data(
     if params.focus_industries and not concept_rows:
         degraded.append("focus_concepts_unavailable")
 
+    progress("news", "查询市场新闻", "running")
     news_raw: list[dict[str, str]] = []
     try:
         news_raw = get_market_news_flash(trade_date, limit=params.news_limit)
@@ -566,6 +603,9 @@ def _fetch_market_data(
                 merged_news.append(item)
             news_raw = merged_news[:params.news_limit]
 
+    progress("news", "查询市场新闻", "completed", bool(news_raw))
+
+    progress("macro", "查询宏观数据", "running")
     macro_items: list[dict[str, Any]] = []
     try:
         macro_items = get_macro_snapshot(trade_date)
@@ -576,12 +616,17 @@ def _fetch_market_data(
         logger.warning("macro snapshot fetch failed: %s", exc)
         degraded.append("macro_unavailable")
 
+    progress("macro", "查询宏观数据", "completed", bool(macro_items))
+
+    progress("unlocks", "查询近期解禁信息", "running")
     unlocks: list[dict[str, Any]] = []
     try:
         unlocks = get_market_unlock_overview(trade_date, days_ahead=14)
     except Exception as exc:
         logger.warning("unlock overview fetch failed: %s", exc)
         degraded.append("unlocks_unavailable")
+
+    progress("unlocks", "查询近期解禁信息", "completed", "unlocks_unavailable" not in degraded)
 
     return market_data, board_rows, news_raw, macro_items, unlocks
 

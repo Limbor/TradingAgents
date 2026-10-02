@@ -149,7 +149,7 @@ class MarketScannerSkill(BaseSkill):
         if mcp_used and candidates and input_params.market == "cn_a":
             yield skill_progress(
                 stage_id="llm_review",
-                stage_label="LLM 候选复核",
+                stage_label="逐只复核候选股票",
                 status="running",
                 detail="正在检查催化剂、风险与近期价格走势原因",
                 agent="LLM Reviewer",
@@ -157,9 +157,15 @@ class MarketScannerSkill(BaseSkill):
             )
             trade_date = str(config.get("market_scanner_trade_date") or market_asof)
             style = str(config.get("investment_style") or "medium_term")
-            review_warnings, review_meta = await _apply_llm_reviews(
-                input_params, config, candidates, trade_date=trade_date, style=style
-            )
+            async for kind, value in drive_with_progress(
+                lambda on_progress: _apply_llm_reviews(
+                    input_params, {**config, "_activity_progress": on_progress}, candidates, trade_date=trade_date, style=style
+                )
+            ):
+                if kind == "progress":
+                    yield SkillEvent(event_type="skill_progress", data=value)
+                else:
+                    review_warnings, review_meta = value
             warnings = [*warnings, *review_warnings]
             memory_count = sum(len((row.get("memory_trace") or {}).get("injected_ids") or []) for row in candidates)
             yield skill_progress(
@@ -169,7 +175,7 @@ class MarketScannerSkill(BaseSkill):
             )
             yield skill_progress(
                 stage_id="llm_review",
-                stage_label="LLM 候选复核",
+                stage_label="逐只复核候选股票",
                 status="completed",
                 detail=f"复核状态: {'可用' if review_meta.get('available') else '降级'}",
                 agent="LLM Reviewer",

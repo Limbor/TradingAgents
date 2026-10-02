@@ -1,3 +1,4 @@
+import type { AgentEvent } from "@/api/agent";
 import { create } from "zustand";
 
 interface AgentStatus {
@@ -13,6 +14,8 @@ interface ReportSection {
 }
 
 interface ToolCall {
+  activity_id?: string;
+  status?: string;
   tool: string;
   args: Record<string, unknown>;
   timestamp: string;
@@ -25,6 +28,8 @@ interface RunState {
   reportSections: Record<string, ReportSection>;
   toolCalls: ToolCall[];
   error: string | null;
+  progressEvents: AgentEvent[];
+  addProgressEvent: (event: AgentEvent) => void;
 
   startRun: (runId: string) => void;
   updateAgentStatus: (status: AgentStatus) => void;
@@ -43,6 +48,7 @@ export const useRunStore = create<RunState>((set) => ({
   reportSections: {},
   toolCalls: [],
   error: null,
+  progressEvents: [],
 
   startRun: (runId) =>
     set({
@@ -52,6 +58,7 @@ export const useRunStore = create<RunState>((set) => ({
       reportSections: {},
       toolCalls: [],
       error: null,
+      progressEvents: [],
     }),
 
   updateAgentStatus: (status) =>
@@ -65,9 +72,14 @@ export const useRunStore = create<RunState>((set) => ({
     })),
 
   addToolCall: (call) =>
-    set((state) => ({
-      toolCalls: [...state.toolCalls, call],
-    })),
+    set((state) => {
+      const existing = call.activity_id ? state.toolCalls.findIndex((c) => c.activity_id === call.activity_id) : -1;
+      const toolCalls = [...state.toolCalls];
+      if (existing >= 0) toolCalls[existing] = call;
+      else toolCalls.push(call);
+      return { toolCalls };
+    }),
+  addProgressEvent: (event) => set((state) => ({ progressEvents: [...state.progressEvents, event] })),
 
   completeRun: () => set({ status: "completed" }),
   cancelRun: () => set({ status: "cancelled" }),
@@ -80,5 +92,6 @@ export const useRunStore = create<RunState>((set) => ({
       reportSections: {},
       toolCalls: [],
       error: null,
+      progressEvents: [],
     }),
 }));
