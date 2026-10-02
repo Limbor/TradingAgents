@@ -4,6 +4,7 @@ All tests mock the LLM to return controlled responses so we do not need an
 actual LLM provider or API key to verify the routing logic.
 """
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -278,15 +279,17 @@ class TestChatAgentIntentClassification:
             assert "不认识" in result.content
 
     @pytest.mark.asyncio
-    async def test_llm_timeout(self, chat_agent):
+    @pytest.mark.parametrize("timeout_type", [TimeoutError, asyncio.TimeoutError])
+    async def test_llm_timeout(self, chat_agent, timeout_type):
         """LLM timeout → graceful fallback chat_answer."""
         mock_llm = AsyncMock()
-        mock_llm.ainvoke = AsyncMock(side_effect=TimeoutError)
+        mock_llm.ainvoke = AsyncMock(side_effect=timeout_type)
 
         with patch.object(chat_agent, "_get_llm_with_tools", return_value=mock_llm):
             result = await chat_agent.handle("hello")
             assert result.intent == "chat_answer"
             assert "超时" in result.content or "timeout" in result.content.lower()
+            assert result.degraded is True
 
     @pytest.mark.asyncio
     async def test_llm_error(self, chat_agent):

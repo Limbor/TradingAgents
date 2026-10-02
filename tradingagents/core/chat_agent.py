@@ -266,7 +266,7 @@ class ChatAgent:
                                  text_only=not allow_tools),
                 timeout=self._timeout,
             )
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             logger.warning("ChatAgent LLM timed out for session %s", session_id)
             return ChatResponse(
                 intent="chat_answer",
