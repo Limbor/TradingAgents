@@ -1,6 +1,8 @@
 """Unit tests for the Run Manager."""
 
 import asyncio
+import contextlib
+import threading
 from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
@@ -175,6 +177,42 @@ def test_deduplication_can_be_disabled_for_independently_cancelled_runs(tmp_path
         await manager.wait_for_run(second.id)
         assert manager.get_run(first.id).status == RunStatus.CANCELLED
         assert manager.get_run(second.id).status == RunStatus.COMPLETED
+
+    asyncio.run(run())
+
+
+def test_cancelled_status_write_finishes_before_terminal_cleanup(tmp_path):
+    async def run():
+        db = Database(tmp_path / "ordered-cancellation.db")
+        manager = RunManager(db=db)
+        db.save_run("ordered", "test", {}, "pending")
+        record = manager.get_run("ordered")
+        record.status = RunStatus.RUNNING
+        started = threading.Event()
+        release = threading.Event()
+        original = db.update_run_status
+
+        def delayed_update(*args, **kwargs):
+            started.set()
+            assert release.wait(timeout=5)
+            original(*args, **kwargs)
+
+        db.update_run_status = delayed_update
+        write = asyncio.create_task(manager._update_run(record))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            write.cancel()
+            for _ in range(3):
+                await asyncio.sleep(0)
+            assert not write.done(), "Cancellation must drain the in-flight database worker"
+        finally:
+            release.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await write
+            db.update_run_status = original
+        record.status = RunStatus.CANCELLED
+        await manager._update_run(record)
+        assert db.get_run(record.id)["status"] == "cancelled"
 
     asyncio.run(run())
 

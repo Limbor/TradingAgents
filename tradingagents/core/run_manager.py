@@ -306,7 +306,7 @@ class RunManager:
         """Update a run record if persistence is configured."""
         if self._db is None:
             return
-        await asyncio.to_thread(
+        write = asyncio.create_task(asyncio.to_thread(
             self._db.update_run_status,
             run.id,
             run.status.value,
@@ -314,7 +314,14 @@ class RunManager:
             error=run.error,
             started_at=run.started_at.isoformat() if run.started_at else None,
             completed_at=run.completed_at.isoformat() if run.completed_at else None,
-        )
+        ))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            # Cancelling to_thread does not stop its worker. Drain this write
+            # before cleanup persists CANCELLED, so RUNNING cannot arrive last.
+            await write
+            raise
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
         """Subscribe to a run's event stream.
