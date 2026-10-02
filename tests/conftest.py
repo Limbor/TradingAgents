@@ -38,6 +38,16 @@ def _dummy_api_keys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _offline_background_tasks(monkeypatch, request):
+    """Keep non-live API lifespans from starting remote ticker-name backfills."""
+    if request.node.get_closest_marker("live"):
+        return
+    from tradingagents.default_config import DEFAULT_CONFIG
+
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_config():
     """Reset the global dataflows config before and after each test.
 

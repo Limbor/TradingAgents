@@ -3475,7 +3475,13 @@ bedrock = [
     { name = "langchain-aws" },
 ]
 desktop = [
+    { name = "aiosqlite" },
+    { name = "fastapi" },
+    { name = "keyring" },
+    { name = "mcp", version = "1.27.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
+    { name = "mcp", version = "1.28.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "pyinstaller" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 dev = [
     { name = "pytest" },
@@ -3491,11 +3497,14 @@ mcp = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'api'", specifier = ">=0.20.0" },
+    { name = "aiosqlite", marker = "extra == 'desktop'", specifier = ">=0.20.0" },
     { name = "akshare", specifier = ">=1.15.0" },
     { name = "backtrader", specifier = ">=1.9.78.123" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115.0" },
+    { name = "fastapi", marker = "extra == 'desktop'", specifier = ">=0.115.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "keyring", marker = "extra == 'api'", specifier = ">=25.0.0" },
+    { name = "keyring", marker = "extra == 'desktop'", specifier = ">=25.0.0" },
     { name = "langchain-anthropic", specifier = ">=0.3.15" },
     { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.5.0" },
     { name = "langchain-core", specifier = ">=0.3.81" },
@@ -3504,6 +3513,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=0.3.23" },
     { name = "langgraph", specifier = ">=0.4.8" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0.0" },
+    { name = "mcp", marker = "extra == 'desktop'", specifier = ">=1.0.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0" },
     { name = "pandas", specifier = ">=2.3.0" },
     { name = "parsel", specifier = ">=1.10.0" },
@@ -3525,6 +3535,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.21.0" },
     { name = "typing-extensions", specifier = ">=4.14.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'api'", specifier = ">=0.30.0" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'desktop'", specifier = ">=0.30.0" },
     { name = "yfinance", specifier = ">=1.4.1" },
 ]
 provides-extras = ["dev", "bedrock", "api", "mcp", "desktop"]
