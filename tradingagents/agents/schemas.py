@@ -23,6 +23,18 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+
+class StrategyMemoryUsage(BaseModel):
+    lesson_id: str = Field(description="Exact ID from the historical lesson context")
+    status: Literal["referenced", "not_applicable"]
+    reason: str = Field(description="Why this historical lesson applies or does not apply now", max_length=300)
+
+
+class MemoryAwareReport(BaseModel):
+    memory_usage: list[StrategyMemoryUsage] = Field(default_factory=list,
+        description="Report only supplied lesson IDs, referenced or not_applicable with a brief reason. Empty without lessons.")
+
+
 # ---------------------------------------------------------------------------
 # Shared rating types
 # ---------------------------------------------------------------------------
@@ -57,7 +69,7 @@ class TraderAction(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-class ResearchPlan(BaseModel):
+class ResearchPlan(MemoryAwareReport):
     """Structured investment plan produced by the Research Manager.
 
     Hand-off to the Trader: the recommendation pins the directional view,
@@ -105,7 +117,7 @@ def render_research_plan(plan: ResearchPlan) -> str:
 # ---------------------------------------------------------------------------
 
 
-class TraderProposal(BaseModel):
+class TraderProposal(MemoryAwareReport):
     """Structured transaction proposal produced by the Trader.
 
     The trader reads the Research Manager's investment plan and the analyst
@@ -354,10 +366,6 @@ class SelectionReconciliation(BaseModel):
     )
 
 
-class StrategyMemoryUsage(BaseModel):
-    lesson_id: str = Field(description="Exact ID from the historical lesson context")
-    status: Literal["referenced", "not_applicable"]
-    reason: str = Field(description="Why this historical lesson applies or does not apply now", max_length=300)
 
 
 class PortfolioDecision(BaseModel):
@@ -542,7 +550,7 @@ class SentimentBand(str, Enum):
     BEARISH = "Bearish"
 
 
-class SentimentReport(BaseModel):
+class SentimentReport(MemoryAwareReport):
     """Structured sentiment report produced by the Sentiment Analyst.
 
     Replaces the previous free-form prose output so downstream consumers
@@ -642,7 +650,7 @@ class MarketDriver(BaseModel):
     )
 
 
-class MarketRegimeReport(BaseModel):
+class MarketRegimeReport(MemoryAwareReport):
     """Structured whole-market regime judgment for the /market page banner."""
 
     trend_band: MarketTrendBand = Field(
@@ -719,7 +727,7 @@ class IndustryStance(BaseModel):
     )
 
 
-class IndustryStanceList(BaseModel):
+class IndustryStanceList(MemoryAwareReport):
     """Batch container so all industry stances come back in one structured call."""
 
     stances: list[IndustryStance] = Field(
@@ -755,7 +763,7 @@ class TaggedNews(BaseModel):
     )
 
 
-class TaggedNewsList(BaseModel):
+class TaggedNewsList(MemoryAwareReport):
     """Batch container so all news items are tagged in one structured call."""
 
     items: list[TaggedNews] = Field(

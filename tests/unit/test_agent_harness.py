@@ -1005,7 +1005,7 @@ async def test_paper_task_persists_events_and_evidence_across_store_reopen(tmp_p
     detail = reopened.conversation_detail(conversation["id"])
     assert calls == ["paper-1"]
     assert detail["tasks"][0]["status"] == "completed"
-    assert [item["event_type"] for item in detail["tasks"][0]["events"]] == [
+    assert [item["event_type"] for item in detail["tasks"][0]["events"] if item["event_type"] != "agent_runtime"] == [
         "task_created", "plan_created", "step_started", "evidence_added",
         "step_completed", "review_started", "task_completed",
     ]

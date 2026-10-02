@@ -1,3 +1,4 @@
+from operator import add
 from typing import Annotated, Any
 
 from langgraph.graph import MessagesState
@@ -45,6 +46,8 @@ class RiskDebateState(TypedDict):
 
 
 class AgentState(MessagesState):
+    specialist_results: Annotated[list[dict[str, Any]], add]
+    agent_evidence_refs: Annotated[list[str], add]
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     market: Annotated[str, "Market routing key such as us or cn_a"]

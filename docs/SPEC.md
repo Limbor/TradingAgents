@@ -6,6 +6,10 @@
 
 ---
 
+## 2026-10-02 实现补充：统一交易 Agent
+
+对话协调与专业分析共用 `AgentSpec / AgentContext / AgentSession / ToolExecutor`，模型策略与任务配置快照由 `model_policy` 管理。原 LangGraph 分析流程作为完整/局部模板保留，各专业角色输出可追踪的结构化父子结果与证据/记忆引用。前端显示真实子任务、模型和角色参考记录。实施细节、兼容策略及验收步骤见 [统一 Agent 迁移](UNIFIED_AGENT_MIGRATION.md)。
+
 ## 目录
 
 1. [项目愿景与目标](#1-项目愿景与目标)

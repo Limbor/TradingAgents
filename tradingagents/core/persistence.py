@@ -54,6 +54,17 @@ def _normalize_audit_symbol(symbol: Any) -> str | None:
     return raw
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_runtime_runs (
+    id TEXT PRIMARY KEY,
+    root_id TEXT NOT NULL,
+    parent_id TEXT,
+    status TEXT NOT NULL,
+    record TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_root ON agent_runtime_runs(root_id, created_at);
+
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     skill_id TEXT NOT NULL,
@@ -744,6 +755,35 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+
+    def save_agent_runtime(self, record: dict) -> None:
+        """Store a bounded, secret-free specialist execution record."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO agent_runtime_runs(id, root_id, parent_id, status, record, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "status=excluded.status, record=excluded.record, updated_at=excluded.updated_at",
+                (record["run_id"], record["root_id"], record.get("parent_id"), record["status"],
+                 json.dumps(record, ensure_ascii=False, default=str), now, now),
+            )
+
+    def list_agent_runtime(self, root_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT record FROM agent_runtime_runs WHERE root_id=? OR json_extract(record, '$.host_run_id')=? ORDER BY created_at, rowid",
+                                (root_id, root_id)).fetchall()
+        return [json.loads(row["record"]) for row in rows]
+
+    def reconcile_agent_runtime(self) -> int:
+        """Process restart interrupts old role records; never replay model calls."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT id, record FROM agent_runtime_runs WHERE status='running'").fetchall()
+            for row in rows:
+                record = json.loads(row["record"])
+                record.update(status="interrupted", warnings=[*record.get("warnings", []), "服务重启，原执行已中断"])
+                conn.execute("UPDATE agent_runtime_runs SET status='interrupted', record=?, updated_at=? WHERE id=?",
+                             (json.dumps(record, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), row["id"]))
+        return len(rows)
 
     def _backfill_report_artifacts(self, conn: sqlite3.Connection) -> None:
         """Create stock_report artifacts for reports saved before Library existed."""

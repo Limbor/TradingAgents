@@ -19,6 +19,7 @@ from tradingagents.core.activity_labels import (
     activity_message,
     tool_action,
 )
+from tradingagents.core.agent_runtime import AgentSpec, bind_scope, managed_stream
 from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
 from tradingagents.core.reflection_enroll import enroll_reflection_case
 from tradingagents.core.strategy_memory import (
@@ -63,6 +64,7 @@ class StockAnalysisInput(BaseModel):
         default_factory=lambda: ["market", "social", "news", "fundamentals"],
         description="Analysts to include in the pipeline",
     )
+    analysis_template: str = Field(default="full", pattern="^(full|research)$", description="full includes debate and risk; research only runs selected analysts")
     debate_rounds: int = Field(
         default=1,
         ge=1,
@@ -112,6 +114,7 @@ class StockAnalysisOutput(BaseModel):
     holding_context: dict[str, Any] | None = None
     selection_context: dict[str, Any] | None = None
     structured_conclusion: dict[str, Any]
+    specialist_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class StockAnalysisSkill(BaseSkill):
@@ -140,7 +143,11 @@ class StockAnalysisSkill(BaseSkill):
     def output_schema(self) -> type[BaseModel]:
         return StockAnalysisOutput
 
-    async def execute(
+    async def execute(self, params, config):
+        async for event in managed_stream(AgentSpec("stock_analysis"), self._execute(params, config), config):
+            yield event
+
+    async def _execute(
         self,
         params: BaseModel,
         config: dict[str, Any],
@@ -188,6 +195,9 @@ class StockAnalysisSkill(BaseSkill):
         except Exception as exc:
             memory_error = "历史经验检索不可用，本轮未注入策略经验"
             logger.warning("Stock analysis memory unavailable: %s", exc)
+        bind_scope(symbols=[input_params.ticker], as_of_date=temporal_context.market_asof_date,
+                   info_cutoff=temporal_context.info_cutoff,
+                   memory_refs=[row["id"] for row in selected_memory], memory_prompt=lesson_prompt_section(selected_memory))
         memory_context = _join_context_blocks(
             _format_holding_context(holding_context),
             _format_reflection_context(input_params.reflection_context),
@@ -200,6 +210,7 @@ class StockAnalysisSkill(BaseSkill):
             "max_debate_rounds": input_params.debate_rounds,
             "max_risk_discuss_rounds": input_params.risk_rounds,
             "memory_extra_context": memory_context,
+            "analysis_template": input_params.analysis_template,
             "holding_context": holding_context,
             "temporal_context": temporal_context.to_dict(),
             "market_asof_date": temporal_context.market_asof_date,
@@ -246,6 +257,7 @@ class StockAnalysisSkill(BaseSkill):
         report_path = None
         report_sections: dict[str, str] = {}
         structured_portfolio_decision: dict[str, Any] | None = None
+        specialist_results = []
 
         async for event in ta.astream_propagate(
             ticker=input_params.ticker,
@@ -297,6 +309,7 @@ class StockAnalysisSkill(BaseSkill):
 
             # Save report to disk when complete
             if event_type == "report_complete":
+                specialist_results = event_data.get("specialist_results", [])
                 report_sections = event_data.get("sections", {})
                 raw_decision = event_data.get("structured_portfolio_decision")
                 if isinstance(raw_decision, dict):
@@ -333,6 +346,10 @@ class StockAnalysisSkill(BaseSkill):
             input_params.ticker,
             structured_decision=structured_portfolio_decision,
         )
+        if input_params.analysis_template == "research":
+            structured_conclusion.update(rating="Research", confidence=None, target_price=None,
+                                         plan=None, decision_status="research_only",
+                                         executive_summary="已完成所选研究角色的分析，本轮未执行交易决策与风控流程。")
         structured_conclusion = _apply_holding_execution_constraints(
             structured_conclusion,
             holding_context,
@@ -392,9 +409,12 @@ class StockAnalysisSkill(BaseSkill):
                 "report_path": report_path,
                 "ticker": input_params.ticker,
                 "artifact_id": artifact_id,
+                "as_of_date": temporal_context.market_asof_date,
+                "analysis_template": input_params.analysis_template,
                 "holding_context": holding_context,
                 "selection_context": input_params.selection_context,
                 "structured_conclusion": structured_conclusion,
+                "specialist_results": specialist_results,
             },
         )
 

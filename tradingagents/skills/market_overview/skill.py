@@ -27,6 +27,7 @@ from tradingagents.agents.schemas import (
     render_market_regime_report,
 )
 from tradingagents.agents.utils.structured import bind_structured
+from tradingagents.core.agent_runtime import runtime_model
 from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.industry_taxonomy import (
     canonicalize_investor_theme,
@@ -34,6 +35,7 @@ from tradingagents.core.industry_taxonomy import (
     is_investable_industry_concept,
 )
 from tradingagents.core.llm_candidate_review import _provider_kwargs
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
 from tradingagents.llm_clients.factory import create_llm_client
 from tradingagents.skills._shared import drive_with_progress, resolve_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
@@ -914,7 +916,7 @@ def _build_readable_board_universe(
 
 
 # ---------------------------------------------------------------------------
-# LLM summarization (3 batched structured calls, quick_think_llm)
+# LLM summarization (3 batched structured calls, shared model policy)
 # ---------------------------------------------------------------------------
 
 
@@ -922,23 +924,24 @@ def _make_structured_llms(config: dict[str, Any], degraded: list[str]) -> dict[s
     """Create structured-output bindings for the 3 batch calls, or {} on failure."""
     try:
         provider = config.get("llm_provider", "openai")
-        model = config.get("quick_think_llm") or config.get("deep_think_llm")
+        model = resolve_model(config)
         if not model:
-            raise ValueError("quick_think_llm/deep_think_llm is not configured")
+            raise ValueError("Shared model policy is not configured")
         llm = create_llm_client(
             provider=provider,
             model=model,
-            base_url=config.get("backend_url"),
+            base_url=config.get("backend_url"), **provider_kwargs(config),
             **_provider_kwargs(config),
         ).get_llm()
+        llm = runtime_model(llm, "Market Researcher", config)
     except Exception as exc:
         logger.warning("market_overview LLM unavailable: %s", exc)
         degraded.append("llm_unavailable")
         return {}
     return {
-        "regime": bind_structured(llm, MarketRegimeReport, "MarketOverview"),
-        "industry": bind_structured(llm, IndustryStanceList, "MarketOverview"),
-        "news": bind_structured(llm, TaggedNewsList, "MarketOverview"),
+        "regime": bind_structured(llm.for_agent("Market Regime"), MarketRegimeReport, "MarketOverview"),
+        "industry": bind_structured(llm.for_agent("Industry Analyst"), IndustryStanceList, "MarketOverview"),
+        "news": bind_structured(llm.for_agent("News Tagger"), TaggedNewsList, "MarketOverview"),
     }
 
 

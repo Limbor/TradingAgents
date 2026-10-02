@@ -15,6 +15,15 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from tradingagents.core.agent_runtime import (
+    AgentContext,
+    AgentSpec,
+    agent_run,
+    bind_scope,
+    current_context,
+    runtime_model,
+)
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
 from tradingagents.core.signal_fusion import quant_evidence_markdown
 from tradingagents.core.strategy_memory import lesson_prompt_section, select_strategy_lessons
 from tradingagents.llm_clients import create_llm_client
@@ -87,7 +96,7 @@ class CandidateLLMReview(BaseModel):
 
 
 class CandidateReviewer:
-    """Review top quant candidates with the configured quick LLM."""
+    """Review top quant candidates with the shared default model."""
 
     def __init__(self, llm: Any, *, style: str, trade_date: str, strategy_lessons: list[dict[str, Any]] | None = None) -> None:
         self._llm = llm
@@ -103,15 +112,16 @@ class CandidateReviewer:
         strategy_lessons: list[dict] | None = None,
     ) -> CandidateLLMReview:
         """Review a candidate with optional real-time context."""
-        prompt = _build_prompt(
-            candidate,
-            self._style,
-            self._trade_date,
-            context=context,
-            strategy_lessons=(strategy_lessons if strategy_lessons is not None else
-                              self.select_memory(candidate)),
-        )
-        return await asyncio.to_thread(self._review_sync, prompt)
+        selected = strategy_lessons if strategy_lessons is not None else self.select_memory(candidate)
+        with agent_run(AgentSpec("Candidate Reviewer"), current_context() or AgentContext.root(getattr(self._llm, "config_snapshot", {}))) as run:
+            symbol = candidate.get("symbol") or candidate.get("ts_code")
+            bind_scope(symbols=[symbol] if symbol else None,
+                       memory_refs=[row["id"] for row in selected])
+            prompt = _build_prompt(candidate, self._style, self._trade_date, context=context, strategy_lessons=selected)
+            result = await asyncio.to_thread(self._review_sync, prompt)
+            run.output = result.model_dump(mode="json")
+            run.memory_refs = [row["id"] for row in selected]
+            return result
 
     def select_memory(self, candidate: dict) -> list[dict]:
         return select_strategy_lessons(
@@ -158,9 +168,9 @@ def build_candidate_reviewer(
     """Create a reviewer from the unified LLM backbone, returning None on config errors."""
     try:
         provider = config.get("llm_provider", "openai")
-        model = config.get("quick_think_llm") or config.get("deep_think_llm")
+        model = resolve_model(config)
         if not model:
-            raise ValueError("quick_think_llm/deep_think_llm is not configured")
+            raise ValueError("Shared model policy is not configured")
         client = create_llm_client(
             provider=provider,
             model=model,
@@ -168,7 +178,7 @@ def build_candidate_reviewer(
             **_provider_kwargs(config),
         )
         return CandidateReviewer(
-            client.get_llm(),
+            runtime_model(client.get_llm(), "Candidate Reviewer", config),
             style=style,
             trade_date=trade_date,
             strategy_lessons=strategy_lessons,
@@ -179,17 +189,7 @@ def build_candidate_reviewer(
 
 
 def _provider_kwargs(config: dict[str, Any]) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {}
-    provider = str(config.get("llm_provider", "")).lower()
-    if provider == "google" and config.get("google_thinking_level"):
-        kwargs["thinking_level"] = config["google_thinking_level"]
-    if provider == "openai" and config.get("openai_reasoning_effort"):
-        kwargs["reasoning_effort"] = config["openai_reasoning_effort"]
-    if provider == "anthropic" and config.get("anthropic_effort"):
-        kwargs["effort"] = config["anthropic_effort"]
-    if config.get("temperature") not in (None, ""):
-        kwargs["temperature"] = float(config["temperature"])
-    return kwargs
+    return provider_kwargs(config)
 
 
 def _build_prompt(

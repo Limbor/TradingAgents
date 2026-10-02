@@ -51,7 +51,21 @@ export interface AgentAnswer {
   next_actions: string[];
 }
 
+export interface SpecialistRun {
+  run_id: string;
+  root_id: string;
+  parent_id: string | null;
+  role: string;
+  kind: 'agent' | 'model' | 'tool' | 'workflow';
+  status: string;
+  model: string;
+  output: Record<string, unknown>;
+  evidence_refs: string[];
+  memory_refs: string[];
+}
+
 export interface AgentTask {
+  agent_runs?: SpecialistRun[];
   id: string;
   conversation_id: string;
   goal: string;

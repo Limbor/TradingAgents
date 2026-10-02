@@ -37,7 +37,7 @@ class SkillEvent:
     def __post_init__(self) -> None:
         allowed = {
             "skill_start", "skill_progress", "agent_status", "report_chunk",
-            "tool_call", "report_complete",
+            "tool_call", "report_complete", "agent_runtime",
             "portfolio_update", "position_advice", "risk_monitor_results",
             "scanner_candidates", "daily_pipeline_candidates", "skill_complete",
             "run_complete", "run_cancelled", "error",

@@ -10,7 +10,6 @@ from typing import Any
 import yfinance as yf
 from langgraph.prebuilt import ToolNode
 
-# Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_announcements,
@@ -39,6 +38,15 @@ from tradingagents.agents.utils.agent_utils import (
     resolve_instrument_identity,
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
+
+# Import the abstract tool methods from agent_utils
+from tradingagents.core.agent_runtime import (
+    AgentContext,
+    current_context,
+    runtime_model,
+    use_context,
+)
+from tradingagents.core.model_policy import freeze_model_config, provider_kwargs
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.dataflows.utils import safe_ticker_component
@@ -90,7 +98,7 @@ class TradingAgentsGraph:
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
         """
         self.debug = debug
-        self.config = config or DEFAULT_CONFIG
+        self.config = freeze_model_config(config or DEFAULT_CONFIG)
         self.callbacks = callbacks or []
 
         # Update the interface's config
@@ -120,8 +128,8 @@ class TradingAgentsGraph:
             **llm_kwargs,
         )
 
-        self.deep_thinking_llm = deep_client.get_llm()
-        self.quick_thinking_llm = quick_client.get_llm()
+        self.deep_thinking_llm = runtime_model(deep_client.get_llm(), "Specialist", self.config, "deep")
+        self.quick_thinking_llm = runtime_model(quick_client.get_llm(), "Specialist", self.config)
 
         self.memory_log = TradingMemoryLog(self.config)
 
@@ -153,38 +161,12 @@ class TradingAgentsGraph:
         self.log_states_dict = {}  # date to full state dict
 
         # Set up the graph: keep the workflow for recompilation with a checkpointer.
-        self.workflow = self.graph_setup.setup_graph(selected_analysts)
+        self.workflow = self.graph_setup.setup_graph(selected_analysts, template=self.config.get("analysis_template", "full"))
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
 
     def _get_provider_kwargs(self) -> dict[str, Any]:
-        """Get provider-specific kwargs for LLM client creation."""
-        kwargs = {}
-        provider = self.config.get("llm_provider", "").lower()
-
-        if provider == "google":
-            thinking_level = self.config.get("google_thinking_level")
-            if thinking_level:
-                kwargs["thinking_level"] = thinking_level
-
-        elif provider == "openai":
-            reasoning_effort = self.config.get("openai_reasoning_effort")
-            if reasoning_effort:
-                kwargs["reasoning_effort"] = reasoning_effort
-
-        elif provider == "anthropic":
-            effort = self.config.get("anthropic_effort")
-            if effort:
-                kwargs["effort"] = effort
-
-        # Sampling temperature is cross-provider: forward it whenever set.
-        # float() here so a value coming from a TRADINGAGENTS_TEMPERATURE env
-        # string ("0.2") works the same as a programmatic float.
-        temperature = self.config.get("temperature")
-        if temperature is not None and temperature != "":
-            kwargs["temperature"] = float(temperature)
-
-        return kwargs
+        return provider_kwargs(self.config)
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
@@ -401,6 +383,12 @@ class TradingAgentsGraph:
         return write_report_tree(final_state, ticker, save_path)
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
+        context = current_context() or AgentContext.root(self.config, root_id=self.config.get("run_id"),
+                                                       symbols=[company_name], as_of_date=str(trade_date), db=self.config.get("db"))
+        with use_context(context):
+            return TradingAgentsGraph._propagate(self, company_name, trade_date, asset_type)
+
+    def _propagate(self, company_name, trade_date, asset_type: str = "stock"):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -553,7 +541,24 @@ class TradingAgentsGraph:
         """Process a signal to extract the core decision."""
         return self.signal_processor.process_signal(full_signal)
 
-    async def astream_propagate(
+    async def astream_propagate(self, ticker, date, selected_analysts=None, asset_type="stock"):
+        context = current_context() or AgentContext.root(self.config, root_id=self.config.get("run_id"),
+                                                       symbols=[ticker], as_of_date=date, db=self.config.get("db"))
+        stream = self._astream_propagate(ticker, date, selected_analysts, asset_type)
+        try:
+            while True:
+                try:
+                    with use_context(context):
+                        event = await stream.__anext__()
+                        context = current_context()
+                except StopAsyncIteration:
+                    break
+                yield event
+        finally:
+            with use_context(context):
+                await stream.aclose()
+
+    async def _astream_propagate(
         self,
         ticker: str,
         date: str,
@@ -602,7 +607,7 @@ class TradingAgentsGraph:
             investment_style=str(self.config.get("investment_style") or ""),
         )
 
-        workflow = self.graph_setup.setup_graph(selected_analysts)
+        workflow = self.graph_setup.setup_graph(selected_analysts, template=self.config.get("analysis_template", "full"))
         args = self.propagator.get_graph_args()
 
         # Mirror propagate()'s checkpointer handling so the Skill entry point
@@ -634,6 +639,7 @@ class TradingAgentsGraph:
         tool_agents = {"tools_market": "Market Analyst", "tools_social": "Sentiment Analyst",
                        "tools_news": "News Analyst", "tools_fundamentals": "Fundamentals Analyst"}
         structured_portfolio_decision: dict[str, Any] | None = None
+        specialist_results: list[dict] = []
 
         try:
             async for event in graph.astream_events(
@@ -659,6 +665,7 @@ class TradingAgentsGraph:
                     # Extract report sections from the node's output
                     output = data.get("output")
                     if isinstance(output, dict):
+                        specialist_results.extend(output.get("specialist_results", []))
                         raw_decision = output.get("structured_portfolio_decision")
                         if isinstance(raw_decision, dict):
                             structured_portfolio_decision = raw_decision
@@ -679,7 +686,8 @@ class TradingAgentsGraph:
                     active_tools[call_id] = {
                         "tool": name or "unknown", "args": data.get("input", {}),
                         "activity_id": call_id,
-                        "agent": tool_agents.get((event.get("metadata") or {}).get("langgraph_node")),
+                        "agent": tool_agents.get((event.get("metadata") or {}).get("langgraph_node")) or
+                                 ((event.get("metadata") or {}).get("langgraph_node") if (event.get("metadata") or {}).get("langgraph_node") in AGENT_NAMES else None),
                     }
                     yield {
                         "type": "tool_call",
@@ -705,6 +713,7 @@ class TradingAgentsGraph:
                         "ticker": ticker,
                         "date": date,
                         "structured_portfolio_decision": structured_portfolio_decision,
+                        "specialist_results": specialist_results,
                     },
                 }
 

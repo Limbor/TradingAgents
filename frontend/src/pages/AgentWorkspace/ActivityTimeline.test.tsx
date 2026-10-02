@@ -61,3 +61,21 @@ it('settles unfinished nested analysis when its parent fails even if the task co
     event(3, 'skill_progress', { stage_id: 'deep:a', stage_label: '深入分析', activity_id: 'deep:a', status: 'failed' })];
   expect(taskActivities(task(events)).map(a => a.status)).toEqual(['failed', 'failed']);
 });
+
+it('replays runtime parent and role state with model labels without duplicating model rounds', () => {
+  const runtime = (seq: number, payload: Record<string, unknown>): AgentEvent => ({ task_id: 't', seq, event_type: 'agent_runtime', payload, created_at: '' });
+  const events = [
+    runtime(1, { run_id: 'workflow', parent_id: 't', role: 'stock_analysis', kind: 'workflow', status: 'running', model: 'flash' }),
+    runtime(2, { run_id: 'analyst', parent_id: 'workflow', role: 'Market Analyst', kind: 'agent', status: 'running', model: 'flash' }),
+    runtime(3, { run_id: 'round', parent_id: 'analyst', role: 'Market Analyst', kind: 'model', status: 'completed', model: 'flash' }),
+    event(4, 'agent_status', { agent: 'Market Analyst', status: 'completed' }),
+    runtime(5, { run_id: 'analyst', parent_id: 'workflow', role: 'Market Analyst', kind: 'agent', status: 'completed', model: 'flash' }),
+  ];
+  const activities = taskActivities(task(events));
+  expect(activities).toHaveLength(2);
+  expect(activities[1]?.parentId).toBe('runtime:workflow');
+  expect(activities[1]?.status).toBe('completed');
+  render(<ActivityTimeline activities={activities} />);
+  expect(screen.getByLabelText('执行记录')).toHaveTextContent('行情分析师 · flash');
+  expect(screen.getByRole('status')).toHaveTextContent('正在分析个股');
+});

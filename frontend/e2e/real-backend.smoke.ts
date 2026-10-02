@@ -41,7 +41,7 @@ test("app shell loads against the real backend", async ({ page }) => {
 
   // The sidebar shell is backend-independent and always present once the SPA
   // mounts, proving the bundle loaded and rendered.
-  await expect(page.getByText("TradingAgents", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "TradingAgents 首页" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "决策工作台" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "更多工具" }).getByRole("link", { name: "持仓管理" })).toBeVisible();
 
@@ -107,8 +107,21 @@ test("Agent keeps a trade question when the user supplies a missing symbol", asy
     .toContain("get_mcp_factor_snapshot");
   expect(detail.tasks[1].evidence[0].result.error).toContain("MCP");
   expect(detail.tasks[1].result.content).toContain("没有生成交易判断");
+  expect(detail.tasks[1].agent_runs).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "tool", role: "tool:get_mcp_factor_snapshot", status: "failed" }),
+  ]));
   await expect(page.getByText(/本轮没有生成交易判断/)).toBeVisible();
+  await page.getByRole("button", { name: "展开任务档案" }).click();
   const inspector = page.getByRole("complementary", { name: "任务证据与方案" });
   await expect(inspector.getByText("读取失败")).toBeVisible();
   await expect(inspector.getByText("StockManager MCP is not connected")).toBeVisible();
+});
+
+test("real backend exposes a migrated shared model policy", async ({ request }) => {
+  const response = await request.get("/api/v1/config");
+  expect(response.ok()).toBeTruthy();
+  const config = await response.json();
+  expect(config.model_policy.default_model).toEqual(expect.any(String));
+  expect(config.model_policy.default_model.length).toBeGreaterThan(0);
+  expect(config).not.toHaveProperty("api_key");
 });

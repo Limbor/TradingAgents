@@ -34,8 +34,8 @@ export default function Settings() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [saving, setSaving] = useState(false);
-  const [customQuick, setCustomQuick] = useState("");
   const [customDeep, setCustomDeep] = useState("");
+  const [editingDeepModel, setEditingDeepModel] = useState(false);
   const [customAgent, setCustomAgent] = useState("");
   const [editingAgentModel, setEditingAgentModel] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
@@ -51,24 +51,8 @@ export default function Settings() {
     if (configQuery.data && !config) {
       setConfig(configQuery.data);
       setCustomUrl(configQuery.data.backend_url ?? "");
-      setCustomAgent(configQuery.data.agent_model ?? "");
-      // If current model is not in any dropdown, treat as custom
-      const provider = configQuery.data.llm_provider;
-      const pd = providersQuery.data?.find((p) => p.id === provider);
-      if (pd) {
-        const hasQuick = pd.quick_models.some(
-          (m) => m.value === configQuery.data.quick_think_llm
-        );
-        if (!hasQuick && configQuery.data.quick_think_llm !== "custom") {
-          setCustomQuick(configQuery.data.quick_think_llm);
-        }
-        const hasDeep = pd.deep_models.some(
-          (m) => m.value === configQuery.data.deep_think_llm
-        );
-        if (!hasDeep && configQuery.data.deep_think_llm !== "custom") {
-          setCustomDeep(configQuery.data.deep_think_llm);
-        }
-      }
+      setCustomAgent(configQuery.data.model_policy?.default_model || configQuery.data.agent_model || configQuery.data.quick_think_llm);
+      setCustomDeep(configQuery.data.model_policy?.deep_model || "");
     }
   }, [configQuery.data, providersQuery.data, config]);
 
@@ -131,16 +115,14 @@ export default function Settings() {
       const quick = pd.quick_models[0];
       const deep = pd.deep_models[0];
       if (quick && deep) {
-        setCustomQuick("");
         setCustomDeep("");
         setCustomAgent("");
         setEditingAgentModel(false);
+        setEditingDeepModel(false);
         setCustomUrl("");
         save({
           llm_provider: providerId,
-          quick_think_llm: quick.value,
-          deep_think_llm: deep.value,
-          agent_model: null,
+          model_policy: { default_model: quick.value, deep_model: null },
           backend_url: null,
         });
       }
@@ -155,6 +137,9 @@ export default function Settings() {
       </div>
     );
   }
+
+  const defaultModel = config.model_policy?.default_model || config.agent_model || config.quick_think_llm;
+  const deepModel = config.model_policy ? config.model_policy.deep_model : (config.deep_think_llm !== defaultModel ? config.deep_think_llm : null);
 
   const apiKeyConfigured =
     config.api_keys[config.llm_provider] ?? false;
@@ -172,7 +157,7 @@ export default function Settings() {
       {/* LLM Backbone */}
       <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-2 text-lg font-semibold">模型配置</h3>
-        <p className="mb-4 text-sm leading-6 text-ui-muted">交易 Agent 可单独选择模型；其他分析流程继续使用下面的快速模型和深度模型。</p>
+        <p className="mb-4 text-sm leading-6 text-ui-muted">对话、股票分析、板块研究和复盘共用同一模型配置。设置对新任务生效，运行中的任务继续使用启动时的配置。</p>
         <div className="space-y-4">
           <div>
             <label className="mb-1 block text-sm text-ui-body">模型服务商</label>
@@ -190,31 +175,30 @@ export default function Settings() {
           </div>
 
           <div className="rounded-lg border border-ui-line bg-ui-panel p-4">
-            <label htmlFor="agent-model" className="mb-1 block text-sm font-medium text-ui-ink">交易 Agent 模型</label>
-            <p className="mb-3 text-xs leading-5 text-ui-muted">用于对话、任务规划和证据回答。新任务立即使用所选模型；Flash 更快，Pro 适合复杂问题。</p>
+            <label htmlFor="default-model" className="mb-1 block text-sm font-medium text-ui-ink">默认模型</label>
+            <p className="mb-3 text-xs leading-5 text-ui-muted">所有 Agent 默认使用此模型。可在高级设置中为研究裁决与组合决策指定深度模型。</p>
             <select
-              id="agent-model"
-              value={editingAgentModel || (config.agent_model && !agentModels.some((model) => model.value === config.agent_model)) ? "custom" : config.agent_model ?? ""}
+              id="default-model"
+              value={editingAgentModel || (!agentModels.some((model) => model.value === defaultModel)) ? "custom" : defaultModel}
               onChange={(event) => {
                 if (event.target.value === "custom") {
-                  setCustomAgent(config.agent_model ?? "");
+                  setCustomAgent(defaultModel);
                   setEditingAgentModel(true);
                 } else {
                   setEditingAgentModel(false);
                   setCustomAgent("");
-                  void save({ agent_model: event.target.value || null });
+                  void save({ model_policy: { default_model: event.target.value, deep_model: deepModel } });
                 }
               }}
               className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             >
-              <option value="">跟随快速模型（{config.quick_think_llm}）</option>
               {agentModels.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
               <option value="custom">自定义模型 ID…</option>
             </select>
-            {(editingAgentModel || (config.agent_model && !agentModels.some((model) => model.value === config.agent_model))) &&
+            {(editingAgentModel || (!agentModels.some((model) => model.value === defaultModel))) &&
               <div className="mt-3 flex flex-wrap gap-2">
                 <input
-                  aria-label="自定义 Agent 模型 ID"
+                  aria-label="自定义默认模型 ID"
                   type="text"
                   value={customAgent}
                   onChange={(event) => setCustomAgent(event.target.value)}
@@ -222,7 +206,7 @@ export default function Settings() {
                   className="min-w-0 flex-1 rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
                 />
                 <button type="button" disabled={!customAgent.trim() || saving}
-                  onClick={async () => { if (await save({ agent_model: customAgent.trim() })) setEditingAgentModel(false); }}
+                  onClick={async () => { if (await save({ model_policy: { default_model: customAgent.trim(), deep_model: deepModel } })) setEditingAgentModel(false); }}
                   className="rounded-lg bg-ui-accent px-3 py-2 text-sm text-ui-onAccent disabled:opacity-50">保存模型</button>
               </div>}
           </div>
@@ -242,105 +226,30 @@ export default function Settings() {
             />
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm text-ui-body">
-                快速模型{" "}
-                <span className="text-ui-faint">(路由、分析员、候选复核)</span>
-              </label>
-              <select
-                value={
-                  currentProvider?.quick_models.some(
-                    (m) => m.value === config.quick_think_llm
-                  )
-                    ? config.quick_think_llm
-                    : "custom"
-                }
-                onChange={(e) => {
-                  if (e.target.value !== "custom") {
-                    setCustomQuick("");
-                    save({ quick_think_llm: e.target.value });
-                  }
-                }}
-                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-              >
-                {currentProvider?.quick_models.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-                {!currentProvider?.quick_models.some(
-                  (m) => m.value === config.quick_think_llm
-                ) && (
-                  <option value="custom">{config.quick_think_llm}</option>
-                )}
-              </select>
-              {(config.quick_think_llm === "custom" ||
-                !currentProvider?.quick_models.some(
-                  (m) => m.value === config.quick_think_llm
-                )) && (
-                <input
-                  type="text"
-                  placeholder="Custom quick model ID"
-                  value={customQuick || config.quick_think_llm}
-                  onChange={(e) => setCustomQuick(e.target.value)}
-                  onBlur={() => {
-                    if (customQuick) save({ quick_think_llm: customQuick });
-                  }}
-                  className="mt-2 w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-                />
-              )}
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm text-ui-body">
-                深度模型{" "}
-                <span className="text-ui-faint">(研究经理、组合决策)</span>
-              </label>
-              <select
-                value={
-                  currentProvider?.deep_models.some(
-                    (m) => m.value === config.deep_think_llm
-                  )
-                    ? config.deep_think_llm
-                    : "custom"
-                }
-                onChange={(e) => {
-                  if (e.target.value !== "custom") {
-                    setCustomDeep("");
-                    save({ deep_think_llm: e.target.value });
-                  }
-                }}
-                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-              >
-                {currentProvider?.deep_models.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-                {!currentProvider?.deep_models.some(
-                  (m) => m.value === config.deep_think_llm
-                ) && (
-                  <option value="custom">{config.deep_think_llm}</option>
-                )}
-              </select>
-              {(config.deep_think_llm === "custom" ||
-                !currentProvider?.deep_models.some(
-                  (m) => m.value === config.deep_think_llm
-                )) && (
-                <input
-                  type="text"
-                  placeholder="Custom thinking model ID"
-                  value={customDeep || config.deep_think_llm}
-                  onChange={(e) => setCustomDeep(e.target.value)}
-                  onBlur={() => {
-                    if (customDeep) save({ deep_think_llm: customDeep });
-                  }}
-                  className="mt-2 w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-                />
-              )}
-            </div>
-          </div>
+          <details className="rounded-lg border border-ui-line bg-ui-panel p-4">
+            <summary className="cursor-pointer text-sm font-medium text-ui-body">高级模型设置</summary>
+            <label htmlFor="deep-model" className="mb-1 mt-4 block text-sm text-ui-body">深度模型（可选）</label>
+            <p className="mb-3 text-xs leading-5 text-ui-muted">用于研究经理裁决与组合决策。留空时，所有角色使用默认模型。</p>
+            <select id="deep-model"
+              value={editingDeepModel || (deepModel && !agentModels.some((m) => m.value === deepModel)) ? "custom" : deepModel ?? ""}
+              onChange={(event) => {
+                if (event.target.value === "custom") { setEditingDeepModel(true); setCustomDeep(deepModel ?? ""); }
+                else { setEditingDeepModel(false); void save({ model_policy: { default_model: defaultModel, deep_model: event.target.value || null } }); }
+              }}
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none">
+              <option value="">跟随默认模型（{defaultModel}）</option>
+              {agentModels.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+              <option value="custom">自定义模型 ID…</option>
+            </select>
+            {(editingDeepModel || (deepModel && !agentModels.some((m) => m.value === deepModel))) &&
+              <div className="mt-3 flex gap-2">
+                <input aria-label="自定义深度模型 ID" value={customDeep} onChange={(event) => setCustomDeep(event.target.value)}
+                  className="min-w-0 flex-1 rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm" />
+                <button type="button" disabled={!customDeep.trim() || saving}
+                  onClick={async () => { if (await save({ model_policy: { default_model: defaultModel, deep_model: customDeep.trim() } })) setEditingDeepModel(false); }}
+                  className="rounded-lg bg-ui-accent px-3 py-2 text-sm text-ui-onAccent disabled:opacity-50">保存深度模型</button>
+              </div>}
+          </details>
         </div>
       </section>
 

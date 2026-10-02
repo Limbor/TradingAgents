@@ -88,7 +88,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "llm_provider": "openai",
     "deep_think_llm": "gpt-5.5",
     "quick_think_llm": "gpt-5.4-mini",
-    # None follows quick_think_llm; a specific model only affects Trading Agent tasks.
+    # Legacy model fields migrate into the shared model policy at run start.
     "agent_model": None,
     "agent_model_planning_enabled": True,
     "agent_model_planning_timeout": 8.0,

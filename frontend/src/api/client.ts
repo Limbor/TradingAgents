@@ -315,6 +315,7 @@ export interface DailyPipelineFilters {
 }
 
 export interface ConfigResponse {
+  model_policy?: { default_model: string; deep_model: string | null };
   llm_provider: string;
   deep_think_llm: string;
   quick_think_llm: string;

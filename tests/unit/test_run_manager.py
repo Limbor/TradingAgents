@@ -47,7 +47,7 @@ def test_create_and_complete_run():
         await asyncio.sleep(0.3)
         completed = manager.get_run(r.id)
         assert completed.status == RunStatus.COMPLETED
-        assert [e.event_type for e in completed.events] == [
+        assert [e.event_type for e in completed.events if e.event_type != "agent_runtime"] == [
             "agent_status",
             "skill_complete",
             "run_complete",
@@ -81,7 +81,7 @@ def test_run_manager_accepts_stock_analysis_graph_events():
 
         completed = manager.get_run(result.id)
         assert completed.status == RunStatus.COMPLETED
-        assert [event.event_type for event in completed.events] == [
+        assert [event.event_type for event in completed.events if event.event_type != "agent_runtime"] == [
             "tool_call",
             "report_complete",
             "skill_complete",
@@ -111,6 +111,8 @@ def test_subscribe_and_receive():
         r = await manager.create_run(skill, {}, {})
         queue = manager.subscribe(r.id)
         event = await asyncio.wait_for(queue.get(), timeout=1.0)
+        while event.event_type == "agent_runtime":
+            event = await asyncio.wait_for(queue.get(), timeout=1.0)
         assert event.event_type == "agent_status"
         manager.unsubscribe(r.id, queue)
 

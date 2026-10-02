@@ -12,10 +12,11 @@ const backendPython = existsSync(localVenvPython)
 // server and run only *.smoke.ts. The default run ignores smoke specs and keeps
 // the mocked *.spec.ts contract as the stable frontend-flow verifier.
 const realBackend = process.env.E2E_REAL_BACKEND === "1";
+const frontendPort = process.env.E2E_FRONTEND_PORT || "5173";
 
 const frontendServer = {
-  command: "npm run dev -- --host 127.0.0.1",
-  url: "http://127.0.0.1:5173",
+  command: `npm run dev -- --host 127.0.0.1 --port ${frontendPort} --strictPort`,
+  url: `http://127.0.0.1:${frontendPort}`,
   reuseExistingServer: !process.env.CI && !realBackend,
   timeout: 60_000,
   env: realBackend ? { VITE_BACKEND_PROXY_TARGET: "http://127.0.0.1:8423" } : {},
@@ -51,7 +52,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: `http://127.0.0.1:${frontendPort}`,
     trace: "retain-on-failure",
     launchOptions: !process.env.CI && existsSync(localChrome)
       ? { executablePath: localChrome }

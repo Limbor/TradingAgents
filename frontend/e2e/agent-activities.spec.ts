@@ -57,3 +57,33 @@ test('real-time subtask states, expand history, reload and cancellation', async 
   await expect(timeline.getByLabel('当前动作')).toHaveCount(0);
   await expect(timeline.getByText('查询股票价格 · 已取消')).toBeVisible();
 });
+
+test('runtime role hierarchy and actual model survive reload', async ({ page }) => {
+  const time = '2026-10-02T00:00:00Z';
+  const conversation = { id: 'unified-c', title: '统一研究任务', paper_session_id: null, created_at: time, updated_at: time };
+  const runtime = (seq: number, run_id: string, parent_id: string, role: string, kind: string, status: string, model: string) => ({
+    task_id: 'unified-t', seq, event_type: 'agent_runtime', created_at: time,
+    payload: { run_id, parent_id, role, kind, status, model },
+  });
+  const events = [runtime(1, 'workflow', 'unified-t', 'stock_analysis', 'workflow', 'running', 'flash'),
+    runtime(2, 'analyst', 'workflow', 'Market Analyst', 'agent', 'running', 'flash'),
+    runtime(3, 'round', 'analyst', 'Market Analyst', 'model', 'completed', 'flash'),
+    runtime(4, 'analyst', 'workflow', 'Market Analyst', 'agent', 'completed', 'flash'),
+    runtime(5, 'manager', 'workflow', 'Research Manager', 'agent', 'running', 'pro')];
+  const task = { id: 'unified-t', conversation_id: 'unified-c', goal: '分析股票', status: 'running',
+    result: {}, error: null, created_at: time, updated_at: time, evidence: [], events, proposal: null };
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/stream')) return route.fulfill({ contentType: 'text/event-stream', body: 'event: done\ndata: {}\n\n' });
+    const body = path === '/api/v1/agent/conversations' ? [conversation]
+      : path === '/api/v1/agent/conversations/unified-c' ? { ...conversation, tasks: [task], messages: [{ id: "u", conversation_id: conversation.id, task_id: task.id, role: "user", content: task.goal, created_at: time }] } : {};
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+  });
+  await page.goto('/chat');
+  const timeline = page.getByLabel('分析子任务进度');
+  await expect(timeline.getByLabel('当前动作')).toContainText('研究经理 · pro');
+  await expect(timeline.getByLabel('执行记录')).toContainText('行情分析师 · flash');
+  await expect(timeline.getByText('分析价格走势与技术指标 · 已完成', { exact: true })).toHaveCount(1);
+  await page.reload();
+  await expect(timeline.getByLabel('当前动作')).toContainText('研究经理 · pro');
+});

@@ -1,5 +1,7 @@
 /** Plain-language labels shared by the workbench and live analysis. */
 export const AGENT_ROLES: Record<string, string> = {
+  'Trading Coordinator': '交易助手', 'Task Planner': '任务规划', 'Evidence Writer': '结论整理',
+  'Candidate Reviewer': '候选复核', 'Market Researcher': '市场研究', 'Reflection Agent': '复盘分析', 'Pattern Researcher': '经验研究',
   'Market Analyst': '行情分析师', 'Sentiment Analyst': '情绪分析师',
   'News Analyst': '新闻分析师', 'Fundamentals Analyst': '基本面分析师',
   'Bull Researcher': '多方研究员', 'Bear Researcher': '空方研究员',
@@ -19,6 +21,11 @@ export const AGENT_ACTIONS: Record<string, string> = {
   'Research Manager': '综合多空观点', Trader: '制定交易计划',
   'Aggressive Analyst': '评估进攻方案的风险', 'Conservative Analyst': '检查防守与回撤约束',
   'Neutral Analyst': '平衡收益与风险', 'Portfolio Manager': '核对仓位并形成最终判断',
+};
+export const SKILL_ACTIONS: Record<string, string> = {
+  stock_analysis: '分析个股', market_overview: '研究市场与板块', market_scanner: '筛选候选股票',
+  daily_pipeline: '执行每日研究流程', portfolio_management: '诊断持仓', daily_review: '复盘交易',
+  risk_monitor: '核对风险事件', strategy_backtest: '回测策略',
 };
 const TOOL_ACTIONS: Record<string, string> = {
   get_paper_session: '读取模拟盘账本与持仓', get_paper_job: '查询模拟盘推进进度',

@@ -23,9 +23,20 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from tradingagents.core.activity_labels import SKILL_ACTIONS, tool_action
+from tradingagents.core.agent_runtime import (
+    AgentContext,
+    AgentSession,
+    ToolExecutor,
+    bind_scope,
+    current_context,
+    runtime_model,
+    use_context,
+)
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
+from tradingagents.core.model_policy import freeze_model_config, provider_kwargs, resolve_model
 from tradingagents.core.persistence import Database
 from tradingagents.core.strategy_memory import (
+    lesson_prompt_section,
     load_strategy_lessons,
     select_strategy_lessons,
     validate_memory_usage,
@@ -361,7 +372,7 @@ class AgentStore:
                 "SELECT id FROM agent_tasks WHERE conversation_id = ? ORDER BY created_at, rowid",
                 (conversation_id,),
             ).fetchall()
-        return [self.get_task(row["id"]) for row in rows]
+        return [{**self.get_task(row["id"]), "agent_runs": self.db.list_agent_runtime(row["id"])} for row in rows]
 
     def set_status(self, task_id: str, status: str, *, result: dict | None = None,
                    error: str | None = None) -> None:
@@ -630,6 +641,26 @@ def _answer_evidence_result(item: dict) -> dict:
         if result.get("compacted"):
             return result
         return _compact_market_result(result)
+    if isinstance(payload, dict) and isinstance(payload.get("structured_conclusion"), dict):
+        original = payload["structured_conclusion"]
+        keys = ("symbol", "rating", "target_price", "confidence", "reasons", "executive_summary", "investment_thesis", "plan", "decision_status", "selection_alignment")
+        conclusion = {key: (value[:500] if isinstance(value, str) else value) for key in keys if (value := original.get(key)) is not None}
+        rows = {row.get("role"): row for row in payload.get("specialist_results", []) if isinstance(row, dict)}
+        specialists = []
+        for row in rows.values():
+            specialist = {key: row[key] for key in ("run_id", "role", "status", "model") if key in row}
+            specialist["evidence_refs"] = (row.get("evidence_refs") or [])[:5]
+            specialist["memory_refs"] = (row.get("memory_refs") or [])[:5]
+            reports = {key: value[:400] for key, value in (row.get("output") or {}).items()
+                       if key.endswith("_report") and isinstance(value, str)}
+            if reports:
+                specialist["report_excerpts"] = reports
+            specialists.append(specialist)
+        return {"run_id": result.get("run_id"), "source": result.get("source"),
+                "as_of_date": result.get("as_of_date"), "compacted": True,
+                "result": {"ticker": payload.get("ticker"), "structured_conclusion": conclusion,
+                           "specialist_results": specialists},
+                "full_result_ref": {"type": "run", "id": result.get("run_id")}}
     if item["tool_name"] == "get_paper_session":
         snapshot = result.get("snapshot") if isinstance(result.get("snapshot"), dict) else {}
         positions = snapshot.get("positions") if isinstance(snapshot.get("positions"), dict) else {}
@@ -783,55 +814,19 @@ def _format_structured_answer(answer: dict) -> str:
     return "\n\n".join(lines)
 
 
-class _NativeToolSession:
-    """One bounded model/tool transcript for a single task.
+class _NativeToolSession(AgentSession):
+    """Compatibility adapter for server-verified observations and compact evidence."""
+    def __init__(self, llm, goal, system_prompt, allowed, timeout, history=None):
+        super().__init__(llm, goal, system_prompt, allowed, timeout, history,
+                         max_rounds=_MAX_PLAN_STEPS + 2, encode=_bounded_tool_context)
 
-    The harness, not the model, executes calls. ToolMessage content is a
-    compact account-bound observation, so the next model turn can choose a
-    different tool without starting a fresh planning conversation.
-    """
-
-    def __init__(self, llm: Any, goal: str, system_prompt: str,
-                 allowed: set[str], timeout: float, history: list[dict] | None = None):
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        self.llm = llm
-        self.messages: list[Any] = [SystemMessage(content=system_prompt)]
-        if history:
-            self.messages.append(HumanMessage(content="同一对话的历史文本（不是当前工具证据或操作授权）：\n" + _json(history)))
-        self.messages.append(HumanMessage(content=goal[:4000]))
-        self.allowed = allowed
-        self.timeout = timeout
-        self.rounds = 0
-
-    def observe_server_step(self, name: str, item: dict) -> None:
+    def observe_server_step(self, name, item):
         from langchain_core.messages import HumanMessage
-
         self.messages.append(HumanMessage(content=_bounded_tool_context({
-            "server_verified_tool": name,
-            "source": item["source"], "as_of_date": item["as_of_date"],
-            "summary": item["summary"],
+            "server_verified_tool": name, "source": item["source"],
+            "as_of_date": item["as_of_date"], "summary": item["summary"],
             "data": _answer_evidence_result(item),
         })))
-
-    def tool_result(self, call_id: str, name: str, result: dict) -> None:
-        from langchain_core.messages import ToolMessage
-
-        self.messages.append(ToolMessage(
-            content=_bounded_tool_context(result), tool_call_id=call_id, name=name,
-        ))
-
-    async def choose(self) -> list[dict]:
-        self.rounds += 1
-        response = await asyncio.wait_for(self.llm.ainvoke(self.messages), self.timeout)
-        calls = getattr(response, "tool_calls", None) or []
-        if not isinstance(calls, list):
-            raise ValueError("模型工具调用格式无效")
-        ids = [call.get("id") if isinstance(call, dict) else None for call in calls]
-        if any(not isinstance(call_id, str) or not call_id for call_id in ids) or len(ids) != len(set(ids)):
-            raise ValueError("模型工具调用缺少唯一 ID")
-        self.messages.append(response)
-        return calls
 
 
 class TradingAgentHarness:
@@ -844,7 +839,8 @@ class TradingAgentHarness:
         self.chat_agent = chat_agent
         self.run_manager = run_manager
         self.skills = skill_registry
-        self.config = config
+        self._config = config
+        self._contexts: dict[str, AgentContext] = {}
         self._active: dict[str, asyncio.Task] = {}
         self._cancel_requested: set[str] = set()
         self._slots = asyncio.Semaphore(3)
@@ -852,9 +848,7 @@ class TradingAgentHarness:
         self._shutting_down = False
 
     def _agent_model(self) -> str:
-        selected = self.config.get("agent_model")
-        return (selected.strip() if isinstance(selected, str) and selected.strip()
-                else self.config.get("quick_think_llm", "gpt-5.4-mini"))
+        return resolve_model(self.config)
 
     def _conversation_history(self, conversation_id: str, task_id: str | None = None) -> list[dict]:
         """Bound text context to this conversation and before the current turn.
@@ -960,11 +954,20 @@ class TradingAgentHarness:
             })
         running = asyncio.create_task(
             self._execute(task["id"], conversation, intent_hint, timeout_seconds,
-                          deadline, selected_model)
+                          deadline, selected_model, freeze_model_config(self.config))
         )
         self._active[task["id"]] = running
         running.add_done_callback(lambda done: self._on_task_done(task["id"], done))
         return task
+
+    @property
+    def config(self):
+        context = current_context()
+        return context.config if context else self._config
+
+    @config.setter
+    def config(self, value):
+        self._config = value
 
     def _on_task_done(self, task_id: str, done: asyncio.Task) -> None:
         self._active.pop(task_id, None)
@@ -992,6 +995,8 @@ class TradingAgentHarness:
         active = self._active.get(task_id)
         if active:
             self._cancel_requested.add(task_id)
+            if task_id in self._contexts:
+                self._contexts[task_id].budget.cancelled.set()
             active.cancel()
         else:
             self.store.set_status(task_id, "cancelled")
@@ -1364,7 +1369,7 @@ class TradingAgentHarness:
             logger.warning("Agent tool %s input invalid: %s", name, exc.message)
             return {"error": f"工具 {name} 的输入不符合登记契约"}
         try:
-            result = await asyncio.wait_for(tool.handler(**args), timeout=tool.timeout_seconds)
+            result = await ToolExecutor([tool], timeout=tool.timeout_seconds).execute(name, args)
         except asyncio.TimeoutError:
             return {"error": f"工具 {name} 超过 {tool.timeout_seconds:g} 秒未返回",
                     "warnings": ["工具执行超时"]}
@@ -1380,6 +1385,9 @@ class TradingAgentHarness:
                 logger.warning("Agent tool %s output invalid: %s", name, exc.message)
                 return {"error": f"工具 {name} 的结果不符合登记契约",
                         "warnings": ["工具结果格式无效"]}
+        if name == "get_strategy_lessons" and not result.get("error"):
+            selected = [row for row in result.get("lessons", []) if isinstance(row, dict) and row.get("id")][:8]
+            bind_scope(memory_refs=[row["id"] for row in selected], memory_prompt=lesson_prompt_section(selected))
         return result
 
     async def _open_native_tool_session(self, goal: str, paper_session_id: str | None,
@@ -1470,12 +1478,15 @@ class TradingAgentHarness:
             f"当前模拟盘：{paper_session_id or '无'}；服务端确认的标的：{', '.join(tickers) or '无'}；"
             f"北京时间今天：{_shanghai_today()}。"
             "仅当短日期在账本日之后、今天及之前唯一时才可用它生成推进提案。"
+            "仅研究行情、新闻或基本面时，stock_analysis 使用 analysis_template=research 并选择所需 analysts；"
+            "需要完整交易评估时使用 full 模板，保留研究裁决和风控。"
             f"\n可用分析能力及参数契约：{_json(skill_catalog)}"
         )
         try:
             llm = create_llm_client(
-                provider=provider, model=model, base_url=self.config.get("backend_url"),
-            ).get_llm().bind_tools(schemas)
+                provider=provider, model=model, base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
+            ).get_llm()
+            llm = runtime_model(llm, "Trading Coordinator", self.config).bind_tools(schemas)
             timeout = max(2.0, min(float(self.config.get("agent_model_planning_timeout", 8.0)), 20.0))
             return _NativeToolSession(llm, goal, prompt, allowed, timeout, history)
         except Exception as exc:
@@ -1574,7 +1585,21 @@ class TradingAgentHarness:
                 })
         return steps, action_target
 
-    async def _execute(self, task_id: str, conversation: dict,
+    async def _execute(self, task_id, conversation, intent_hint=None,
+                       timeout_seconds=2100.0, deadline=None, model=None, config_snapshot=None):
+        context = AgentContext.root(config_snapshot or self._config, root_id=task_id,
+                                    account_id=conversation.get("paper_session_id"),
+                                    db=self.store.db, timeout=timeout_seconds,
+                                    emit=lambda record: self.store.event(task_id, "agent_runtime", record))
+        self._contexts[task_id] = context
+        try:
+            with use_context(context):
+                await self._execute_task(task_id, conversation, intent_hint, timeout_seconds, deadline, model)
+        finally:
+            context.budget.cancelled.set()
+            self._contexts.pop(task_id, None)
+
+    async def _execute_task(self, task_id: str, conversation: dict,
                        intent_hint: dict | None = None,
                        timeout_seconds: float = 2100.0,
                        deadline: float | None = None,
@@ -1625,6 +1650,8 @@ class TradingAgentHarness:
                 self.store.event(task_id, "scope_resolved", {
                     "ts_code": tickers[0], "source": "previous_task",
                 })
+            if tickers:
+                bind_scope(symbols=tickers)
             if (not tickers and not conversation.get("paper_session_id") and
                     self._asks_trade_decision(goal)):
                 content = ("请直接回复要评估的 A 股代码（例如 600519.SH），我会继续这项问题；"
@@ -2323,8 +2350,9 @@ class TradingAgentHarness:
         try:
             llm = create_llm_client(
                 provider=provider, model=model or self._agent_model(),
-                base_url=self.config.get("backend_url"),
-            ).get_llm().bind_tools([schema])
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
+            ).get_llm()
+            llm = runtime_model(llm, "Task Planner", self.config).bind_tools([schema])
             response = await asyncio.wait_for(
                 llm.ainvoke([SystemMessage(content=prompt), HumanMessage(content=goal[:2000])]),
                 timeout=max(2.0, min(float(self.config.get("agent_model_planning_timeout", 8.0)), 20.0)),
@@ -2429,8 +2457,9 @@ class TradingAgentHarness:
             llm = create_llm_client(
                 provider=provider,
                 model=model or self._agent_model(),
-                base_url=self.config.get("backend_url"),
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
             ).get_llm()
+            llm = runtime_model(llm, "Evidence Writer", self.config)
             response = await asyncio.wait_for(
                 llm.ainvoke([SystemMessage(content=prompt),
                              HumanMessage(content=_json(request))]),
@@ -2741,8 +2770,9 @@ class TradingAgentHarness:
             llm = create_llm_client(
                 provider=self.config.get("llm_provider", "openai"),
                 model=model or self._agent_model(),
-                base_url=self.config.get("backend_url"),
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
             ).get_llm()
+            llm = runtime_model(llm, "Evidence Writer", self.config)
             if injected_memory and evidence[0].get("task_id"):
                 self.store.event(evidence[0]["task_id"], "memory_comparing", {
                     "lesson_ids": [row["id"] for row in injected_memory], "as_of_date": cutoff,

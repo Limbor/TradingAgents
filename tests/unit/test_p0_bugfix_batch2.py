@@ -300,7 +300,7 @@ def test_astream_propagate_has_checkpointer_branch():
 
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
-    src = inspect.getsource(TradingAgentsGraph.astream_propagate)
+    src = inspect.getsource(TradingAgentsGraph._astream_propagate)
     assert "checkpoint_enabled" in src
     assert "get_checkpointer" in src
     assert "thread_id" in src

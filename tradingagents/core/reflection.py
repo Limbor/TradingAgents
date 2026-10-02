@@ -13,6 +13,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from tradingagents.core.agent_runtime import runtime_model
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +61,7 @@ class ReflectionEngine:
     Integrates with:
     - TradingMemoryLog for pending decision entries
     - MCP client or yfinance for actual price data
-    - LLM (quick_think_llm) for reflection text generation
+    - LLM (shared default model) for reflection text generation
     - Database (persistence) for storing reflection records
     """
 
@@ -414,10 +417,10 @@ class ReflectionEngine:
 
             client = create_llm_client(
                 provider=self.config.get("llm_provider", "openai"),
-                model=self.config.get("quick_think_llm", "gpt-5.4-mini"),
-                base_url=self.config.get("backend_url"),
+                model=resolve_model(self.config),
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
             )
-            llm = client.get_llm()
+            llm = runtime_model(client.get_llm(), "Reflection Agent", self.config)
             prompt = _build_attribution_prompt(case, outcome, post_signal_evidence)
             response = await llm.ainvoke(prompt)
             return _parse_attribution_payload(str(getattr(response, "content", response)))
@@ -566,10 +569,10 @@ class ReflectionEngine:
 
             client = create_llm_client(
                 provider=self.config.get("llm_provider", "openai"),
-                model=self.config.get("quick_think_llm", "gpt-5.4-mini"),
-                base_url=self.config.get("backend_url"),
+                model=resolve_model(self.config),
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
             )
-            llm = client.get_llm()
+            llm = runtime_model(client.get_llm(), "Reflection Agent", self.config)
             prompt = (
                 f"你是 A 股交易系统的复盘助手。基于以下历史决策与结果，写 2-3 句可执行的中文反思。\n\n"
                 f"决策: {signal.get('original_decision', 'Unknown')}\n"

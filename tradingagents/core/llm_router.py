@@ -12,7 +12,9 @@ import time as monotonic_time
 from dataclasses import dataclass, field
 from typing import Any
 
+from tradingagents.core.agent_runtime import runtime_model
 from tradingagents.core.intent_schema import generate_tool_schemas
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
 from tradingagents.skills.registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ class RouteResult:
 
 
 class LLMRouter:
-    """LLM-based intent router. Uses quick_think_llm for fast responses.
+    """LLM-based intent router. Uses the shared default model.
 
     Conversation context is maintained per session with LRU + TTL eviction.
     """
@@ -66,10 +68,10 @@ class LLMRouter:
 
             client = create_llm_client(
                 provider=self.config.get("llm_provider", "openai"),
-                model=self.config.get("quick_think_llm", "gpt-5.4-mini"),
-                base_url=self.config.get("backend_url"),
+                model=resolve_model(self.config),
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
             )
-            llm = client.get_llm()
+            llm = runtime_model(client.get_llm(), "Task Planner", self.config)
             self._llm_with_tools = llm.bind_tools(self.tool_schemas)
         return self._llm_with_tools
 

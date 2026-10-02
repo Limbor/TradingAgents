@@ -70,6 +70,9 @@ export default function Analysis() {
     });
 
     const unsubProgress = wsManager.on("skill_progress", relay);
+    const unsubRuntime = wsManager.on("agent_runtime", (msg: WSMessage) => addProgressEvent({
+      task_id: runId, seq: 0, event_type: "agent_runtime", payload: msg.payload, created_at: msg.timestamp,
+    }));
     const unsubLegacyProgress = wsManager.on("progress_update", relay);
 
     const unsubTool = wsManager.on("tool_call", (msg: WSMessage) => {
@@ -103,6 +106,7 @@ export default function Analysis() {
     return () => {
       unsubStatus();
       unsubProgress();
+      unsubRuntime();
       unsubLegacyProgress();
       unsubReport();
       unsubReportComplete();

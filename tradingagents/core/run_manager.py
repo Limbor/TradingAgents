@@ -7,16 +7,24 @@ endpoints) via per-run asyncio Queues.
 
 import asyncio
 import contextlib
-import copy
 import hashlib
 import json
 import logging
+import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from tradingagents.core.agent_runtime import (
+    AgentContext,
+    AgentSpec,
+    agent_run,
+    current_context,
+    use_context,
+)
+from tradingagents.core.model_policy import freeze_model_config
 from tradingagents.core.persistence import Database
 from tradingagents.skills.base import BaseSkill, SkillEvent
 
@@ -65,6 +73,7 @@ class RunManager:
         max_retained_runs: int = 200,
         max_events_per_run: int = 500,
     ) -> None:
+        self._contexts: dict[str, AgentContext] = {}
         self._runs: dict[str, Run] = {}
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
         self._active_fingerprints: dict[str, str] = {}
@@ -75,6 +84,7 @@ class RunManager:
         self._db = db
         if self._db is not None:
             self._db.reconcile_interrupted_runs()
+            self._db.reconcile_agent_runtime()
 
     async def create_run(
         self,
@@ -115,7 +125,7 @@ class RunManager:
         await self._save_run(run)
 
         run._task = asyncio.create_task(
-            self._execute(run, skill, params, copy.deepcopy(config))
+            self._execute(run, skill, params, freeze_model_config(config))
         )
         return run
 
@@ -127,10 +137,51 @@ class RunManager:
         config: dict[str, Any],
     ) -> None:
         """Execute the skill and broadcast events to subscribers."""
+        loop = asyncio.get_running_loop()
+        pending_events = set()
+        accepting = True
+        parent_context = current_context()
+        def dispatch(record):
+            if not accepting:
+                return
+            pending = asyncio.create_task(self._record_event(run, run.id, SkillEvent(event_type="agent_runtime", data=record)))
+            pending_events.add(pending)
+        def emit(record):
+            if parent_context and parent_context.emit:
+                parent_context.emit(record)
+            if accepting:
+                loop.call_soon_threadsafe(dispatch, record)
         try:
             async with self._run_slots:
-                await self._execute_in_slot(run, skill, params, config)
+                parent = replace(parent_context, emit=emit) if parent_context else AgentContext.root(config, root_id=run.id, db=self._db, emit=emit)
+                with agent_run(AgentSpec(skill.metadata.id), parent, kind="workflow") as child:
+                    context = replace(current_context(), host_run_id=run.id, cancel_scope=threading.Event())
+                    self._contexts[run.id] = context
+                    with use_context(context):
+                        await self._execute_in_slot(run, skill, params, config)
+                    child.status = run.status.value
+                    child.output = run.result or {}
+        except Exception as exc:
+            run.status = RunStatus.FAILED
+            run.error = str(exc)
+            run.completed_at = datetime.now(timezone.utc)
+            await self._update_run(run)
         finally:
+            await asyncio.sleep(0)
+            if pending_events:
+                await asyncio.gather(*pending_events, return_exceptions=True)
+            accepting = False
+            if run.status in {RunStatus.PENDING, RunStatus.RUNNING}:
+                run.status = RunStatus.CANCELLED
+                run.completed_at = datetime.now(timezone.utc)
+                await self._update_run(run)
+            event = (SkillEvent(event_type="run_complete", data={"status": run.status.value, "result": run.result or {}})
+                     if run.status == RunStatus.COMPLETED else
+                     SkillEvent(event_type="run_cancelled", data={"status": run.status.value})
+                     if run.status == RunStatus.CANCELLED else
+                     SkillEvent(event_type="error", data={"message": run.error or "Run failed"}))
+            await self._record_event(run, run.id, event)
+            self._contexts.pop(run.id, None)
             # Admission deduplication must never remain stuck after an
             # unexpected infrastructure error or cancellation.
             self._release_fingerprint(run.id)
@@ -163,89 +214,50 @@ class RunManager:
             SkillEvent(event_type="run_cancelled", data={"status": run.status.value}),
         )
 
-    async def _execute_in_slot(
-        self,
-        run: Run,
-        skill: BaseSkill,
-        params: dict[str, Any],
-        config: dict[str, Any],
-    ) -> None:
-        """Execute after admission control grants a global run slot."""
+    async def _execute_in_slot(self, run, skill, params, config) -> None:
+        """Execute a validated template; outer runtime publishes the terminal event."""
         run.status = RunStatus.RUNNING
         run.started_at = datetime.now(timezone.utc)
         await self._update_run(run)
-
         try:
             validated_params = skill.validate_params(params)
-        except Exception as e:
+        except Exception as exc:
             run.status = RunStatus.FAILED
-            run.error = f"Validation error: {e}"
+            run.error = f"Validation error: {exc}"
             run.completed_at = datetime.now(timezone.utc)
             await self._update_run(run)
-            await self._record_event(
-                run,
-                run.id,
-                SkillEvent(event_type="error", data={"message": str(e)}),
-            )
             return
-
         try:
             saw_skill_complete = False
             run_config = {**config, "run_id": run.id}
             if self._db is not None:
                 run_config["db"] = self._db
-
             async for event in skill.execute(validated_params, run_config):
                 if event.event_type == "skill_complete":
                     saw_skill_complete = True
                     await self._record_event(run, run.id, event)
                     if str(event.data.get("status") or "").lower() != "success":
-                        raise RuntimeError(
-                            str(event.data.get("error") or "Skill reported a non-success result")
-                        )
+                        raise RuntimeError(str(event.data.get("error") or "Skill reported a non-success result"))
                     skill.validate_output(event.data)
                     run.result = event.data
                     continue
                 if event.event_type == "run_complete":
                     raise ValueError("Skills must emit skill_complete, not run_complete")
                 await self._record_event(run, run.id, event)
-
             if not saw_skill_complete:
                 raise RuntimeError("Skill ended without a skill_complete event")
-
             run.status = RunStatus.COMPLETED
             run.completed_at = datetime.now(timezone.utc)
             await self._update_run(run)
-            await self._record_event(
-                run,
-                run.id,
-                SkillEvent(
-                    event_type="run_complete",
-                    data={
-                        "status": run.status.value,
-                        "result": run.result or {},
-                    },
-                ),
-            )
         except asyncio.CancelledError:
             run.status = RunStatus.CANCELLED
             run.completed_at = datetime.now(timezone.utc)
             await self._update_run(run)
-            await self._record_event(
-                run,
-                run.id,
-                SkillEvent(event_type="run_cancelled", data={"status": run.status.value}),
-            )
-        except Exception as e:
+        except Exception as exc:
             run.status = RunStatus.FAILED
-            run.error = f"{type(e).__name__}: {e}"
+            run.error = f"{type(exc).__name__}: {exc}"
             run.completed_at = datetime.now(timezone.utc)
             await self._update_run(run)
-            await self._record_event(
-                run,
-                run.id,
-                SkillEvent(event_type="error", data={"message": run.error}),
-            )
 
     async def _record_event(self, run: Run, run_id: str, event: SkillEvent) -> None:
         """Persist an event in memory, to subscribers, and (best-effort) to the
@@ -378,6 +390,8 @@ class RunManager:
         """Cancel a running task."""
         run = self._runs.get(run_id)
         if run and run._task and not run._task.done():
+            if context := self._contexts.get(run_id):
+                context.cancel_scope.set()
             if run._skill is not None:
                 # A broken cooperative hook must not prevent cancellation of
                 # the owning asyncio task.

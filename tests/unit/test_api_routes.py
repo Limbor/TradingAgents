@@ -695,3 +695,13 @@ def test_prediction_scorecard_alpha_suggestion_optional(client, monkeypatch):
     res = client.get("/api/v1/prediction-scorecard?lookback_days=90")
     assert res.status_code == 200
     assert res.json()["alpha_suggestion"] is None
+
+
+def test_unified_policy_applies_to_compatibility_fields_and_rejects_null(client):
+    response = client.put('/api/v1/config', json={'model_policy': {'default_model': 'shared-model'}})
+    assert response.status_code == 200
+    config = response.json()
+    assert config['model_policy'] == {'default_model': 'shared-model', 'deep_model': None}
+    assert config['agent_model'] == config['quick_think_llm'] == config['deep_think_llm'] == 'shared-model'
+    assert client.put('/api/v1/config', json={'model_policy': None}).status_code == 422
+    assert client.put('/api/v1/config', json={'model_policy': {'default_model': 'custom'}}).status_code == 422

@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { MemoryDetails, MemoryProgress, taskMemory } from "./MemoryPanel";
+import { MemoryDetails, MemoryProgress, RoleMemory, taskMemory } from "./MemoryPanel";
 import type { AgentTask } from "@/api/agent";
 
 afterEach(cleanup);
@@ -8,6 +8,24 @@ const task = (status: string, event: string, payload: Record<string, unknown>): 
   id: "t", conversation_id: "c", goal: "板块分析", status, result: {}, error: null,
   created_at: "2026-01-01", updated_at: "2026-01-01", evidence: [],
   events: [{ task_id: "t", seq: 1, event_type: event, payload, created_at: "2026-01-01" }],
+});
+
+it("restores each role's memory receipt and only shows provided lesson references", () => {
+  const current = task("completed", "agent_runtime", {
+    run_id: "round-a", kind: "model", role: "News Analyst", memory_refs: ["a", "b"],
+    output: { memory_usage: [{ lesson_id: "a", status: "referenced", reason: "事件条件相同" },
+      { lesson_id: "invented", status: "referenced", reason: "不能显示的引用" }] },
+  });
+  current.agent_runs = [{ run_id: "round-a", root_id: "t", parent_id: "t", evidence_refs: [], kind: "model", role: "News Analyst", status: "running",
+    model: "flash", memory_refs: ["a", "b"], output: {} },
+    { run_id: "round-b", root_id: "t", parent_id: "t", evidence_refs: [], kind: "model", role: "Trader", status: "completed", model: "flash",
+      memory_refs: ["a"], output: { memory_usage: [{ lesson_id: "a", status: "not_applicable", reason: "周期不同" }] } }];
+  render(<RoleMemory task={current} />);
+  expect(screen.getByText(/新闻分析师 · 提供 2 条 · 报告参考 1 条/)).toBeInTheDocument();
+  expect(screen.getByText("报告参考：事件条件相同")).toBeInTheDocument();
+  expect(screen.getByText("1 条尚未报告具体参考情况")).toBeInTheDocument();
+  expect(screen.getByText("不适用：周期不同")).toBeInTheDocument();
+  expect(screen.queryByText(/不能显示的引用/)).not.toBeInTheDocument();
 });
 
 it("shows retrieval and comparing progress without claiming reference", () => {

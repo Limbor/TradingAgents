@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.core.activity_labels import report_activity
 from tradingagents.core.adaptive_alpha import resolve_alpha_override
+from tradingagents.core.agent_runtime import runtime_model
 from tradingagents.core.artifacts import save_skill_artifact
 from tradingagents.core.candidate_review_runner import apply_llm_reviews
 from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
@@ -24,6 +25,7 @@ from tradingagents.core.industry_taxonomy import (
     resolve_sw_l1_industries,
 )
 from tradingagents.core.mcp_client import get_mcp_client
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
 from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.reflection_enroll import enroll_reflection_case
@@ -2060,10 +2062,10 @@ async def _render_llm_briefing(
     try:
         client = create_llm_client(
             provider=config.get("llm_provider", "openai"),
-            model=config.get("quick_think_llm", "gpt-5.4-mini"),
-            base_url=config.get("backend_url"),
+            model=resolve_model(config),
+            base_url=config.get("backend_url"), **provider_kwargs(config),
         )
-        llm = client.get_llm()
+        llm = runtime_model(client.get_llm(), "Daily Briefing", config)
         # Compact candidate summary to keep the prompt small.
         cand_lines = []
         for item in candidates[:10]:

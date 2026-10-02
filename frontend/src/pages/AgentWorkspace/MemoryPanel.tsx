@@ -1,4 +1,5 @@
 import { Brain, LoaderCircle } from "lucide-react";
+import { agentRole } from "@/utils/activityLabels";
 import type { AgentTask } from "@/api/agent";
 
 type Row = Record<string, unknown>;
@@ -51,6 +52,34 @@ export function MemoryProgress({ task }: { task: AgentTask }) {
     {running && trace.status === "memory_comparing" ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-ui-accent" /> : <Brain className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-accent" />}
     <span className="min-w-0 break-words">{memoryMessage(trace, running)}</span>
   </div>;
+}
+
+export function RoleMemory({ task }: { task: AgentTask }) {
+  const records = new Map<string, Row>();
+  for (const run of task.agent_runs ?? []) records.set(run.run_id, run as unknown as Row);
+  for (const event of task.events) if (event.event_type === 'agent_runtime') records.set(String(event.payload.run_id), event.payload);
+  const roles = new Map<string, { provided: Set<string>; usage: Map<string, Row> }>();
+  for (const record of records.values()) {
+    if (record.kind !== 'model' || !ids(record.memory_refs).length) continue;
+    const name = String(record.role);
+    const role = roles.get(name) ?? { provided: new Set<string>(), usage: new Map<string, Row>() };
+    for (const id of ids(record.memory_refs)) role.provided.add(id);
+    for (const usage of rows(object(record.output).memory_usage)) {
+      if (role.provided.has(String(usage.lesson_id))) role.usage.set(String(usage.lesson_id), usage);
+    }
+    roles.set(name, role);
+  }
+  if (!roles.size) return null;
+  return <section aria-label="各角色经验参考情况" className="min-w-0 space-y-2 text-xs">
+    <h4 className="font-medium text-ui-body">各角色参考情况</h4>
+    {[...roles].map(([name, role]) => <details key={name} className="rounded-md border border-ui-line px-3 py-2">
+      <summary className="cursor-pointer leading-5">{agentRole(name)} · 提供 {role.provided.size} 条 · 报告参考 {[...role.usage.values()].filter(row => row.status === 'referenced').length} 条</summary>
+      <div className="mt-2 space-y-1 leading-5 text-ui-muted">
+        {[...role.usage].map(([id, row]) => <p key={id}>{row.status === 'referenced' ? '报告参考' : '不适用'}：{String(row.reason)}</p>)}
+        {role.provided.size > role.usage.size && <p>{role.provided.size - role.usage.size} 条尚未报告具体参考情况</p>}
+      </div>
+    </details>)}
+  </section>;
 }
 
 export function MemoryDetails({ trace: raw }: { trace: unknown }) {

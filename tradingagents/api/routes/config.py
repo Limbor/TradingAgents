@@ -4,15 +4,17 @@ import os
 import time
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from tradingagents.core.mcp_client import get_mcp_status, shutdown_mcp_client
+from tradingagents.core.model_policy import ModelPolicy, config_update, model_policy
 from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV
 
 router = APIRouter()
 
 
 class ConfigResponse(BaseModel):
+    model_policy: ModelPolicy
     llm_provider: str
     deep_think_llm: str
     quick_think_llm: str
@@ -35,6 +37,7 @@ class ConfigResponse(BaseModel):
 
 
 class ConfigUpdate(BaseModel):
+    model_policy: ModelPolicy | None = None
     llm_provider: str | None = None
     deep_think_llm: str | None = None
     quick_think_llm: str | None = None
@@ -53,6 +56,12 @@ class ConfigUpdate(BaseModel):
     daily_pipeline_deep_analysis_limit: int | None = Field(default=None, ge=0, le=20)
     scheduler_enabled: bool | None = None
     adaptive_alpha_enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def require_valid_policy(self):
+        if "model_policy" in self.model_fields_set and self.model_policy is None:
+            raise ValueError("模型策略不能为空；请选择默认模型")
+        return self
 
 
 class ModelOption(BaseModel):
@@ -100,6 +109,7 @@ def _get_api_key_status() -> dict[str, bool]:
 
 def _build_config_response(config: dict) -> ConfigResponse:
     return ConfigResponse(
+        model_policy=model_policy(config),
         llm_provider=config.get("llm_provider", "openai"),
         deep_think_llm=config.get("deep_think_llm", "gpt-5.5"),
         quick_think_llm=config.get("quick_think_llm", "gpt-5.4-mini"),
@@ -140,12 +150,13 @@ async def update_config(request: Request, body: ConfigUpdate):
     config = request.app.state.config
     mcp_changed = False
 
-    for field, val in body.model_dump(exclude_unset=True).items():
+    updates = config_update(config, body.model_dump(exclude_unset=True))
+    for field, val in updates.items():
         config[field] = val
         if field.startswith("stockmanager_mcp_"):
             mcp_changed = True
     if hasattr(request.app.state, "db"):
-        request.app.state.db.update_app_config(body.model_dump(exclude_unset=True))
+        request.app.state.db.update_app_config(updates)
 
     if mcp_changed:
         await shutdown_mcp_client()
@@ -153,8 +164,9 @@ async def update_config(request: Request, body: ConfigUpdate):
         request.app.state.mcp_status = await get_mcp_status(config)
         request.app.state.mcp_status_checked_at = time.monotonic()
 
-    llm_fields = {"llm_provider", "quick_think_llm", "deep_think_llm", "backend_url"}
-    if llm_fields.intersection(body.model_fields_set):
+    llm_fields = {"model_policy", "agent_model", "llm_provider", "quick_think_llm", "deep_think_llm", "backend_url",
+                  "temperature", "openai_reasoning_effort", "google_thinking_level", "anthropic_effort"}
+    if llm_fields.intersection(updates):
         chat_agent = getattr(request.app.state, "chat_agent", None)
         if chat_agent is not None:
             chat_agent.reconfigure(config)

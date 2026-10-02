@@ -25,7 +25,9 @@ import time as monotonic_time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from tradingagents.core.agent_runtime import ToolExecutor, current_context, runtime_model
 from tradingagents.core.intent_schema import generate_tool_schemas
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
 from tradingagents.core.tool_registry import ToolRegistry
 from tradingagents.skills.registry import SkillRegistry
 
@@ -452,23 +454,32 @@ class ChatAgent:
 
     def _get_plain_llm(self, model_override: str | None = None) -> Any:
         """Return a cached LLM client without tools (for forced text answers)."""
+        context = current_context()
+        if context:
+            from tradingagents.llm_clients import create_llm_client
+            config = context.config
+            native = create_llm_client(provider=config.get("llm_provider", "openai"),
+                                       model=model_override or resolve_model(config),
+                                       base_url=config.get("backend_url"), **provider_kwargs(config)).get_llm()
+            return runtime_model(native, "Chat Coordinator", config)
         if model_override and model_override != self._config.get("quick_think_llm"):
             from tradingagents.llm_clients import create_llm_client
 
-            return create_llm_client(
+            native = create_llm_client(
                 provider=self._config.get("llm_provider", "openai"),
                 model=model_override,
-                base_url=self._config.get("backend_url"),
+                base_url=self._config.get("backend_url"), **provider_kwargs(self._config),
             ).get_llm()
+            return runtime_model(native, "Chat Coordinator", {**self._config, "model_policy": {"default_model": model_override}})
         if self._plain_llm is None:
             from tradingagents.llm_clients import create_llm_client
 
             client = create_llm_client(
                 provider=self._config.get("llm_provider", "openai"),
-                model=self._config.get("quick_think_llm", "gpt-5.4-mini"),
-                base_url=self._config.get("backend_url"),
+                model=resolve_model(self._config),
+                base_url=self._config.get("backend_url"), **provider_kwargs(self._config),
             )
-            self._plain_llm = client.get_llm()
+            self._plain_llm = runtime_model(client.get_llm(), "Chat Coordinator", self._config)
         return self._plain_llm
 
     async def _answer_without_tools(
@@ -721,7 +732,7 @@ class ChatAgent:
             )
 
         try:
-            result = await tool.handler(**args)
+            result = await ToolExecutor([tool], timeout=tool.timeout_seconds).execute(tool_name, args)
         except Exception as exc:
             logger.warning("Lightweight tool %s failed: %s", tool_name, exc)
             return ChatResponse(

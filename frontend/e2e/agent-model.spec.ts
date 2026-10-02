@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-test("DeepSeek Agent model can switch between Flash and Pro and persists in settings", async ({ page }) => {
+test("Unified default model applies to every Agent and persists across settings and workspace", async ({ page }) => {
   const config = {
     llm_provider: "deepseek", quick_think_llm: "deepseek-flash",
     deep_think_llm: "deepseek-v4-pro", agent_model: null as string | null,
+    model_policy: { default_model: "deepseek-flash", deep_model: null as string | null },
     output_language: "Chinese", max_debate_rounds: 1, max_risk_discuss_rounds: 1,
     checkpoint_enabled: false, backend_url: null, stockmanager_mcp_url: null,
     stockmanager_mcp_enabled: false, stockmanager_mcp_timeout: 30,
@@ -42,24 +43,27 @@ test("DeepSeek Agent model can switch between Flash and Pro and persists in sett
   });
 
   await page.goto("/settings");
-  const agentModel = page.getByRole("combobox", { name: "交易 Agent 模型", exact: true });
-  await expect(agentModel).toHaveValue("");
+  const agentModel = page.getByRole("combobox", { name: "默认模型", exact: true });
+  await expect(agentModel).toHaveValue("deepseek-flash");
   await agentModel.selectOption("deepseek-v4-pro");
-  await expect.poll(() => updates.at(-1)?.agent_model).toBe("deepseek-v4-pro");
+  await expect.poll(() => (updates.at(-1)?.model_policy as { default_model: string })?.default_model).toBe("deepseek-v4-pro");
   if (process.env.CAPTURE_MODEL_QA) await page.screenshot({ path: "test-results/agent-model-settings.png", fullPage: true });
   await page.goto("/chat");
-  await expect(page.getByRole("link", { name: "配置交易 Agent 模型" })).toContainText("deepseek-v4-pro");
-  await page.getByRole("link", { name: "配置交易 Agent 模型" }).click();
+  await expect(page.getByRole("link", { name: "配置默认模型" })).toContainText("deepseek-v4-pro");
+  await page.getByRole("link", { name: "配置默认模型" }).click();
   await expect(page).toHaveURL(/\/settings$/);
   await expect(agentModel).toHaveValue("deepseek-v4-pro");
+  await page.getByText("高级模型设置", { exact: true }).click();
+  await page.getByRole("combobox", { name: "深度模型（可选）", exact: true }).selectOption("deepseek-flash");
+  await expect.poll(() => (updates.at(-1)?.model_policy as { deep_model: string })?.deep_model).toBe("deepseek-flash");
   await agentModel.selectOption("deepseek-flash");
-  await expect.poll(() => updates.at(-1)?.agent_model).toBe("deepseek-flash");
+  await expect.poll(() => (updates.at(-1)?.model_policy as { default_model: string })?.default_model).toBe("deepseek-flash");
   await page.reload();
-  await expect(page.getByRole("combobox", { name: "交易 Agent 模型", exact: true })).toHaveValue("deepseek-flash");
-  await page.getByRole("combobox", { name: "交易 Agent 模型", exact: true }).selectOption("custom");
-  await page.getByRole("textbox", { name: "自定义 Agent 模型 ID" }).fill("deepseek-next");
+  await expect(page.getByRole("combobox", { name: "默认模型", exact: true })).toHaveValue("deepseek-flash");
+  await page.getByRole("combobox", { name: "默认模型", exact: true }).selectOption("custom");
+  await page.getByRole("textbox", { name: "自定义默认模型 ID" }).fill("deepseek-next");
   await page.getByRole("button", { name: "保存模型" }).click();
-  await expect.poll(() => updates.at(-1)?.agent_model).toBe("deepseek-next");
+  await expect.poll(() => (updates.at(-1)?.model_policy as { default_model: string })?.default_model).toBe("deepseek-next");
   await page.reload();
-  await expect(page.getByRole("textbox", { name: "自定义 Agent 模型 ID" })).toHaveValue("deepseek-next");
+  await expect(page.getByRole("textbox", { name: "自定义默认模型 ID" })).toHaveValue("deepseek-next");
 });

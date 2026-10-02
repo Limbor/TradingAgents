@@ -1029,6 +1029,7 @@ def run_analysis(checkpoint: bool = False):
     config["max_risk_discuss_rounds"] = selections["research_depth"]
     config["quick_think_llm"] = selections["shallow_thinker"]
     config["deep_think_llm"] = selections["deep_thinker"]
+    config["model_policy"] = {"default_model": selections["shallow_thinker"], "deep_model": selections["deep_thinker"] if selections["deep_thinker"] != selections["shallow_thinker"] else None}
     config["backend_url"] = selections["backend_url"]
     config["llm_provider"] = selections["llm_provider"].lower()
     # Provider-specific thinking configuration

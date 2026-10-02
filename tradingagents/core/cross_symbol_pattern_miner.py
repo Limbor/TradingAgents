@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from tradingagents.core.agent_runtime import runtime_model
 from tradingagents.core.industry_taxonomy import normalize_industry
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -517,10 +519,10 @@ class CrossSymbolPatternMiner:
 
             client = create_llm_client(
                 provider=self._config.get("llm_provider", "openai"),
-                model=self._config.get("quick_think_llm", "gpt-5.4-mini"),
-                base_url=self._config.get("backend_url"),
+                model=resolve_model(self._config),
+                base_url=self._config.get("backend_url"), **provider_kwargs(self._config),
             )
-            llm = client.get_llm()
+            llm = runtime_model(client.get_llm(), "Pattern Researcher", self._config)
 
         prompt = (
             "你是 A 股量化策略分析师。下方是统计发现的跨标的显著模式，请仅基于统计量解释，不要发明新模式。\n\n"

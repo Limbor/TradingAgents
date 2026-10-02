@@ -152,3 +152,10 @@ async def get_timeline(request: Request, since: str = "today", limit: int = 30):
             break
 
     return entries
+
+
+@router.get("/runs/{run_id}/agents")
+def list_run_agents(request: Request, run_id: str):
+    if not request.app.state.run_manager.get_run(run_id):
+        raise HTTPException(404, "Run not found")
+    return request.app.state.db.list_agent_runtime(run_id)

@@ -1,28 +1,20 @@
-"""Factory for tool-calling analyst nodes.
+"""Shared tool-calling analyst nodes.
 
-``market_analyst``, ``fundamentals_analyst``, and ``news_analyst`` share the
-same shape: an identical ``ChatPromptTemplate``, the same
-``prompt | llm.bind_tools`` chain assembly, the same result-extraction logic
-(report = ``result.content`` when there are no tool calls, else ``""``), and
-the same ``{"messages": [result], <key>: report}`` state update. Only
-``system_message``, ``tools``, and ``report_key`` differ between them.
-
-This module factors that shared structure into :func:`create_tool_analyst` so
-the three analysts only carry what is unique to them. ``sentiment_analyst`` is
-a deliberate exception (pre-fetched data injected into the prompt + structured
-output, no tool-calling) and does not use this factory.
-
-Behavior is preserved verbatim: the prompt template text, the ``partial``
-calls, tool binding, invocation, result extraction, and state-update keys are
-identical to the inlined originals.
+Market, fundamentals and news roles keep their domain prompts and tools, while
+AgentSession owns their bounded native model/tool loop. RunnableLambda provides
+both synchronous CLI and asynchronous workflow entry points. Sentiment uses a
+structured one-round model through the same runtime instead of this factory.
 """
 
+import asyncio
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableLambda
 
 from tradingagents.agents.utils.agent_utils import get_instrument_context_from_state
+from tradingagents.core.agent_runtime import AgentSession, ToolExecutor
 
 
 def create_tool_analyst(
@@ -65,7 +57,7 @@ def create_tool_analyst(
         # originals did.
         return value(state) if callable(value) else value
 
-    def analyst_node(state):
+    async def analyst_node(state):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
 
@@ -98,18 +90,15 @@ def create_tool_analyst(
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
 
-        chain = prompt | llm.bind_tools(resolved_tools)
-
-        result = chain.invoke(state["messages"])
-
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
+        messages = prompt.invoke({"messages": state["messages"]}).to_messages()
+        session = AgentSession(llm.bind_tools(resolved_tools), "", "",
+                               {tool.name for tool in resolved_tools}, 120, messages=messages)
+        result = await session.run(ToolExecutor(resolved_tools, timeout=60))
+        report = result.content
 
         return {
             "messages": [result],
             report_key: report,
         }
 
-    return analyst_node
+    return RunnableLambda(lambda state: asyncio.run(analyst_node(state)), afunc=analyst_node)

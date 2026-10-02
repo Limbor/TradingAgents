@@ -123,7 +123,7 @@ def get_task(request: Request, task_id: str):
     task = request.app.state.agent_store.get_task(task_id)
     if task is None:
         raise HTTPException(404, "任务不存在")
-    return {**task, "events": request.app.state.agent_store.list_events(task_id),
+    return {**task, "agent_runs": request.app.state.agent_store.db.list_agent_runtime(task_id), "events": request.app.state.agent_store.list_events(task_id),
             "evidence": request.app.state.agent_store.list_evidence(task_id),
             "proposal": request.app.state.agent_store.proposal_for_task(task_id)}
 
