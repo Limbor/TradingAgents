@@ -121,6 +121,8 @@ def normalize_symbol(raw: str) -> str:
     crypto = _normalize_crypto(s)
     if s in _ALIASES:
         canonical = _ALIASES[s]
+    elif detect_market(s) == "cn_a":
+        canonical = normalize_for_yahoo_cn(s)
     elif crypto is not None:
         canonical = crypto
     elif len(s) == 6 and s[:3] in _FOREX_CURRENCIES and s[3:] in _FOREX_CURRENCIES:
@@ -136,3 +138,91 @@ def normalize_symbol(raw: str) -> str:
 def is_yahoo_safe(symbol: str) -> bool:
     """True when ``symbol`` only contains characters Yahoo symbols use."""
     return bool(symbol) and _YAHOO_SAFE.fullmatch(symbol) is not None
+
+
+# ---------------------------------------------------------------------------
+# A-share (CN market) helpers
+# ---------------------------------------------------------------------------
+
+_CN_EXCHANGE_MAP = {
+    "6": "SH",   # Shanghai main board / STAR Market (688xxx)
+    "0": "SZ",   # Shenzhen main board
+    "3": "SZ",   # ChiNext (创业板)
+    "8": "BJ",   # Beijing Stock Exchange (北交所)
+    "4": "BJ",   # NEEQ / Beijing legacy
+}
+
+_CN_YAHOO_EXCHANGE_MAP = {
+    "SH": "SS",
+    "SS": "SS",
+    "SZ": "SZ",
+    "BJ": "BJ",
+}
+
+
+def detect_market(ticker: str) -> str:
+    """Return ``"cn_a"`` for A-share tickers, ``"us"`` otherwise.
+
+    Recognised CN forms:
+      - 6-digit codes with or without exchange suffix (``000001``, ``600000.SH``)
+      - Yahoo-style suffixes (``.SS``, ``.SZ``, ``.BJ``)
+    """
+    if not isinstance(ticker, str):
+        return "us"
+    t = ticker.strip().upper()
+    if re.match(r"^\d{6}(\.(SH|SZ|BJ|SS))?$", t):
+        return "cn_a"
+    if t.endswith((".SS", ".SZ", ".BJ")):
+        return "cn_a"
+    return "us"
+
+
+def _extract_cn_code(ticker: str) -> str:
+    """Extract the bare 6-digit code from any CN ticker form."""
+    t = ticker.strip().upper()
+    m = re.match(r"^(\d{6})(\.(SH|SZ|BJ|SS))?$", t)
+    if m:
+        return m.group(1)
+    return t
+
+
+def normalize_cn_display(ticker: str) -> str:
+    """Return a canonical ``<code>.<exchange>`` display string for CN tickers."""
+    t = ticker.strip().upper()
+    m = re.match(r"^(\d{6})(\.(SH|SZ|BJ|SS))?$", t)
+    if m and m.group(3):
+        exchange = "SH" if m.group(3) == "SS" else m.group(3)
+        return f"{m.group(1)}.{exchange}"
+    code = _extract_cn_code(ticker)
+    if len(code) == 6 and code[0] in _CN_EXCHANGE_MAP:
+        return f"{code}.{_CN_EXCHANGE_MAP[code[0]]}"
+    return ticker.strip().upper()
+
+
+def normalize_for_akshare(ticker: str) -> str:
+    """Return the bare 6-digit code that AKShare APIs expect."""
+    return _extract_cn_code(ticker)
+
+
+def normalize_for_tushare(ticker: str) -> str:
+    """Return ``<code>.<SH|SZ|BJ>`` in the form TuShare's ``ts_code`` accepts."""
+    return normalize_cn_display(ticker)
+
+
+def normalize_for_yahoo_cn(ticker: str) -> str:
+    """Return Yahoo's A-share symbol form.
+
+    Yahoo Finance uses ``.SS`` for Shanghai, while AKShare/TuShare use ``.SH``.
+    Keeping the conversion here prevents each caller from guessing which suffix
+    belongs to which vendor.
+    """
+    t = ticker.strip().upper()
+    m = re.match(r"^(\d{6})(\.(SH|SZ|BJ|SS))?$", t)
+    if m and m.group(3):
+        exchange = _CN_YAHOO_EXCHANGE_MAP.get(m.group(3), m.group(3))
+        return f"{m.group(1)}.{exchange}"
+    code = _extract_cn_code(ticker)
+    if len(code) != 6 or code[0] not in _CN_EXCHANGE_MAP:
+        return ticker.strip().upper()
+    exchange = _CN_EXCHANGE_MAP[code[0]]
+    return f"{code}.{_CN_YAHOO_EXCHANGE_MAP.get(exchange, exchange)}"

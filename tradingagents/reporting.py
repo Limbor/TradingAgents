@@ -1,16 +1,51 @@
-"""Reusable report-tree writer shared by the CLI and the programmatic API.
+"""Reusable markdown report writers for completed analysis runs."""
 
-Writes a run's per-section markdown (analysts, research, trading, risk,
-portfolio) plus a consolidated ``complete_report.md`` under ``save_path``. The
-CLI and ``TradingAgentsGraph.save_reports`` both call this, so a headless / API
-run produces the same on-disk report tree a CLI run does.
-"""
+from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+SECTION_FILES = {
+    "market_report": ("1_analysts", "market.md", "Market Analyst"),
+    "sentiment_report": ("1_analysts", "sentiment.md", "Sentiment Analyst"),
+    "news_report": ("1_analysts", "news.md", "News Analyst"),
+    "fundamentals_report": ("1_analysts", "fundamentals.md", "Fundamentals Analyst"),
+    "investment_plan": ("2_research", "manager.md", "Research Team Decision"),
+    "trader_investment_plan": ("3_trading", "trader.md", "Trader"),
+    "final_trade_decision": ("5_portfolio", "decision.md", "Portfolio Manager"),
+}
 
 
-def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
+def write_report_sections(sections: dict[str, str], ticker: str, save_path: str | Path) -> Path:
+    """Write per-section markdown files and a consolidated complete report."""
+
+    root = Path(save_path)
+    root.mkdir(parents=True, exist_ok=True)
+    complete_parts: list[str] = []
+
+    for key, content in sections.items():
+        if not content:
+            continue
+        dirname, filename, title = SECTION_FILES.get(
+            key,
+            ("sections", f"{_safe_filename(key)}.md", key.replace("_", " ").title()),
+        )
+        section_dir = root / dirname
+        section_dir.mkdir(exist_ok=True)
+        (section_dir / filename).write_text(content, encoding="utf-8")
+        complete_parts.append(f"## {title}\n\n{content}")
+
+    header = (
+        f"# Trading Analysis Report: {ticker}\n\n"
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    )
+    complete_path = root / "complete_report.md"
+    complete_path.write_text(header + "\n\n".join(complete_parts), encoding="utf-8")
+    return complete_path
+
+
+def write_report_tree(final_state: dict[str, Any], ticker: str, save_path: str | Path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
@@ -99,3 +134,9 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
     return save_path / "complete_report.md"
+
+
+
+def _safe_filename(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(value).lower())
+    return safe.strip("_") or "section"

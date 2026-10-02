@@ -60,15 +60,37 @@ def invoke_structured_or_freetext(
     shape). The same value is forwarded to the free-text path so the
     fallback sees the same input the structured call did.
     """
+    text, _ = invoke_structured_or_freetext_with_model(
+        structured_llm,
+        plain_llm,
+        prompt,
+        render,
+        agent_name,
+    )
+    return text
+
+
+def invoke_structured_or_freetext_with_model(
+    structured_llm: Any | None,
+    plain_llm: Any,
+    prompt: Any,
+    render: Callable[[T], str],
+    agent_name: str,
+) -> tuple[str, T | None]:
+    """Return both the rendered text and the validated structured model.
+
+    Most agents only need markdown, so :func:`invoke_structured_or_freetext`
+    keeps its historical string-only API.  Callers that persist or validate a
+    decision should use this variant and carry the Pydantic object forward
+    directly instead of rendering it and parsing the markdown back again.
+    The model is ``None`` only on the provider's free-text fallback path.
+    """
     if structured_llm is not None:
         try:
             result = structured_llm.invoke(prompt)
             if result is None:
-                # A thinking model can answer in plain text instead of calling
-                # the tool, leaving the parser with nothing to return. Treat it
-                # as a structured miss and fall back, with a clear reason.
                 raise ValueError("structured output returned no parsed result")
-            return render(result)
+            return render(result), result
         except Exception as exc:
             logger.warning(
                 "%s: structured-output invocation failed (%s); retrying once as free text",
@@ -76,4 +98,4 @@ def invoke_structured_or_freetext(
             )
 
     response = plain_llm.invoke(prompt)
-    return response.content
+    return response.content, None

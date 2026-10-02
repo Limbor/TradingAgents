@@ -11,6 +11,11 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_LLM_PROVIDER":         "llm_provider",
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
+    "TRADINGAGENTS_AGENT_MODEL":          "agent_model",
+    "TRADINGAGENTS_AGENT_MODEL_PLANNING_ENABLED": "agent_model_planning_enabled",
+    "TRADINGAGENTS_AGENT_MODEL_PLANNING_TIMEOUT": "agent_model_planning_timeout",
+    "TRADINGAGENTS_AGENT_SKILL_TIMEOUT": "agent_skill_timeout_seconds",
+    "TRADINGAGENTS_AGENT_TASK_TIMEOUT": "agent_task_timeout_seconds",
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
@@ -18,6 +23,35 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
+    "TRADINGAGENTS_NEWS_BODY_SNIPPET_ITEMS": "news_body_snippet_items",
+    "TRADINGAGENTS_NEWS_BODY_SNIPPET_CHARS": "news_body_snippet_chars",
+    "STOCKMANAGER_MCP_URL":               "stockmanager_mcp_url",
+    "STOCKMANAGER_WEB_URL":               "stockmanager_web_url",
+    "STOCKMANAGER_WEB_TIMEOUT":           "stockmanager_web_timeout",
+    "TRADINGAGENTS_PAPER_AGENT_TIMEOUT": "paper_agent_timeout_seconds",
+    "STOCKMANAGER_MCP_ENABLED":           "stockmanager_mcp_enabled",
+    "STOCKMANAGER_MCP_TIMEOUT":           "stockmanager_mcp_timeout",
+    "TRADINGAGENTS_SCHEDULER_ENABLED":    "scheduler_enabled",
+    "TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED": "cross_symbol_miner_enabled",
+    "TRADINGAGENTS_CROSS_SYMBOL_MINER_NEUTRAL_ENABLED": "cross_symbol_miner_neutral_enabled",
+    "TRADINGAGENTS_TICKER_NAME_BACKFILL_ENABLED": "ticker_name_backfill_enabled",
+    "TRADINGAGENTS_MCP_STOCKMANAGER_DIR": "mcp_stockmanager_dir",
+    "TRADINGAGENTS_INVESTMENT_STYLE":     "investment_style",
+    "TRADINGAGENTS_API_AUTH_TOKEN":       "api_auth_token",
+    "TRADINGAGENTS_API_ALLOWED_ORIGINS":  "api_allowed_origins",
+    "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_ENABLED": "daily_pipeline_llm_review_enabled",
+    "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LIMIT": "daily_pipeline_llm_review_limit",
+    "TRADINGAGENTS_DAILY_PIPELINE_LLM_REVIEW_LESSON_EXTRA": "daily_pipeline_llm_review_lesson_extra",
+    "TRADINGAGENTS_DAILY_PIPELINE_BOARD_FILTER": "daily_pipeline_board_filter",
+    "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_ENABLED": "daily_pipeline_deep_analysis_enabled",
+    "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_LIMIT": "daily_pipeline_deep_analysis_limit",
+    "TRADINGAGENTS_DAILY_PIPELINE_DEEP_ANALYSIS_TIMEOUT": "daily_pipeline_deep_analysis_timeout_seconds",
+    "TRADINGAGENTS_DAILY_PIPELINE_SCHEDULED_DEEP_ANALYSIS_ENABLED": "daily_pipeline_scheduled_deep_analysis_enabled",
+    "TRADINGAGENTS_DAILY_PIPELINE_SCHEDULED_FOLLOWUP_ENABLED": "daily_pipeline_scheduled_followup_enabled",
+    "TRADINGAGENTS_MARKET_OVERVIEW_FETCH_TIMEOUT": "market_overview_fetch_timeout_seconds",
+    "TRADINGAGENTS_MARKET_OVERVIEW_LLM_STAGE_TIMEOUT": "market_overview_llm_stage_timeout_seconds",
+    "TRADINGAGENTS_ADAPTIVE_ALPHA_SOURCE": "adaptive_alpha_source",
+
     # Provider-specific reasoning/thinking knobs (None = each provider's own
     # default). Settable here for non-interactive runs; the CLI also offers an
     # interactive choice, which is skipped when the matching var is set.
@@ -80,6 +114,12 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "llm_provider": "openai",
     "deep_think_llm": "gpt-5.5",
     "quick_think_llm": "gpt-5.4-mini",
+    # Legacy model fields migrate into the shared model policy at run start.
+    "agent_model": None,
+    "agent_model_planning_enabled": True,
+    "agent_model_planning_timeout": 8.0,
+    "agent_skill_timeout_seconds": 1800.0,
+    "agent_task_timeout_seconds": 2100.0,
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a
@@ -101,6 +141,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
+    # When True (default) and output_language is the default "English", A-share
+    # runs auto-switch their user-facing reports to Chinese.
+    "auto_switch_language_for_cn": True,
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
@@ -109,6 +152,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Increase for longer lookback strategies or to broaden macro coverage;
     # decrease to reduce token usage in agent prompts.
     "news_article_limit": 20,             # max articles per ticker (ticker-news)
+    "news_body_snippet_items": 5,         # include body snippets for top N ticker-news items when vendor provides them
+    "news_body_snippet_chars": 600,       # per-item character cap for fetched article body snippets
     "global_news_article_limit": 10,      # max articles for global/macro news
     "global_news_lookback_days": 7,       # macro news lookback window
     # Search queries used by get_global_news for macro headlines. Extend or
@@ -121,22 +166,36 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "oil commodities supply chain energy",
     ],
     # Data vendor configuration
-    # Category-level configuration (default for all tools in category).
-    # The configured value is the exact vendor chain — requests are NOT silently
-    # routed to vendors you didn't choose. For ordered fallback, list several,
-    # e.g. "yfinance,alpha_vantage". "default" uses all available vendors.
+    # Category-level configuration supports market-aware mapping:
+    #   {"us": "yfinance", "cn_a": "akshare"}
+    # Plain string values are accepted for backwards compatibility and
+    # apply to all markets (see get_vendor in dataflows/interface.py).
     "data_vendors": {
-        "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
-        "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
-        "fundamental_data": "yfinance",      # Options: alpha_vantage, yfinance
-        "news_data": "yfinance",             # Options: alpha_vantage, yfinance
-        "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
-        "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+        "core_stock_apis": {"us": "yfinance", "cn_a": "akshare, tushare"},
+        "technical_indicators": {"us": "yfinance", "cn_a": "akshare, tushare"},
+        "fundamental_data": {"us": "yfinance", "cn_a": "tushare"},
+        "news_data": {"us": "yfinance", "cn_a": "akshare"},
+        "social_sentiment": {"cn_a": "akshare"},
+        "company_announcements": {"cn_a": "akshare"},
+        "macro_data": {"us": "fred", "cn_a": "akshare"},
+        "cn_market_specific": {"cn_a": "akshare"},
+        "prediction_markets": {"us": "polymarket"},
     },
-    # Tool-level configuration (takes precedence over category-level)
+    # Tool-level configuration (takes precedence over category-level).
+    # Values may also be market-aware dicts.
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
     },
+    # Default market used when a tool has no ticker argument (e.g. global news)
+    # and the agent state doesn't provide one. Options: "us", "cn_a".
+    "default_market": "us",
+    # CN data providers
+    "tushare_token": None,          # reads TUSHARE_TOKEN env var when None
+    "akshare_rate_limit": 1.0,      # QPS
+    "tushare_rate_limit": 3.0,      # QPS
+    "cn_trading_calendar_cache": os.path.join(_TRADINGAGENTS_HOME, "cache", "cn_trade_cal.csv"),
+    "trading_time_timezone": "Asia/Shanghai",
+    "cn_a_close_data_available_time": "15:30",
     # Benchmark for alpha calculation in the reflection layer.
     # ``benchmark_ticker`` (when set) overrides the suffix map for all
     # tickers; leave it None to use ``benchmark_map`` for auto-detection
@@ -152,8 +211,150 @@ DEFAULT_CONFIG = _apply_env_overrides({
         ".L":   "^FTSE",       # London (FTSE 100)
         ".TO":  "^GSPTSE",     # Toronto (TSX Composite)
         ".AX":  "^AXJO",       # Australia (ASX 200)
-        ".SS":  "000001.SS",   # Shanghai (SSE Composite)
+        ".SS":  "000001.SS",   # Shanghai (SSE Composite, Yahoo suffix)
+        ".SH":  "000001.SS",   # Shanghai (AKShare/TuShare suffix)
         ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
         "":     "SPY",         # default for US-listed tickers (no suffix)
     },
+    # -------------------------------------------------------------------
+    # MCP (Model Context Protocol) integration
+    # -------------------------------------------------------------------
+    # StockManager MCP service. TradingAgents connects to this independently
+    # managed localhost service over HTTP/Streamable MCP.
+    "stockmanager_mcp_url": os.getenv("STOCKMANAGER_MCP_URL", "http://127.0.0.1:8765/mcp"),
+    "stockmanager_web_url": "http://127.0.0.1:8787",
+    "stockmanager_web_timeout": 90.0,
+    "paper_agent_timeout_seconds": 45.0,
+    "stockmanager_mcp_enabled": True,
+    # Per-call MCP tool timeout (seconds). Large-pool ranking (e.g. CSI300
+    # rank_factor_candidates over ~300 constituents) measured ~260s end-to-end,
+    # so the previous 120s default timed out and stalled the service. 300s gives
+    # those wide-universe calls headroom; override via STOCKMANAGER_MCP_TIMEOUT.
+    "stockmanager_mcp_timeout": 300.0,
+    "stockmanager_mcp_sse_read_timeout": 300.0,
+    "stockmanager_mcp_health_timeout": 2.0,
+    "scheduler_enabled": True,
+    "ticker_name_backfill_enabled": True,
+    # API auth: when set (env TRADINGAGENTS_API_AUTH_TOKEN), REST + WS requests
+    # must carry this token (Bearer header for REST, ?token= for WS). Empty by
+    # default so local desktop usage is unaffected; set it when exposing the
+    # API beyond localhost.
+    "api_auth_token": os.getenv("TRADINGAGENTS_API_AUTH_TOKEN", ""),
+    "api_allowed_origins": os.getenv(
+        "TRADINGAGENTS_API_ALLOWED_ORIGINS",
+        "http://localhost:5173,tauri://localhost,http://tauri.localhost,"
+        "https://tauri.localhost",
+    ),
+    # Candidate-quant-rule production gate. Passing requires complete
+    # provenance/bias/cost evidence, benchmark-relative alpha, purged-CV
+    # evidence, and every numeric threshold below.
+    "backtest_min_total_return": 0.0,
+    "backtest_min_alpha": 0.0,
+    "backtest_min_sharpe": 0.5,
+    "backtest_max_drawdown": 0.25,
+    "backtest_min_win_rate": 0.45,
+    "backtest_max_turnover": 10.0,
+    "backtest_min_oos_sharpe": 0.5,
+    "backtest_min_walk_forward_folds": 3,
+    # Legacy stdio path kept only for compatibility with older configs.
+    "mcp_stockmanager_dir": os.path.expanduser("~/Documents/develop/StockManager"),
+    # -------------------------------------------------------------------
+    # User investment preferences (cross-cutting, injected into agents)
+    # -------------------------------------------------------------------
+    # One of "short_term" (短线), "medium_term" (中线), "long_term" (长线).
+    # Controls analyst focus, factor weights, and decision framework wording.
+    "investment_style": "long_term",
+    # Daily A-share screening fusion. Quant ranking always comes first; the
+    # quick LLM only reviews the top N candidates to keep latency and cost
+    # bounded.
+    "daily_pipeline_llm_review_enabled": True,
+    "daily_pipeline_llm_review_limit": 10,
+    # StockManager v2 profile computes the audited attack/defensive component
+    # formulas and exposes both scores. Older MCP servers safely fall back to
+    # their style profile when this name is unknown.
+    "daily_pipeline_factor_profile": "daily_pipeline_v2",
+    # Discovery-only expansion. Core Top 5 remains CSI800; CSI1000-only names
+    # are returned separately as shadow candidates until forward gates pass.
+    "daily_pipeline_shadow_universe_indices": ["000852.SH"],
+    # Candidates ranked beyond the review limit but matching an ACTIVE strategy
+    # lesson are pulled into the review window (bounded by this cap) so the
+    # reflection loop's lessons actually influence matching candidates.
+    "daily_pipeline_llm_review_lesson_extra": 4,
+    # all | main_board | dual_growth_only. main_board excludes STAR/ChiNext
+    # to avoid repeated high-beta 双创 recommendations when the user wants
+    # steadier A-share main-board candidates.
+    "daily_pipeline_board_filter": "all",
+    # Optional deep-analysis chaining: after quant ranking + LLM review, run the
+    # heavyweight multi-agent StockAnalysisSkill on the Top N candidates and
+    # write its structured conclusion back onto the candidate payload under
+    # ``deep_analysis``. Off by default because it runs the full agent graph
+    # per stock (minutes + tokens each); enable for a nightly deep pass on the
+    # very top names. The limit is intentionally small (1) so latency/cost stay
+    # bounded even when enabled.
+    "daily_pipeline_deep_analysis_enabled": False,
+    "daily_pipeline_deep_analysis_limit": 1,
+    # Scheduled screening must finish promptly. A manual run may still opt in
+    # to the heavyweight deep pass via the setting above, but the 08:30 job
+    # keeps it detached by default.
+    "daily_pipeline_scheduled_deep_analysis_enabled": False,
+    # Once the scheduled scanner has durably produced its shortlist, hand the
+    # Top-1 candidate to a separate StockAnalysis run.  Keeping this detached
+    # makes the shortlist available immediately while preserving the automatic
+    # scan -> full-analysis chain in the run history.
+    "daily_pipeline_scheduled_followup_enabled": True,
+    # Bound each optional full-graph pass so one unhealthy data/LLM provider
+    # cannot hold the whole screening run open indefinitely.
+    "daily_pipeline_deep_analysis_timeout_seconds": 300.0,
+    # Market overview fetches several public CN-market feeds. Treat the whole
+    # snapshot as one bounded operation instead of accumulating provider waits
+    # for hours when the network/proxy path is unhealthy.
+    "market_overview_fetch_timeout_seconds": 180.0,
+    # Each of the three structured summary calls degrades independently.  The
+    # deterministic market snapshot remains useful when an LLM provider is
+    # slow, so never let one call keep the refresh spinner alive indefinitely.
+    "market_overview_llm_stage_timeout_seconds": 60.0,
+    # LLM-based intent routing (Phase 3). When enabled, messages that don't
+    # match regex patterns with high confidence are forwarded to LLM for
+    # tool_use-based intent recognition. Disabled by default.
+    "llm_routing_enabled": False,
+    # Cross-symbol pattern mining. When enabled, the reflection batch runs a
+    # statistical pattern discovery step after processing pending cases.
+    # Patterns are saved as strategy_lessons with lesson_type="cross_symbol_pattern".
+    # Enabled by default, but mined patterns remain inactive candidates until
+    # manually approved; override with
+    # TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED=false to disable.
+    "cross_symbol_miner_enabled": True,
+    "cross_symbol_miner_min_samples": 20,
+    "cross_symbol_miner_min_lift": 0.15,
+    "cross_symbol_miner_lookback_days": 30,
+    "cross_symbol_miner_fdr_alpha": 0.05,
+    # Neutral channel of the miner: promotes WATCHLIST/HOLD/MONITOR patterns
+    # by consistent excess-over-benchmark return (the win-rate gate cannot see
+    # neutral cases because was_correct is None). Only runs when the master
+    # cross_symbol_miner switch above is enabled.
+    "cross_symbol_miner_neutral_enabled": True,
+    "cross_symbol_miner_min_excess": 0.05,
+    "cross_symbol_miner_min_consistency": 0.6,
+    # Neutral patterns are coarser (industry/factor level) and already gated by
+    # excess magnitude + same-sign consistency, so they use a lower minimum
+    # sample count than the directional win-rate channel (which stays at
+    # cross_symbol_miner_min_samples).
+    "cross_symbol_miner_neutral_min_samples": 20,
+    # Regime guardrail: a neutral pattern must span at least this many distinct
+    # ISO weeks of signal dates to promote. A single sector-wide selloff or a
+    # one-day batch produces a strong-but-spurious excess concentrated in one
+    # window; requiring recurrence across >=N weeks keeps market/sector-regime
+    # episodes from being minted as permanent lessons. (Sector-beta
+    # decomposition against an industry index is a further TODO.)
+    "cross_symbol_miner_neutral_min_periods": 4,
+    # Adaptive-alpha (direction 2). When enabled, the fusion layer may use a
+    # measured RankIC-derived quant weight instead of the static STYLE_ALPHA.
+    # v1 ships this OFF and advisory-only: the reflection scorecard surfaces a
+    # suggested alpha, but no production decision changes. Flip to True only
+    # after enough directional samples accumulate (the suggestion shrinks to
+    # the static prior on small/noisy samples regardless).
+    "adaptive_alpha_enabled": False,
+    # Production overrides must come from the isolated point-in-time evaluation
+    # corpus, never the selected Top-N live reflection stream.
+    "adaptive_alpha_source": "evaluation",
 })

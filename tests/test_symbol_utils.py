@@ -6,7 +6,11 @@ import pytest
 
 from tradingagents.dataflows.symbol_utils import (
     NoMarketDataError,
+    detect_market,
     is_yahoo_safe,
+    normalize_cn_display,
+    normalize_for_tushare,
+    normalize_for_yahoo_cn,
     normalize_symbol,
 )
 
@@ -50,6 +54,19 @@ class TestNormalizeSymbol(unittest.TestCase):
 
     def test_empty_input_passthrough(self):
         self.assertEqual(normalize_symbol(""), "")
+
+    def test_a_share_symbols_normalize_for_yahoo(self):
+        self.assertEqual(normalize_symbol("600667"), "600667.SS")
+        self.assertEqual(normalize_symbol("600667.SH"), "600667.SS")
+        self.assertEqual(normalize_symbol("600667.SS"), "600667.SS")
+        self.assertEqual(normalize_symbol("000001.SS"), "000001.SS")
+        self.assertEqual(normalize_symbol("000001"), "000001.SZ")
+
+    def test_a_share_vendor_specific_forms(self):
+        self.assertEqual(detect_market("600667"), "cn_a")
+        self.assertEqual(normalize_cn_display("600667.SS"), "600667.SH")
+        self.assertEqual(normalize_for_tushare("600667.SS"), "600667.SH")
+        self.assertEqual(normalize_for_yahoo_cn("600667.SH"), "600667.SS")
 
 
 @pytest.mark.unit

@@ -17,6 +17,7 @@ dependencies = [
     "langchain-openai>=0.3.23",
     "langgraph>=0.4.8",
     "langgraph-checkpoint-sqlite>=2.0.0",
+    "jsonschema>=4.26.0",
     "pandas>=2.3.0",
     "parsel>=1.10.0",
     "python-dotenv>=1.0.0",
@@ -31,12 +32,15 @@ dependencies = [
     "tqdm>=4.67.1",
     "typing-extensions>=4.14.0",
     "yfinance>=1.4.1",
+    "akshare>=1.15.0",
+    "tushare>=1.4.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff>=0.15",
     "pytest>=8.0",
+    "pytest-asyncio>=0.25",
     "pytest-subtests>=0.13",
 ]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
@@ -44,9 +48,29 @@ dev = [
 bedrock = [
     "langchain-aws>=1.5.0",
 ]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiosqlite>=0.20.0",
+    "keyring>=25.0.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+# Desktop packaging: freezes the API server into a self-contained binary that
+# the Tauri shell launches as a sidecar. pip install "tradingagents[desktop]".
+desktop = [
+    "pyinstaller>=6.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiosqlite>=0.20.0",
+    "keyring>=25.0.0",
+    "mcp>=1.0.0",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-server = "tradingagents.api.server:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*"]
@@ -61,6 +85,8 @@ markers = [
     "unit: fast isolated unit tests",
     "integration: tests requiring external services",
     "smoke: quick sanity-check tests",
+    "live: tests that call real external services and require explicit opt-in",
+    "asyncio: mark test as async",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

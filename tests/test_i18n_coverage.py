@@ -46,6 +46,12 @@ class TestLanguageInstruction:
         assert "中文" in out
         assert "entire response" in out
 
+    def test_cn_market_auto_switches_to_simplified_chinese(self):
+        from tradingagents.dataflows.config import set_config
+        set_config({"output_language": "English", "auto_switch_language_for_cn": True})
+        out = get_language_instruction("cn_a")
+        assert "Simplified Chinese" in out
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize("rel", REPORT_AGENTS)
@@ -53,7 +59,7 @@ def test_report_agent_applies_language_instruction(rel):
     path = _AGENTS_DIR / rel
     assert path.exists(), f"missing agent module: {rel}"
     src = path.read_text(encoding="utf-8")
-    assert "get_language_instruction()" in src, (
+    assert "get_language_instruction(" in src, (
         f"{rel} does not apply get_language_instruction(); its output would "
         f"ignore the configured output_language (#740/#801)."
     )

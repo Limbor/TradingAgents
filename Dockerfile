@@ -25,4 +25,6 @@ WORKDIR /home/appuser/app
 
 COPY --from=builder --chown=appuser:appuser /build .
 
-ENTRYPOINT ["tradingagents"]
+EXPOSE 8422
+
+CMD ["python", "-m", "tradingagents.api.server"]

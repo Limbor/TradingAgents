@@ -6,6 +6,20 @@ from typing import Any
 import yfinance as yf
 from langchain_core.messages import HumanMessage, RemoveMessage
 
+# CN market tools (A-share specific)
+from tradingagents.agents.utils.cn_market_tools import (
+    get_announcements,
+    get_lhb_detail,
+    get_limit_status,
+    get_macro_calendar,
+    get_margin_balance,
+    get_market_structure_snapshot,
+    get_northbound_flow,
+    get_social_sentiment,
+    get_theme_heat,
+    get_unlock_schedule,
+)
+
 # Import tools from separate utility files
 from tradingagents.agents.utils.core_stock_tools import get_stock_data
 from tradingagents.agents.utils.fundamental_data_tools import (
@@ -23,6 +37,7 @@ from tradingagents.agents.utils.news_data_tools import (
 )
 from tradingagents.agents.utils.prediction_markets_tools import get_prediction_markets
 from tradingagents.agents.utils.technical_indicators_tools import get_indicators
+from tradingagents.core.signal_fusion import quant_evidence_markdown
 
 # Public surface: the data tools are imported here so agents and the graph
 # import them from one place, plus the instrument/language helpers defined below.
@@ -39,30 +54,117 @@ __all__ = [
     "get_macro_indicators",
     "get_prediction_markets",
     "get_verified_market_snapshot",
+    # CN market tools
+    "get_social_sentiment",
+    "get_announcements",
+    "get_macro_calendar",
+    "get_market_structure_snapshot",
+    "get_theme_heat",
+    "get_lhb_detail",
+    "get_limit_status",
+    "get_northbound_flow",
+    "get_margin_balance",
+    "get_unlock_schedule",
     "build_instrument_context",
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
     "get_language_instruction",
+    "get_market_risk_instruction",
+    "build_quant_context",
     "create_msg_delete",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-def get_language_instruction() -> str:
+def build_quant_context(candidate: Mapping[str, Any] | None) -> str:
+    """Return a compact StockManager quant evidence block for Agent prompts."""
+    if not candidate:
+        return "## Quant Evidence from StockManager\n- unavailable"
+    return quant_evidence_markdown(dict(candidate))
+
+
+def get_language_instruction(market: str | None = None) -> str:
     """Return a prompt instruction for the configured output language.
 
+    When ``market`` is ``"cn_a"`` and the configured language is English
+    (the default) and ``auto_switch_language_for_cn`` is True, the output
+    language is switched to Simplified Chinese automatically.
     Returns empty string when English (default), so no extra tokens are used.
-    Applied to every agent whose output reaches the saved report —
-    analysts, researchers, debaters, research manager, trader, and
-    portfolio manager — so a non-English run produces a fully localized
-    report rather than a mix of languages.
     """
     from tradingagents.dataflows.config import get_config
-    lang = get_config().get("output_language", "English")
-    if lang.strip().lower() == "english":
+    config = get_config()
+    lang = (config.get("output_language") or "English").strip()
+    if market == "cn_a" and lang.lower() == "english" and config.get(
+        "auto_switch_language_for_cn", True
+    ):
+        return " Write your entire response in Simplified Chinese."
+    if lang.lower() == "english":
         return ""
     return f" Write your entire response in {lang}."
+
+
+def get_market_risk_instruction(market: str | None = None) -> str:
+    """Return market-specific execution/risk constraints for decision agents."""
+    if market != "cn_a":
+        return ""
+    return (
+        " China A-share execution constraints: account for T+1 selling rules, "
+        "daily price limits, possible limit-up buy unavailability, possible "
+        "limit-down exit failure, ST/退市 warning risk, theme退潮 risk, and "
+        "liquidity/crowding from turnover and成交额. Provide position sizing, "
+        "stop/invalidating conditions, and next-session auction/opening checks "
+        "instead of a bare BUY/HOLD/SELL. Treat order quantities as hard exchange "
+        "constraints: partial sells from whole-lot holdings use 100-share lots; an "
+        "odd-lot remainder is sold only once in full. A 100-share holding cannot be "
+        "reduced partially—use HOLD or EXIT all 100 shares."
+    )
+
+
+# Investment-style prompt fragments. ``investment_style`` (short/medium/long_term)
+# is documented as driving analyst focus, factor weights, and decision framing,
+# but the 13-agent pipeline previously ignored it. These instructions make the
+# style visible to each analyst's system prompt so a short-term run and a
+# long-term run actually produce differently-focused reports.
+_INVESTMENT_STYLE_INSTRUCTIONS: dict[str, str] = {
+    "short_term": (
+        " Investment style: SHORT-TERM (hold 3-10 trading days). Focus on "
+        "momentum, turnover/换手, northbound flow intraday, theme heat, and "
+        "limit-up/limit-down dynamics. Prioritize entry timing, intraday "
+        "volume spikes, and short-term catalysts over fundamentals. Frame "
+        "stops in ATR×2 / -8% terms and targets at ATR×2-4."
+    ),
+    "medium_term": (
+        " Investment style: MEDIUM-TERM (hold 2-4 weeks). Balance momentum and "
+        "quality: weight recent price action, northbound flow trends, and "
+        "sector rotation alongside ROE, valuation percentile, and gross margin. "
+        "Frame stops at ATR×2 / -8% and targets at +8% to +16%."
+    ),
+    "long_term": (
+        " Investment style: LONG-TERM (hold 1-3 months). Lead with fundamentals "
+        "— ROE, gross margin, revenue growth, valuation percentile — and treat "
+        "momentum/flow as secondary confirmation. Frame decisions around "
+        "business quality and valuation, with stops at ATR×2 / -8% and targets "
+        "at +8% to +16%."
+    ),
+}
+
+
+def get_investment_style_instruction(style: str | None = None) -> str:
+    """Return a prompt fragment describing the configured investment style.
+
+    ``style`` is usually read from ``state["investment_style"]`` (set by
+    ``create_initial_state`` from config). Falls back to the global config's
+    ``investment_style`` when ``style`` is None. Returns "" for unknown styles
+    so agents are unaffected when the feature is off.
+    """
+    if style is None:
+        try:
+            from tradingagents.dataflows.config import get_config
+            style = (get_config() or {}).get("investment_style") or ""
+        except Exception:
+            return ""
+    return _INVESTMENT_STYLE_INSTRUCTIONS.get((style or "").strip().lower(), "")
 
 
 def _clean_identity_value(value: Any) -> str | None:
@@ -136,7 +238,10 @@ def build_instrument_context(
     context = (
         f"The {instrument_label} to analyze is `{ticker}`. "
         "Use this exact ticker in every tool call, report, and recommendation, "
-        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`, `-USD`)."
+        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`, `-USD`, "
+        "or A-share `.SH` / `.SZ` / `.BJ`). For China A-shares, use the 6-digit "
+        "code with the correct exchange suffix (`.SH` Shanghai, `.SZ` Shenzhen, "
+        "`.BJ` Beijing) consistently across all tool calls."
     )
 
     details = []
@@ -212,6 +317,3 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-
-
-

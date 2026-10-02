@@ -33,6 +33,8 @@ def _reload_client():
 
 
 def _base_url(mod, provider, **kwargs):
+    if provider != "ollama":
+        kwargs.setdefault("api_key", "placeholder")
     return str(mod.OpenAIClient(model="m", provider=provider, **kwargs).get_llm().openai_api_base)
 
 

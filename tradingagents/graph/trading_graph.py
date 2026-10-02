@@ -10,9 +10,9 @@ from typing import Any
 import yfinance as yf
 from langgraph.prebuilt import ToolNode
 
-# Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
+    get_announcements,
     get_balance_sheet,
     get_cashflow,
     get_fundamentals,
@@ -20,15 +20,35 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_indicators,
     get_insider_transactions,
+    get_lhb_detail,
+    get_limit_status,
+    get_macro_calendar,
     get_macro_indicators,
+    get_margin_balance,
+    get_market_structure_snapshot,
     get_news,
+    get_northbound_flow,
     get_prediction_markets,
+    # CN market tools
+    get_social_sentiment,
     get_stock_data,
+    get_theme_heat,
+    get_unlock_schedule,
     get_verified_market_snapshot,
     resolve_instrument_identity,
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
+
+# Import the abstract tool methods from agent_utils
+from tradingagents.core.agent_runtime import (
+    AgentContext,
+    current_context,
+    runtime_model,
+    use_context,
+)
+from tradingagents.core.model_policy import freeze_model_config, provider_kwargs
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
@@ -42,6 +62,21 @@ from .setup import GraphSetup
 from .signal_processing import SignalProcessor
 
 logger = logging.getLogger(__name__)
+
+
+def _yahoo_close_series(symbol: str, start: str, end: str) -> list[float]:
+    """Close-price series for ``symbol`` from yfinance over [start, end].
+
+    Returns an empty list on any failure so callers can fall back to None alpha
+    rather than raising. Kept module-level so it can be reused/mocked without a
+    class instance.
+    """
+    try:
+        df = yf.Ticker(symbol).history(start=start, end=end)
+        return [float(c) for c in df["Close"].tolist()]
+    except Exception as exc:
+        logger.debug("yfinance close fetch failed for %s: %s", symbol, exc)
+        return []
 
 
 class TradingAgentsGraph:
@@ -63,7 +98,7 @@ class TradingAgentsGraph:
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
         """
         self.debug = debug
-        self.config = config or DEFAULT_CONFIG
+        self.config = freeze_model_config(config or DEFAULT_CONFIG)
         self.callbacks = callbacks or []
 
         # Update the interface's config
@@ -93,8 +128,8 @@ class TradingAgentsGraph:
             **llm_kwargs,
         )
 
-        self.deep_thinking_llm = deep_client.get_llm()
-        self.quick_thinking_llm = quick_client.get_llm()
+        self.deep_thinking_llm = runtime_model(deep_client.get_llm(), "Specialist", self.config, "deep")
+        self.quick_thinking_llm = runtime_model(quick_client.get_llm(), "Specialist", self.config)
 
         self.memory_log = TradingMemoryLog(self.config)
 
@@ -125,38 +160,12 @@ class TradingAgentsGraph:
         self.log_states_dict = {}  # date to full state dict
 
         # Set up the graph: keep the workflow for recompilation with a checkpointer.
-        self.workflow = self.graph_setup.setup_graph(selected_analysts)
+        self.workflow = self.graph_setup.setup_graph(selected_analysts, template=self.config.get("analysis_template", "full"))
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
 
     def _get_provider_kwargs(self) -> dict[str, Any]:
-        """Get provider-specific kwargs for LLM client creation."""
-        kwargs = {}
-        provider = self.config.get("llm_provider", "").lower()
-
-        if provider == "google":
-            thinking_level = self.config.get("google_thinking_level")
-            if thinking_level:
-                kwargs["thinking_level"] = thinking_level
-
-        elif provider == "openai":
-            reasoning_effort = self.config.get("openai_reasoning_effort")
-            if reasoning_effort:
-                kwargs["reasoning_effort"] = reasoning_effort
-
-        elif provider == "anthropic":
-            effort = self.config.get("anthropic_effort")
-            if effort:
-                kwargs["effort"] = effort
-
-        # Sampling temperature is cross-provider: forward it whenever set.
-        # float() here so a value coming from a TRADINGAGENTS_TEMPERATURE env
-        # string ("0.2") works the same as a programmatic float.
-        temperature = self.config.get("temperature")
-        if temperature is not None and temperature != "":
-            kwargs["temperature"] = float(temperature)
-
-        return kwargs
+        return provider_kwargs(self.config)
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
@@ -171,12 +180,16 @@ class TradingAgentsGraph:
                     # LLM and required by its prompt; must be executable here or
                     # the call fails and the model reports it "unavailable").
                     get_verified_market_snapshot,
+                    get_market_structure_snapshot,
+                    get_theme_heat,
                 ]
             ),
             "social": ToolNode(
                 [
                     # News tools for social media analysis
                     get_news,
+                    # A-share social / retail sentiment
+                    get_social_sentiment,
                 ]
             ),
             "news": ToolNode(
@@ -187,6 +200,8 @@ class TradingAgentsGraph:
                     get_insider_transactions,
                     get_macro_indicators,
                     get_prediction_markets,
+                    # A-share macro calendar
+                    get_macro_calendar,
                 ]
             ),
             "fundamentals": ToolNode(
@@ -196,6 +211,13 @@ class TradingAgentsGraph:
                     get_balance_sheet,
                     get_cashflow,
                     get_income_statement,
+                    # A-share microstructure tools (only used when market == cn_a)
+                    get_announcements,
+                    get_lhb_detail,
+                    get_limit_status,
+                    get_margin_balance,
+                    get_northbound_flow,
+                    get_unlock_schedule,
                 ]
             ),
         }
@@ -211,11 +233,18 @@ class TradingAgentsGraph:
         entry, which is the right default because the alpha calculation works
         in USD.
         """
-        explicit = self.config.get("benchmark_ticker")
+        config = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        explicit = config.get("benchmark_ticker")
         if explicit:
             return explicit
-        benchmark_map = self.config.get("benchmark_map", {})
+        # A-share defaults: Shanghai Composite for .SH, Shenzhen Component for
+        # .SZ. The config-supplied benchmark_map can still override per-suffix.
+        default_map = {".SH": "000001.SH", ".SZ": "399001.SZ", ".BJ": "000001.SH"}
         ticker_upper = ticker.upper()
+        for suffix, bench in default_map.items():
+            if ticker_upper.endswith(suffix):
+                return bench
+        benchmark_map = config.get("benchmark_map", {})
         for suffix, benchmark in benchmark_map.items():
             if suffix and ticker_upper.endswith(suffix.upper()):
                 return benchmark
@@ -223,41 +252,59 @@ class TradingAgentsGraph:
 
     def _fetch_returns(
         self, ticker: str, trade_date: str, holding_days: int = 5,
-        benchmark: str = "SPY",
+        benchmark: str | None = None,
     ) -> tuple[float | None, float | None, int | None]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
 
-        ``benchmark`` is the index used as the alpha baseline (resolved by the
-        caller via ``_resolve_benchmark``). Returns ``(raw_return, alpha_return,
+        ``benchmark`` is the index used as the alpha baseline. When omitted it
+        is resolved from the ticker market. Returns ``(raw_return, alpha_return,
         actual_holding_days)`` or ``(None, None, None)`` if price data is
         unavailable (too recent, delisted, or network error).
+
+        A-share stocks are fetched from the local AKShare OHLCV (the same source
+        the analysis priced off) because yfinance's A-share quotes are frequently
+        delayed, missing, or inconsistently adjusted — which previously left
+        pending reflection entries unresolved forever. CN indices used as
+        benchmarks are still fetched via yfinance (they are more reliable there
+        than individual A-share stocks); if the benchmark is unavailable, alpha
+        is returned as None.
         """
-        from tradingagents.dataflows.symbol_utils import normalize_symbol
+        from tradingagents.dataflows.symbol_utils import detect_market, normalize_symbol
 
         try:
+            # Call the implementation directly so this utility also behaves
+            # predictably when invoked unbound with a lightweight test double.
+            benchmark = benchmark or TradingAgentsGraph._resolve_benchmark(self, ticker)
             start = datetime.strptime(trade_date, "%Y-%m-%d")
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
             end_str = end.strftime("%Y-%m-%d")
 
-            # Normalize so the realized-return lookup hits the same instrument
-            # the analysis priced (e.g. XAUUSD -> GC=F) (#984). The benchmark is
-            # already a canonical Yahoo symbol from ``_resolve_benchmark``.
-            stock = yf.Ticker(normalize_symbol(ticker)).history(start=trade_date, end=end_str)
-            bench = yf.Ticker(benchmark).history(start=trade_date, end=end_str)
+            market = detect_market(ticker)
+            if market == "cn_a":
+                stock_closes = self._cn_close_series(ticker, trade_date, end_str)
+            else:
+                stock_closes = _yahoo_close_series(normalize_symbol(ticker), trade_date, end_str)
+            bench_closes = _yahoo_close_series(benchmark, trade_date, end_str)
 
-            if len(stock) < 2 or len(bench) < 2:
+            if len(stock_closes) < 2:
                 return None, None, None
 
-            actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
+            bench_len = len(bench_closes)
+            if bench_len >= 2:
+                actual_days = min(holding_days, len(stock_closes) - 1, bench_len - 1)
+            else:
+                actual_days = min(holding_days, len(stock_closes) - 1)
+
             raw = float(
-                (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
-                / stock["Close"].iloc[0]
+                (stock_closes[actual_days] - stock_closes[0]) / stock_closes[0]
             )
-            bench_ret = float(
-                (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
-                / bench["Close"].iloc[0]
-            )
-            alpha = raw - bench_ret
+            if bench_len >= 2:
+                bench_ret = float(
+                    (bench_closes[actual_days] - bench_closes[0]) / bench_closes[0]
+                )
+                alpha = raw - bench_ret
+            else:
+                alpha = None
             return raw, alpha, actual_days
         except Exception as e:
             logger.warning(
@@ -266,45 +313,41 @@ class TradingAgentsGraph:
             )
             return None, None, None
 
+    def _cn_close_series(self, ticker: str, start: str, end: str) -> list[float]:
+        """Close-price series for an A-share ticker via AKShare, in [start, end].
+
+        Reuses ``load_ohlcv_cn`` (the same qfq OHLCV the analysis used) so the
+        realized return is measured against the same adjusted prices.
+        """
+        try:
+            import pandas as pd
+
+            from tradingagents.dataflows.akshare_stock import load_ohlcv_cn
+
+            df = load_ohlcv_cn(ticker, end)  # filtered to <= end internally
+            start_dt = pd.to_datetime(start)
+            df = df[df["Date"] >= start_dt]
+            return [float(c) for c in df["Close"].tolist()]
+        except Exception as exc:
+            logger.debug("AKShare close fetch failed for %s: %s", ticker, exc)
+            return []
+
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
 
-        Fetches returns for each same-ticker pending entry, generates reflections,
-        then writes all updates in a single atomic batch write to avoid redundant I/O.
-        Skips entries whose price data is not yet available (too recent or delisted).
-
-        Trade-off: only same-ticker entries are resolved per run.  Entries for
-        other tickers accumulate until that ticker is run again.
+        DEPRECATED — intentionally a no-op. Reflection is now owned by
+        ``core/reflection.py::ReflectionEngine.run_reflection_batch`` (daily
+        16:30 scheduler / daily_review trigger), which produces the deep
+        attribution + strategy lesson + DB record. Previously this method
+        ran a shallow synchronous reflection on the same memory_log pending
+        entries, which flipped the ``| pending]`` tag first and caused the
+        core batch to skip the entry — so the decision never got attribution
+        or a DB ``reflections`` row. New pending entries are still written by
+        ``store_decision``; they stay pending until the core batch resolves
+        them. ``get_past_context`` will return the raw decision (no reflection)
+        until then, which is the intended behavior.
         """
-        pending = [e for e in self.memory_log.get_pending_entries() if e["ticker"] == ticker]
-        if not pending:
-            return
-
-        benchmark = self._resolve_benchmark(ticker)
-        updates = []
-        for entry in pending:
-            raw, alpha, days = self._fetch_returns(
-                ticker, entry["date"], benchmark=benchmark,
-            )
-            if raw is None:
-                continue  # price not available yet — try again next run
-            reflection = self.reflector.reflect_on_final_decision(
-                final_decision=entry.get("decision", ""),
-                raw_return=raw,
-                alpha_return=alpha,
-                benchmark_name=benchmark,
-            )
-            updates.append({
-                "ticker": ticker,
-                "trade_date": entry["date"],
-                "raw_return": raw,
-                "alpha_return": alpha,
-                "holding_days": days,
-                "reflection": reflection,
-            })
-
-        if updates:
-            self.memory_log.batch_update_with_outcomes(updates)
+        return
 
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
         """Resolve ticker identity once and return the full instrument context.
@@ -318,7 +361,33 @@ class TradingAgentsGraph:
         identity = resolve_instrument_identity(ticker)
         return build_instrument_context(ticker, asset_type, identity)
 
+    def _merge_memory_context(self, past_context: str) -> str:
+        extra = str(self.config.get("memory_extra_context") or "").strip()
+        if not extra:
+            return past_context
+        if past_context:
+            return f"{past_context}\n\n{extra}"
+        return extra
+
+    def save_reports(self, final_state: dict[str, Any], ticker: str, save_path: str | Path | None = None) -> Path:
+        """Write a completed graph state as a markdown report tree."""
+
+        if save_path is None:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = (
+                Path(self.config["results_dir"])
+                / "reports"
+                / f"{safe_ticker_component(ticker)}_{stamp}"
+            )
+        return write_report_tree(final_state, ticker, save_path)
+
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
+        context = current_context() or AgentContext.root(self.config, root_id=self.config.get("run_id"),
+                                                       symbols=[company_name], as_of_date=str(trade_date), db=self.config.get("db"))
+        with use_context(context):
+            return TradingAgentsGraph._propagate(self, company_name, trade_date, asset_type)
+
+    def _propagate(self, company_name, trade_date, asset_type: str = "stock"):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -342,7 +411,8 @@ class TradingAgentsGraph:
             self.graph = self.workflow.compile(checkpointer=saver)
 
             step = checkpoint_step(
-                self.config["data_cache_dir"], company_name, str(trade_date)
+                self.config["data_cache_dir"], company_name, str(trade_date),
+                str(self.config.get("checkpoint_run_id") or self.config.get("run_id") or "") or None,
             )
             if step is not None:
                 logger.info(
@@ -359,39 +429,31 @@ class TradingAgentsGraph:
                 self._checkpointer_ctx = None
                 self.graph = self.workflow.compile()
 
-    def save_reports(self, final_state, ticker, save_path=None) -> Path:
-        """Write the markdown report tree for a completed run, like the CLI does.
-
-        Programmatic callers get the same on-disk reports the CLI produces. Pass
-        an explicit ``save_path`` or let it default under ``results_dir``.
-        """
-        if save_path is None:
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = (
-                Path(self.config["results_dir"])
-                / "reports"
-                / f"{safe_ticker_component(ticker)}_{stamp}"
-            )
-        return write_report_tree(final_state, ticker, save_path)
 
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock"):
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
-        past_context = self.memory_log.get_past_context(company_name)
+        past_context = self._merge_memory_context(self.memory_log.get_past_context(company_name, as_of_date=str(trade_date)))
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
+        market = detect_market(company_name)
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            market=market,
+            investment_style=str(self.config.get("investment_style") or ""),
         )
         args = self.propagator.get_graph_args()
 
         # Inject thread_id so same ticker+date resumes, different date starts fresh.
         if self.config.get("checkpoint_enabled"):
-            tid = thread_id(company_name, str(trade_date))
+            checkpoint_run_id = str(
+                self.config.get("checkpoint_run_id") or self.config.get("run_id") or ""
+            ) or None
+            tid = thread_id(company_name, str(trade_date), checkpoint_run_id)
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
         if self.debug:
@@ -432,7 +494,8 @@ class TradingAgentsGraph:
         # Clear checkpoint on successful completion to avoid stale state.
         if self.config.get("checkpoint_enabled"):
             clear_checkpoint(
-                self.config["data_cache_dir"], company_name, str(trade_date)
+                self.config["data_cache_dir"], company_name, str(trade_date),
+                str(self.config.get("checkpoint_run_id") or self.config.get("run_id") or "") or None,
             )
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
@@ -467,6 +530,7 @@ class TradingAgentsGraph:
             },
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
+            "structured_portfolio_decision": final_state.get("structured_portfolio_decision"),
         }
 
         # Save to file. Reject ticker values that would escape the
@@ -482,3 +546,196 @@ class TradingAgentsGraph:
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
         return self.signal_processor.process_signal(full_signal)
+
+    async def astream_propagate(self, ticker, date, selected_analysts=None, asset_type="stock"):
+        context = current_context() or AgentContext.root(self.config, root_id=self.config.get("run_id"),
+                                                       symbols=[ticker], as_of_date=date, db=self.config.get("db"))
+        stream = self._astream_propagate(ticker, date, selected_analysts, asset_type)
+        try:
+            while True:
+                try:
+                    with use_context(context):
+                        event = await stream.__anext__()
+                        context = current_context()
+                except StopAsyncIteration:
+                    break
+                yield event
+        finally:
+            with use_context(context):
+                await stream.aclose()
+
+    async def _astream_propagate(
+        self,
+        ticker: str,
+        date: str,
+        selected_analysts: list[str] | None = None,
+        asset_type: str = "stock",
+    ):
+        """Async streaming version of propagate() that yields events.
+
+        Uses LangGraph's astream_events API for fine-grained event streaming.
+        Report sections are extracted from on_chain_end events as agents
+        complete their work.
+
+        Yields:
+            dict with 'type' and 'data' keys for real-time event consumption.
+        """
+        if selected_analysts is None:
+            selected_analysts = ["market", "social", "news", "fundamentals"]
+
+        REPORT_KEYS = {
+            "market_report", "sentiment_report", "news_report",
+            "fundamentals_report", "investment_plan",
+            "trader_investment_plan", "final_trade_decision",
+        }
+
+        AGENT_NAMES = {
+            "Market Analyst", "Sentiment Analyst", "News Analyst",
+            "Fundamentals Analyst", "Bull Researcher", "Bear Researcher",
+            "Research Manager", "Trader", "Aggressive Analyst",
+            "Conservative Analyst", "Neutral Analyst", "Portfolio Manager",
+        }
+
+        self._resolve_pending_entries(ticker)
+        self.ticker = ticker
+
+        instrument_context = self.resolve_instrument_context(ticker, asset_type)
+        past_context = self._merge_memory_context(self.memory_log.get_past_context(ticker, as_of_date=str(date)))
+        market = detect_market(ticker)
+
+        init_agent_state = self.propagator.create_initial_state(
+            ticker,
+            date,
+            asset_type=asset_type,
+            past_context=past_context,
+            instrument_context=instrument_context,
+            market=market,
+            investment_style=str(self.config.get("investment_style") or ""),
+        )
+
+        workflow = self.graph_setup.setup_graph(selected_analysts, template=self.config.get("analysis_template", "full"))
+        args = self.propagator.get_graph_args()
+
+        # Mirror propagate()'s checkpointer handling so the Skill entry point
+        # (astream_propagate) also benefits from resume-after-crash when the user
+        # opts in via checkpoint_enabled. Previously this path compiled the graph
+        # without a saver, silently ignoring the config.
+        checkpointer_ctx = None
+        if self.config.get("checkpoint_enabled"):
+            checkpointer_ctx = get_checkpointer(self.config["data_cache_dir"], ticker)
+            saver = checkpointer_ctx.__enter__()
+            graph = workflow.compile(checkpointer=saver)
+            checkpoint_run_id = str(
+                self.config.get("checkpoint_run_id") or self.config.get("run_id") or ""
+            ) or None
+            tid = thread_id(ticker, str(date), checkpoint_run_id)
+            args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
+            step = checkpoint_step(
+                self.config["data_cache_dir"], ticker, str(date), checkpoint_run_id
+            )
+            if step is not None:
+                logger.info("Resuming from step %d for %s on %s (streaming)", step, ticker, date)
+            else:
+                logger.info("Starting fresh for %s on %s (streaming)", ticker, date)
+        else:
+            graph = workflow.compile()
+
+        final_sections: dict[str, str] = {}
+        active_tools: dict[str, dict[str, Any]] = {}
+        tool_agents = {"tools_market": "Market Analyst", "tools_social": "Sentiment Analyst",
+                       "tools_news": "News Analyst", "tools_fundamentals": "Fundamentals Analyst"}
+        structured_portfolio_decision: dict[str, Any] | None = None
+        specialist_results: list[dict] = []
+
+        try:
+            async for event in graph.astream_events(
+                init_agent_state,
+                version="v2",
+                config=args.get("config", {}),
+            ):
+                kind = event.get("event", "")
+                name = event.get("name", "")
+                data = event.get("data", {})
+
+                if kind == "on_chain_start" and name in AGENT_NAMES:
+                    yield {
+                        "type": "agent_status",
+                        "data": {"agent": name, "status": "running", "activity_id": str(event.get("run_id") or name)},
+                    }
+
+                elif kind == "on_chain_end" and name in AGENT_NAMES:
+                    yield {
+                        "type": "agent_status",
+                        "data": {"agent": name, "status": "completed", "activity_id": str(event.get("run_id") or name)},
+                    }
+                    # Extract report sections from the node's output
+                    output = data.get("output")
+                    if isinstance(output, dict):
+                        specialist_results.extend(output.get("specialist_results", []))
+                        raw_decision = output.get("structured_portfolio_decision")
+                        if isinstance(raw_decision, dict):
+                            structured_portfolio_decision = raw_decision
+                        for key in REPORT_KEYS:
+                            if key in output and output[key]:
+                                final_sections[key] = output[key]
+                                yield {
+                                    "type": "report_chunk",
+                                    "data": {
+                                        "section": key,
+                                        "content": output[key],
+                                        "is_final": key == "final_trade_decision",
+                                    },
+                                }
+
+                elif kind == "on_tool_start":
+                    call_id = str(event.get("run_id") or name)
+                    active_tools[call_id] = {
+                        "tool": name or "unknown", "args": data.get("input", {}),
+                        "activity_id": call_id,
+                        "agent": tool_agents.get((event.get("metadata") or {}).get("langgraph_node")) or
+                                 ((event.get("metadata") or {}).get("langgraph_node") if (event.get("metadata") or {}).get("langgraph_node") in AGENT_NAMES else None),
+                    }
+                    yield {
+                        "type": "tool_call",
+                        "data": {**active_tools[call_id], "status": "running"},
+                    }
+                elif kind in {"on_tool_end", "on_tool_error"}:
+                    call_id = str(event.get("run_id") or name)
+                    call = active_tools.pop(call_id, None)
+                    if call is not None:
+                        output = data.get("output")
+                        output_status = output.get("status") if isinstance(output, dict) else getattr(output, "status", None)
+                        failed = kind == "on_tool_error" or output_status == "error"
+                        yield {"type": "tool_call", "data": {
+                            **call, "status": "failed" if failed else "completed",
+                        }}
+
+            # Emit complete report with all sections
+            if final_sections:
+                yield {
+                    "type": "report_complete",
+                    "data": {
+                        "sections": final_sections,
+                        "ticker": ticker,
+                        "date": date,
+                        "structured_portfolio_decision": structured_portfolio_decision,
+                        "specialist_results": specialist_results,
+                    },
+                }
+
+            # Store decision for deferred reflection
+            if "final_trade_decision" in final_sections:
+                self.memory_log.store_decision(
+                    ticker=ticker,
+                    trade_date=date,
+                    final_trade_decision=final_sections["final_trade_decision"],
+                )
+
+            # Clear checkpoint on successful completion to avoid stale state.
+            if checkpointer_ctx is not None:
+                clear_checkpoint(
+                    self.config["data_cache_dir"], ticker, str(date), checkpoint_run_id
+                )
+        finally:
+            if checkpointer_ctx is not None:
+                checkpointer_ctx.__exit__(None, None, None)

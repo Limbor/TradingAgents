@@ -1,0 +1,403 @@
+"""FastAPI application factory."""
+
+import asyncio
+import logging
+import time as monotonic_time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import time, timedelta
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from tradingagents.api.middleware.auth import AuthMiddleware, allowed_origins
+from tradingagents.core.agent_harness import AgentStore, TradingAgentHarness
+from tradingagents.core.chat_agent import ChatAgent
+from tradingagents.core.lightweight_tools import build_all_tools
+from tradingagents.core.mcp_client import get_mcp_client, get_mcp_status, shutdown_mcp_client
+from tradingagents.core.orchestrator import Orchestrator
+from tradingagents.core.persistence import Database
+from tradingagents.core.reflection import ReflectionEngine
+from tradingagents.core.run_manager import RunManager
+from tradingagents.core.scheduler import Scheduler
+from tradingagents.core.tool_registry import LightweightTool, ToolRegistry
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.skills.registry import SkillRegistry
+
+from .routes import (
+    agent,
+    artifacts,
+    config,
+    decision_audit,
+    health,
+    market,
+    paper,
+    plans,
+    portfolio,
+    profile,
+    reflections,
+    reports,
+    risk_events,
+    runs,
+    skills,
+    trading_time,
+)
+from .ws import stream
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Application lifespan — initialize and teardown."""
+    registry = SkillRegistry()
+    registry.auto_discover()
+
+    import os
+
+    db_path = os.environ.get("TRADINGAGENTS_APP_DB")
+    db = Database(Path(db_path)) if db_path else Database()
+    config = {**DEFAULT_CONFIG, **db.get_app_config()}
+
+    # Import existing disk reports into SQLite for indexing
+    results_dir = config.get("results_dir", "")
+    if results_dir:
+        imported = db.import_disk_reports(results_dir)
+        if imported > 0:
+            logging.getLogger(__name__).info("Imported %d existing reports from disk", imported)
+
+    # Also check for reports in the CWD reports/ directory (CLI default save path)
+    cwd_reports = Path.cwd() / "reports"
+    if cwd_reports.exists():
+        db.import_disk_reports(str(cwd_reports))
+
+    # Resolve missing ticker names after startup. yfinance calls can block for a
+    # long time, so this must not run before lifespan yields.
+    app.state.ticker_backfill_task = None
+    if config.get("ticker_name_backfill_enabled", True):
+        app.state.ticker_backfill_task = asyncio.create_task(_backfill_ticker_names_async(db))
+
+    app.state.registry = registry
+    app.state.config = config
+    app.state.db = db
+    app.state.run_manager = RunManager(
+        db=db,
+        max_concurrent_runs=int(config.get("max_concurrent_runs", 3)),
+        max_retained_runs=int(config.get("max_retained_runs", 200)),
+        max_events_per_run=int(config.get("max_events_per_run", 500)),
+    )
+
+    # Conditionally enable LLM-based intent routing
+    llm_router = None
+    if config.get("llm_routing_enabled", False):
+        from tradingagents.core.llm_router import LLMRouter
+
+        llm_router = LLMRouter(registry, config, db=db)
+
+    app.state.orchestrator = Orchestrator(registry, config, db=db, llm_router=llm_router)
+
+    app.state.scheduler = Scheduler(db=db)
+    if config.get("scheduler_enabled", True):
+        daily_skill = registry.get("daily_pipeline")
+        if daily_skill is not None:
+            async def run_daily_pipeline() -> None:
+                # Skip on non-trading days (weekends/holidays) to avoid wasting
+                # LLM tokens and producing signals dated to a non-trading day.
+                from tradingagents.core.trading_time import get_temporal_context
+
+                ctx = get_temporal_context(app.state.config, market="cn_a")
+                if ctx.calendar_state != "trading_day":
+                    logging.getLogger(__name__).info(
+                        "Skipping daily_pipeline: non-trading day (%s)",
+                        ctx.market_asof_date,
+                    )
+                    return
+                scheduled_config = {
+                    **app.state.config,
+                    "daily_pipeline_deep_analysis_enabled": bool(
+                        app.state.config.get(
+                            "daily_pipeline_scheduled_deep_analysis_enabled", False
+                        )
+                    ),
+                }
+                run = await app.state.run_manager.create_run(
+                    daily_skill,
+                    {"limit": 5, "candidate_limit": 120},
+                    scheduled_config,
+                )
+                completed = await app.state.run_manager.wait_for_run(run.id)
+                if completed.status.value != "completed":
+                    raise RuntimeError(completed.error or "daily_pipeline failed")
+                await _start_daily_pipeline_followup(app, completed)
+
+            app.state.scheduler.register_daily(
+                "daily_pipeline", time(8, 30), run_daily_pipeline,
+                catch_up_window=timedelta(hours=2),
+            )
+
+        # Reflection job — runs daily after market close
+        async def run_reflection_pipeline() -> None:
+            # Skip on non-trading days: there is no new close to reflect on, and
+            # fetch_outcome would return None, leaving cases pending forever.
+            from tradingagents.core.trading_time import get_temporal_context
+
+            ctx = get_temporal_context(app.state.config, market="cn_a")
+            if ctx.calendar_state != "trading_day":
+                logging.getLogger(__name__).info(
+                    "Skipping reflection_job: non-trading day (%s)",
+                    ctx.market_asof_date,
+                )
+                return
+            from tradingagents.agents.utils.memory import TradingMemoryLog
+
+            memory_log = TradingMemoryLog(app.state.config)
+            engine = ReflectionEngine(
+                db=app.state.db,
+                config=app.state.config,
+                memory_log=memory_log,
+            )
+            result = await engine.run_reflection_batch()
+            logging.getLogger(__name__).info("Reflection batch completed: %s", result)
+
+        app.state.scheduler.register_daily(
+            "reflection_job", time(16, 30), run_reflection_pipeline,
+            catch_up_window=timedelta(hours=4),
+            depends_on=("decision_audit",),
+        )
+
+        async def run_decision_audit() -> None:
+            from tradingagents.core.decision_audit import DecisionAuditEngine
+            from tradingagents.core.trading_time import get_temporal_context
+
+            ctx = get_temporal_context(app.state.config, market="cn_a")
+            if ctx.calendar_state != "trading_day":
+                return
+            result = await DecisionAuditEngine(app.state.db, app.state.config).evaluate_due(
+                as_of_date=ctx.market_asof_date, limit=20,
+            )
+            logging.getLogger(__name__).info("Decision audit completed: %s", result)
+
+        app.state.scheduler.register_daily(
+            "decision_audit", time(16, 20), run_decision_audit,
+            catch_up_window=timedelta(hours=4),
+            depends_on=("market_overview",),
+        )
+
+        # Plan monitoring — runs after the reflection job, evaluates active
+        # plans' conditions (price levels / golden cross / cash flow) against
+        # the fresh close and flags triggers as plan_alert artifacts.
+        async def run_plan_evaluation() -> None:
+            from tradingagents.core.plan_monitor import evaluate_active_plans
+            from tradingagents.core.trading_time import get_temporal_context
+
+            ctx = get_temporal_context(app.state.config, market="cn_a")
+            if ctx.calendar_state != "trading_day":
+                return
+            alerts = await evaluate_active_plans(app.state.db, app.state.config)
+            if alerts:
+                logging.getLogger(__name__).info(
+                    "Plan evaluation triggered %d alert(s)", len(alerts)
+                )
+
+        app.state.scheduler.register_daily(
+            "plan_evaluation", time(16, 45), run_plan_evaluation,
+            catch_up_window=timedelta(hours=4),
+            depends_on=("reflection_job",),
+        )
+
+        # Market overview — regenerated shortly after the close so the /market
+        # page serves fresh cached data without any on-demand AKShare calls.
+        market_skill = registry.get("market_overview")
+        if market_skill is not None:
+            async def run_market_overview() -> None:
+                from tradingagents.core.trading_time import get_temporal_context
+
+                ctx = get_temporal_context(app.state.config, market="cn_a")
+                if ctx.calendar_state != "trading_day":
+                    logging.getLogger(__name__).info(
+                        "Skipping market_overview: non-trading day (%s)",
+                        ctx.market_asof_date,
+                    )
+                    return
+                run = await app.state.run_manager.create_run(
+                    market_skill,
+                    {},
+                    app.state.config,
+                )
+                completed = await app.state.run_manager.wait_for_run(run.id)
+                if completed.status.value != "completed":
+                    raise RuntimeError(completed.error or "market_overview failed")
+
+            app.state.scheduler.register_daily(
+                "market_overview", time(15, 10), run_market_overview,
+                catch_up_window=timedelta(hours=5),
+            )
+    # MCP init is wrapped in a timeout so a hung StockManager probe cannot block
+    # FastAPI startup for the full tool_timeout (default 120s). On timeout we
+    # continue in degraded mode (no MCP); the singleton will retry on next use.
+    try:
+        app.state.mcp_client = await asyncio.wait_for(
+            get_mcp_client(config), timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        logging.getLogger(__name__).warning(
+            "MCP client init timed out after 10s; continuing without MCP (degraded mode)"
+        )
+        app.state.mcp_client = None
+    app.state.mcp_status = (
+        app.state.mcp_client.status
+        if app.state.mcp_client is not None
+        else await get_mcp_status(config)
+    )
+    app.state.mcp_status_checked_at = monotonic_time.monotonic()
+
+    # Initialize lightweight ToolRegistry and register 5 instant tools.
+    # Placed after MCP client init so get_mcp_factor_snapshot tool has a live client.
+    tool_registry = ToolRegistry()
+    for tool_def in build_all_tools(db, app.state.mcp_client, config):
+        tool_registry.register(LightweightTool(**tool_def))
+    app.state.tool_registry = tool_registry
+
+    # Initialize ChatAgent for free-form conversational queries.
+    app.state.chat_agent = ChatAgent(
+        config=config,
+        skill_registry=registry,
+        tool_registry=tool_registry,
+        db=db,
+    )
+    app.state.agent_store = AgentStore(db)
+    app.state.agent_harness = TradingAgentHarness(
+        app.state.agent_store, tool_registry, app.state.chat_agent,
+        app.state.run_manager, registry, config,
+    )
+    if config.get("scheduler_enabled", True):
+        app.state.scheduler.start()
+
+    yield
+
+    await app.state.agent_harness.close()
+    await app.state.run_manager.cancel_all()
+    backfill_task = getattr(app.state, "ticker_backfill_task", None)
+    if backfill_task and not backfill_task.done():
+        backfill_task.cancel()
+    await app.state.scheduler.stop()
+    await shutdown_mcp_client()
+
+
+def create_app() -> FastAPI:
+    """Create the FastAPI application."""
+    app = FastAPI(
+        title="TradingAgents API",
+        version="1.0.0",
+        description="Multi-agent financial trading analysis platform",
+        lifespan=lifespan,
+    )
+
+    # CORS for local development and Tauri
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins(DEFAULT_CONFIG),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    # Optional token auth (no-op when api_auth_token is empty, the default).
+    app.add_middleware(AuthMiddleware)
+
+    # Register REST routes
+    app.include_router(health.router, prefix="/api/v1", tags=["health"])
+    app.include_router(skills.router, prefix="/api/v1", tags=["skills"])
+    app.include_router(runs.router, prefix="/api/v1", tags=["runs"])
+    app.include_router(artifacts.router, prefix="/api/v1", tags=["artifacts"])
+    app.include_router(reports.router, prefix="/api/v1", tags=["reports"])
+    app.include_router(config.router, prefix="/api/v1", tags=["config"])
+    app.include_router(profile.router, prefix="/api/v1", tags=["profile"])
+    app.include_router(portfolio.router, prefix="/api/v1", tags=["portfolio"])
+    app.include_router(plans.router, prefix="/api/v1", tags=["plans"])
+    app.include_router(reflections.router, prefix="/api/v1", tags=["reflections"])
+    app.include_router(decision_audit.router, prefix="/api/v1", tags=["decision-audit"])
+    app.include_router(risk_events.router, prefix="/api/v1", tags=["risk-events"])
+    app.include_router(trading_time.router, prefix="/api/v1", tags=["trading-time"])
+    app.include_router(market.router, prefix="/api/v1", tags=["market"])
+    app.include_router(paper.router, prefix="/api/v1", tags=["paper"])
+    app.include_router(agent.router, prefix="/api/v1", tags=["agent"])
+
+    # Register WebSocket routes
+    app.include_router(stream.router)
+
+    return app
+
+
+async def _start_daily_pipeline_followup(app: FastAPI, completed: Any) -> Any | None:
+    """Create the scheduled Top-1 analysis after a shortlist is durable.
+
+    The heavyweight stock graph deliberately runs as its own persisted run.
+    That keeps ``daily_pipeline`` responsive and makes the handoff visible in
+    run history instead of holding the scanner open for another several
+    minutes. ``RunManager.create_run`` saves the pending row before returning,
+    so the scheduler only reports success after the handoff itself is durable.
+    """
+    config = app.state.config
+    if not bool(config.get("daily_pipeline_scheduled_followup_enabled", True)):
+        return None
+
+    analysis_skill = app.state.registry.get("stock_analysis")
+    if analysis_skill is None:
+        raise RuntimeError("stock_analysis skill unavailable for daily follow-up")
+
+    params = _daily_pipeline_followup_params(completed.result)
+    if params is None:
+        logging.getLogger(__name__).info(
+            "Daily pipeline %s produced no candidate for automatic follow-up",
+            completed.id,
+        )
+        return None
+
+    followup = await app.state.run_manager.create_run(
+        analysis_skill,
+        params,
+        config,
+    )
+    logging.getLogger(__name__).info(
+        "Daily pipeline follow-up created: source_run=%s analysis_run=%s ticker=%s",
+        completed.id,
+        followup.id,
+        params["ticker"],
+    )
+    return followup
+
+
+def _daily_pipeline_followup_params(result: Any) -> dict[str, Any] | None:
+    """Build a StockAnalysis handoff from the first valid ranked candidate."""
+    if not isinstance(result, dict):
+        return None
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+
+    trade_date = str(result.get("trade_date") or "").strip()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "").strip()
+        if not symbol:
+            continue
+        from tradingagents.skills.daily_pipeline.skill import _selection_context_for
+
+        return {
+            "ticker": symbol,
+            **({"analysis_date": trade_date} if trade_date else {}),
+            "selection_context": _selection_context_for(candidate, trade_date),
+        }
+    return None
+
+
+async def _backfill_ticker_names_async(db: Database) -> None:
+    try:
+        backfilled = await asyncio.to_thread(db.backfill_ticker_names)
+        if backfilled > 0:
+            logging.getLogger(__name__).info("Resolved %d ticker names", backfilled)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Ticker name backfill failed: %s", exc)

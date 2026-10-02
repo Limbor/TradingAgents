@@ -6,6 +6,126 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- Unified trading Agent runtime and shared default/deep model policy across the workspace and analysis templates, with durable child runs, scoped tools, cancellation, structured specialist results and per-role strategy memory usage.
+
+- **Optional Top-N deep-analysis chaining in DailyPipeline.** After quant
+  ranking + LLM review, the pipeline can run the heavyweight multi-agent
+  `StockAnalysisSkill` on the Top N candidates and write its
+  `structured_conclusion` (rating/target_price/confidence/reasons/plan) back onto
+  the candidate payload under `deep_analysis`, so the signal row, screening card,
+  and reflection snapshot all carry the deep verdict. The quant+LLM selection is
+  handed off as `selection_context` so the deep pass sees why the name was
+  picked. Off by default (`daily_pipeline_deep_analysis_enabled`, limit
+  `daily_pipeline_deep_analysis_limit=1`) because each run drives the full agent
+  graph (minutes + tokens per stock); best-effort, so a failed/empty deep run
+  never blocks the pipeline.
+- **Walk-forward / ablation / execution-slippage detail in backtest auditing.**
+  `audit_backtest_result` now attaches three read-only, non-gating,
+  best-effort blocks to `validation`: a `walk_forward` stability summary
+  (pure post-processing of the purged CV — per-fold sharpe consistency,
+  positive-fold ratio, in-sample→out-of-sample decay; runs no extra backtests
+  and searches no parameters), an `execution_slippage` breakdown (opt-in MCP
+  call, only when the result carries a trade blotter), and an `ablation_study`
+  contribution table (runs only an **explicitly declared** base experiment +
+  ablation set — not a parameter sweep). Each degrades to an
+  `{"available": false, ...}` marker when its inputs are absent.
+- **Real-backend pre-release Playwright smoke.** A new env-gated smoke
+  (`E2E_REAL_BACKEND=1`, `frontend/e2e/*.smoke.ts`, `npm run test:e2e:smoke`)
+  boots the actual FastAPI server (throwaway DB, MCP degraded) alongside the
+  vite dev server via the Playwright webServer and asserts the app shell talks
+  to it end-to-end (health probe + shell render + route navigation). The default
+  `npm run test:e2e` still runs only the mocked `*.spec.ts` contract, which
+  remains the stable frontend-flow verifier; a dedicated `e2e-smoke` CI job runs
+  the real-backend pass.
+- **Sector-beta decomposition for neutral excess.** The reflection engine now
+  computes a `sector_excess_return` for neutral cases (stock return minus the
+  same-window industry index return); the raw industry is normalized to a
+  coarse group and mapped to a representative SW L1 industry index
+  (`reflection_industry_index_map` overrides the default). `CrossSymbolPatternMiner`
+  prefers this sector-adjusted excess for industry-scope buckets (falling back
+  to broad-market excess per case when the index is missing) and records the
+  `basis` (`sector_adjusted`/`mixed`/`broad`) plus `sector_adjusted_n` in the
+  lesson payload. A whole-sector move where every name merely tracks its sector
+  (sector excess ≈ 0) is no longer minted as a stock-selection lesson—only
+  names that underperform their own sector qualify. Best-effort: with no mapped
+  index or a failed fetch it degrades to the previous broad-market behavior.
+- **Neutral-decision reflection attribution.** WATCHLIST/HOLD/MONITOR calls
+  (whose `was_correct` is `None`) are now scored by excess return over the
+  benchmark: a positive excess yields a `missed_upside` lesson (filter too
+  strict) and a negative excess yields a `validated_avoidance` lesson (caution
+  paid off). A one-off, idempotent backfill
+  (`scripts/backfill_neutral_reflection.py`) re-scored 44 historical neutral
+  cases with real `excess_return`.
+- **Cross-symbol neutral promotion channel.** `CrossSymbolPatternMiner` runs a
+  neutral significance channel alongside the directional win-rate channel,
+  promoting industry/factor-level neutral lessons by mean excess magnitude,
+  same-sign consistency, and sample count. Neutral dimensions are namespaced
+  with a `neutral:` prefix to avoid `lesson_id` collisions, and use a separate
+  `cross_symbol_miner_neutral_min_samples` (default 4) while the directional
+  channel stays at `cross_symbol_miner_min_samples` (5).
+- **Regime guardrail for neutral promotion.** A neutral pattern must now span
+  at least `cross_symbol_miner_neutral_min_periods` distinct ISO weeks (default
+  2) of signal dates to promote, so a single sector-wide selloff or a one-day
+  batch no longer mints a permanent lesson. Buckets that clear the
+  excess/consistency bars but fail dispersion are counted in
+  `neutral_regime_filtered`. (Sector-beta decomposition against an industry
+  index remains a follow-up.)
+- **Reflection loop evaluation page.** A new `/reflection` route (sidebar
+  "Reflection") surfaces the closed loop that was previously only visible
+  inside daily-review artifacts: a directional-accuracy KPI (7/30/90-day
+  lookback), the mined strategy-lesson library (directional vs neutral channel
+  badges, confidence, scope/target, evidence count, and — for neutral lessons —
+  distinct ISO weeks and mean excess), and reflection cases with attribution
+  badges (missed_upside / validated_avoidance / win / loss) plus excess return.
+  Includes manual "run reflection" and "mine patterns" triggers. Each lesson
+  card now expands to a detail drawer (type, sample size, consistency, mean
+  excess, win rate, distinct weeks, expiry) and active lessons can be manually
+  retired via a new `POST /strategy-lessons/{id}/deactivate` endpoint so a bad
+  lesson stops being injected without waiting for the deactivation sweep.
+
+- **Lesson-priority LLM review.** Candidates ranked beyond the daily-pipeline
+  review limit but matching an *active* strategy lesson are now pulled into the
+  review window (bounded by `daily_pipeline_llm_review_lesson_extra`, default
+  4), so the reflection loop's lessons actually influence matching candidates
+  regardless of quant rank. The default review limit was also raised from 5 to
+  8 (`daily_pipeline_llm_review_limit`) to widen lesson-injection coverage.
+
+- **Lesson evidence drill-down and metric trends.** The miner now persists a
+  capped `evidence_cases` id list and a per-mining-day `history` series (win
+  rate + lift for directional lessons, mean excess + consistency for neutral)
+  into each lesson payload. The reflection page's lesson drawer renders the
+  metric as a sparkline trend and lazily loads the supporting reflection cases
+  from a new `GET /strategy-lessons/{id}/cases` endpoint (backed by a new
+  `Database.get_strategy_lesson`), letting you drill from a lesson back to the
+  cases that produced it. The directional promotion path (a significant BUY
+  pattern minted as a `scope="global"` lesson once samples suffice) now has
+  explicit regression coverage.
+
+### Fixed
+
+- **Industry-scope lessons now actually match candidates.** Industry-scope
+  neutral lessons are keyed by the coarse taxonomy group (e.g. `地产`), but
+  candidates carry a raw `industry` string (e.g. `房地产`, `建筑材料`), so the
+  exact comparison in `candidate_lesson_hits` never fired and the lesson was
+  never injected into the LLM review prompt. The coarse taxonomy is extracted
+  into `tradingagents.core.industry_taxonomy.normalize_industry` (a single
+  source of truth shared by the miner and the review runner), and the runner
+  normalizes the candidate industry before matching. Stale-lesson deactivation
+  now has regression coverage confirming neutral lessons are retired when they
+  stop recurring and left untouched when the neutral channel is disabled.
+
+### Changed
+
+- **`cross_symbol_miner_enabled` now defaults to `True`,** so high-confidence
+  patterns auto-promote after the daily 16:30 reflection batch. Override with
+  `TRADINGAGENTS_CROSS_SYMBOL_MINER_ENABLED=false` to disable.
+- **Dashboard lower widgets use a balanced masonry layout** (`columns-2/3`),
+  so no single column runs empty on wide viewports.
+
 ## [0.3.0] — 2026-06-22
 
 Stabilization and extensibility release: a CI gate, a unified verified

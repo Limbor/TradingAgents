@@ -5,7 +5,9 @@ from __future__ import annotations
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
+    get_market_risk_instruction,
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
@@ -18,6 +20,7 @@ def create_research_manager(llm):
 
     def research_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
+        market = state.get("market")
         history = state["investment_debate_state"].get("history", "")
 
         investment_debate_state = state["investment_debate_state"]
@@ -37,10 +40,12 @@ def create_research_manager(llm):
 
 Commit to a clear stance whenever the debate's strongest arguments warrant one; reserve Hold for situations where the evidence on both sides is genuinely balanced.
 
+For China A-shares: "Overweight/gradually increasing exposure" must respect T+1 — spell out a multi-day adding schedule rather than implying intraday scaling. T+1 means a position bought today cannot be sold until next session.
+
 ---
 
 **Debate History:**
-{history}""" + get_language_instruction()
+    {history}""" + get_market_risk_instruction(market) + get_investment_style_instruction(state.get("investment_style")) + get_language_instruction(market)
 
         investment_plan = invoke_structured_or_freetext(
             structured_llm,

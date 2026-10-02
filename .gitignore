@@ -14,8 +14,13 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to repo root: bare "lib/" would also ignore frontend/src/lib/
+/lib/
+/lib64/
+# Local build and exploration artifacts
+frontend/tsconfig.tsbuildinfo
+scripts/backtest_results_*.json
+vibe_images/
 parts/
 sdist/
 var/
@@ -31,6 +36,7 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!packaging/tradingagents-backend.spec
 
 # Installer logs
 pip-log.txt
@@ -221,3 +227,20 @@ __marimo__/
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise
 reports/
+
+.qoder/
+
+# macOS
+.DS_Store
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+
+# Dev logs and pids
+.dev-logs/
+.dev-pids/
+# Claude Code worktrees (local working copies, not part of the repo)
+.claude/worktrees/

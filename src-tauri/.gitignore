@@ -1,0 +1,13 @@
+# Rust build output
+/target/
+
+# Tauri-generated schemas/permissions
+/gen/
+
+# Bundled Python backend sidecar (produced by scripts/build_desktop.sh via
+# PyInstaller). Regenerated per-platform; never committed.
+/binaries/
+
+# App icons are generated from assets/ by `npm run tauri icon` during the
+# build; not committed to keep the repo lean.
+/icons/

@@ -39,9 +39,9 @@ class Reflector:
 
         Used by Phase B deferred reflection. The final_trade_decision already
         synthesises all analyst insights, so no separate market context is needed.
-        ``benchmark_name`` is the label used for the alpha line (e.g. ``"SPY"``
-        for US tickers, ``"^N225"`` for ``.T`` listings); defaults to SPY for
-        callers that haven't been updated to thread the benchmark through.
+        ``benchmark_name`` is the label used for the alpha line. Defaults to the
+        legacy ``SPY`` label; market-aware callers should always pass the
+        resolved benchmark explicitly.
         """
         messages = [
             ("system", self.log_reflection_prompt),

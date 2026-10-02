@@ -1,0 +1,1090 @@
+"""Reflection engine for evaluating past trading decisions.
+
+This module provides post-hoc analysis of decisions stored by daily_pipeline
+and stock_analysis. It fetches actual price outcomes, evaluates accuracy,
+and optionally generates LLM-assisted reflection text.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from tradingagents.core.agent_runtime import runtime_model
+from tradingagents.core.model_policy import provider_kwargs, resolve_model
+
+logger = logging.getLogger(__name__)
+
+
+# Coarse industry group -> representative SW L1 industry index code. Used to
+# strip sector beta from a neutral case's excess so a whole-sector move
+# (板块普跌/普涨) is not mistaken for stock-selection skill. Keys mirror the
+# coarse groups produced by ``industry_taxonomy.normalize_industry``. This is a
+# best-effort approximation (some coarse groups span more than one SW L1
+# index); override or extend it via the ``reflection_industry_index_map``
+# config key.
+_DEFAULT_INDUSTRY_INDEX_MAP: dict[str, str] = {
+    "白酒": "801120.SI",   # 食品饮料
+    "新能源": "801730.SI",  # 电力设备
+    "半导体": "801080.SI",  # 电子
+    "金融": "801780.SI",   # 银行
+    "有色": "801050.SI",   # 有色金属
+    "医药": "801150.SI",   # 医药生物
+    "消费": "801120.SI",   # 食品饮料
+    "制造": "801890.SI",   # 机械设备
+    "科技": "801750.SI",   # 计算机
+    "地产": "801180.SI",   # 房地产
+    "化工": "801030.SI",   # 基础化工
+    "汽车": "801880.SI",   # 汽车
+}
+
+
+def _convert_ticker_for_yahoo(ts_code: str) -> str:
+    """Convert A-share ts_code format to Yahoo Finance format.
+
+    Examples:
+        600519.SH -> 600519.SS
+        000858.SZ -> 000858.SZ (unchanged)
+        300750.SZ -> 300750.SZ (unchanged)
+    """
+    if ts_code.upper().endswith(".SH"):
+        return ts_code[:-3] + ".SS"
+    return ts_code
+
+
+class ReflectionEngine:
+    """Orchestrates decision reflection by fetching outcomes and evaluating accuracy.
+
+    Integrates with:
+    - TradingMemoryLog for pending decision entries
+    - MCP client or yfinance for actual price data
+    - LLM (shared default model) for reflection text generation
+    - Database (persistence) for storing reflection records
+    """
+
+    def __init__(
+        self,
+        db: Any,
+        config: dict[str, Any],
+        memory_log: Any | None = None,
+    ):
+        self.db = db
+        self.config = config
+        self.memory_log = memory_log
+
+    async def fetch_outcome(
+        self,
+        symbol: str,
+        signal_date: str,
+        horizon_days: int = 5,
+    ) -> dict[str, Any] | None:
+        """Fetch actual return for a symbol after signal_date.
+
+        Strategy:
+        1. Try MCP get_stock_daily (A-share ts_code format)
+        2. Fallback to yfinance (requires ticker format conversion)
+
+        Returns dict with actual_return, close_at_signal, close_at_horizon, or None.
+        """
+        from tradingagents.core.mcp_client import get_mcp_client
+
+        try:
+            start_date = signal_date.replace("-", "")
+            # horizon_days is a trading-session count; allow enough calendar
+            # days for weekends and long exchange holidays.
+            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
+            end_date = end_dt.strftime("%Y%m%d")
+
+            client = await get_mcp_client(self.config)
+            if client is not None:
+                result = await client.get_stock_daily(
+                    ts_codes=[symbol],
+                    start_date=start_date,
+                    end_date=end_date,
+                    adj_type="qfq",
+                )
+                if result and isinstance(result, dict):
+                    # MCP returns {"rows": {ts_code: [records]}} (dict keyed by
+                    # symbol); extract this symbol's record list. Previously we
+                    # treated the dict itself as the row list, so isinstance(rows,
+                    # list) was always False and MCP was silently skipped.
+                    rows_by_code = result.get("rows") or result.get("data") or {}
+                    rows = rows_by_code.get(symbol, []) if isinstance(rows_by_code, dict) else rows_by_code
+                    if isinstance(rows, list) and len(rows) >= 2:
+                        return self._compute_return_from_rows(rows, signal_date, horizon_days)
+
+            # A-share fallback uses the same qfq AKShare series as the analysis
+            # pipeline. This is both more reliable than Yahoo for CN tickers
+            # and keeps the signal/outcome adjustment convention consistent.
+            if symbol.upper().endswith((".SH", ".SZ", ".BJ")):
+                cn_outcome = await self._fetch_outcome_cn(symbol, signal_date, horizon_days)
+                if cn_outcome is not None:
+                    return cn_outcome
+
+            # Final fallback to yfinance
+            return await self._fetch_outcome_yfinance(symbol, signal_date, horizon_days)
+        except Exception as exc:
+            logger.warning("fetch_outcome failed for %s: %s", symbol, exc)
+            return None
+
+    async def _fetch_outcome_cn(
+        self, symbol: str, signal_date: str, horizon_days: int
+    ) -> dict[str, Any] | None:
+        try:
+            import asyncio
+
+            import pandas as pd
+
+            from tradingagents.dataflows.akshare_stock import load_ohlcv_cn
+
+            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
+            df = await asyncio.to_thread(load_ohlcv_cn, symbol, end_dt.date().isoformat())
+            if df is None or df.empty:
+                return None
+            eligible = df[pd.to_datetime(df["Date"]) >= pd.to_datetime(signal_date)].sort_values("Date")
+            if len(eligible) <= horizon_days:
+                return None
+            close_at_signal = float(eligible.iloc[0]["Close"])
+            close_at_horizon = float(eligible.iloc[horizon_days]["Close"])
+            if close_at_signal <= 0:
+                return None
+            return {
+                "actual_return": round((close_at_horizon - close_at_signal) / close_at_signal, 4),
+                "close_at_signal": round(close_at_signal, 4),
+                "close_at_horizon": round(close_at_horizon, 4),
+                "horizon_days": horizon_days,
+                "source": "akshare_qfq",
+            }
+        except Exception as exc:
+            logger.debug("AKShare outcome fallback failed for %s: %s", symbol, exc)
+            return None
+
+    async def _fetch_outcome_yfinance(
+        self,
+        symbol: str,
+        signal_date: str,
+        horizon_days: int,
+    ) -> dict[str, Any] | None:
+        """Fallback: fetch price data via yfinance."""
+        try:
+            import asyncio
+
+            import yfinance as yf
+
+            yahoo_ticker = _convert_ticker_for_yahoo(symbol)
+            start_dt = datetime.strptime(signal_date, "%Y-%m-%d")
+            end_dt = start_dt + timedelta(days=horizon_days * 2 + 10)
+
+            def _download():
+                ticker = yf.Ticker(yahoo_ticker)
+                return ticker.history(
+                    start=start_dt.strftime("%Y-%m-%d"),
+                    end=end_dt.strftime("%Y-%m-%d"),
+                )
+
+            df = await asyncio.to_thread(_download)
+            if df is None or df.empty or len(df) < 2:
+                return None
+
+            close_at_signal = float(df.iloc[0]["Close"])
+            horizon_idx = min(horizon_days, len(df) - 1)
+            close_at_horizon = float(df.iloc[horizon_idx]["Close"])
+            actual_return = (close_at_horizon - close_at_signal) / close_at_signal
+
+            return {
+                "actual_return": round(actual_return, 4),
+                "close_at_signal": round(close_at_signal, 2),
+                "close_at_horizon": round(close_at_horizon, 2),
+                "horizon_days": horizon_days,
+                "source": "yfinance",
+            }
+        except Exception as exc:
+            logger.debug("yfinance fallback failed for %s: %s", symbol, exc)
+            return None
+
+    def _compute_return_from_rows(
+        self,
+        rows: list[dict[str, Any]],
+        signal_date: str,
+        horizon_days: int,
+    ) -> dict[str, Any] | None:
+        """Compute return from MCP daily data rows."""
+        # Sort by trade_date
+        sorted_rows = sorted(rows, key=lambda r: str(r.get("trade_date", "")).replace("-", ""))
+        signal_date_compact = signal_date.replace("-", "")
+
+        # Find signal date row
+        signal_row = None
+        signal_idx = -1
+        for idx, row in enumerate(sorted_rows):
+            td = str(row.get("trade_date", "")).replace("-", "")
+            if td >= signal_date_compact:
+                signal_row = row
+                signal_idx = idx
+                break
+
+        if signal_row is None or signal_idx < 0:
+            return None
+
+        # Find horizon row
+        horizon_idx = min(signal_idx + horizon_days, len(sorted_rows) - 1)
+        if horizon_idx <= signal_idx:
+            return None
+
+        horizon_row = sorted_rows[horizon_idx]
+        close_at_signal = float(signal_row.get("close", 0))
+        close_at_horizon = float(horizon_row.get("close", 0))
+
+        if close_at_signal <= 0:
+            return None
+
+        actual_return = (close_at_horizon - close_at_signal) / close_at_signal
+        return {
+            "actual_return": round(actual_return, 4),
+            "close_at_signal": round(close_at_signal, 2),
+            "close_at_horizon": round(close_at_horizon, 2),
+            "horizon_days": horizon_days,
+            "source": "mcp",
+        }
+
+    async def fetch_benchmark_return(
+        self,
+        signal_date: str,
+        horizon_days: int,
+        benchmark_symbol: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Fetch the benchmark index return over the same horizon.
+
+        Expressing a neutral decision's outcome as excess-over-benchmark keeps a
+        broad market rally/selloff from being mistaken for stock-specific
+        signal. Best-effort: returns ``None`` when the index tool is unavailable
+        so callers can degrade gracefully.
+        """
+        symbol = (
+            benchmark_symbol
+            or self.config.get("reflection_benchmark")
+            or self.config.get("decision_audit_benchmark")
+            or "000300.SH"
+        )
+        try:
+            result = await self._fetch_index_return(symbol, signal_date, horizon_days)
+        except Exception as exc:
+            logger.debug("Benchmark return fetch failed for %s: %s", symbol, exc)
+            return None
+        if result:
+            result["benchmark_symbol"] = symbol
+        return result
+
+    async def fetch_industry_return(
+        self,
+        industry: str,
+        signal_date: str,
+        horizon_days: int,
+    ) -> dict[str, Any] | None:
+        """Fetch the industry index return over the horizon for a raw industry name.
+
+        The raw industry is normalized to a coarse group and mapped to a
+        representative SW L1 industry index. Subtracting this from a stock's
+        return isolates stock-specific selection from a broad sector move
+        (选股规避 vs 板块普跌). Best-effort: returns ``None`` when the industry has
+        no mapped index or the index tool is unavailable, so callers can keep
+        using the broad-market excess.
+        """
+        from tradingagents.core.industry_taxonomy import normalize_industry
+
+        group = normalize_industry(industry)
+        if not group:
+            return None
+        index_map = {
+            **_DEFAULT_INDUSTRY_INDEX_MAP,
+            **(self.config.get("reflection_industry_index_map") or {}),
+        }
+        code = index_map.get(group)
+        if not code:
+            return None
+        try:
+            result = await self._fetch_index_return(code, signal_date, horizon_days)
+        except Exception as exc:
+            logger.debug("Industry return fetch failed for %s (%s): %s", group, code, exc)
+            return None
+        if result:
+            result["industry_group"] = group
+            result["industry_index_symbol"] = code
+        return result
+
+    async def _fetch_index_return(
+        self,
+        symbol: str,
+        signal_date: str,
+        horizon_days: int,
+    ) -> dict[str, Any] | None:
+        """Shared index-return fetch used by benchmark and industry helpers.
+
+        Returns a dict with ``actual_return`` over the horizon (plus ``source``)
+        or ``None`` when the index tool is unavailable or returns no usable
+        rows. Callers annotate the result with their own symbol metadata.
+        """
+        from tradingagents.core.mcp_client import get_mcp_client
+
+        client = await get_mcp_client(self.config)
+        if client is None or not hasattr(client, "get_index_daily"):
+            return None
+        end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 10)
+        payload = await client.get_index_daily(
+            symbol, signal_date.replace("-", ""), end_dt.strftime("%Y%m%d")
+        )
+        if not isinstance(payload, dict):
+            return None
+        rows = payload.get("data") or payload.get("rows") or []
+        if not isinstance(rows, list):
+            return None
+        result = self._compute_return_from_rows(rows, signal_date, horizon_days)
+        if result:
+            result["source"] = str(payload.get("source") or "mcp_index")
+        return result
+
+    def evaluate_accuracy(self, original_decision: str, actual_return: float) -> bool | None:
+        """Determine if the original decision was directionally correct.
+
+        BUY decisions are correct if actual_return > 0.
+        SELL/AVOID decisions are correct if actual_return <= 0.
+        WATCHLIST/HOLD are neutral — return ``None`` so callers can exclude
+        them from the accuracy denominator instead of inflating it.
+        """
+        decision_upper = original_decision.upper()
+        if "BUY" in decision_upper or "OVERWEIGHT" in decision_upper:
+            return actual_return > 0
+        if "SELL" in decision_upper or "AVOID" in decision_upper or "UNDERWEIGHT" in decision_upper:
+            return actual_return <= 0
+        # WATCHLIST, HOLD — neutral; excluded from accuracy denominator.
+        return None
+
+    async def fetch_post_signal_evidence(
+        self,
+        symbol: str,
+        signal_date: str,
+        horizon_days: int = 5,
+    ) -> dict[str, Any]:
+        """Fetch post-signal events used to distinguish ex-ante misses from new shocks."""
+        evidence: dict[str, Any] = {
+            "symbol": symbol,
+            "signal_date": signal_date,
+            "horizon_days": horizon_days,
+            "announcements": [],
+            "news": [],
+            "market_context": {},
+            "warnings": [],
+        }
+        try:
+            from tradingagents.core.mcp_client import get_mcp_client
+
+            client = await get_mcp_client(self.config)
+            if client is None:
+                evidence["warnings"].append("StockManager MCP unavailable; post-signal evidence is incomplete.")
+                return evidence
+
+            start_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=1)
+            end_dt = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days + 5)
+            if hasattr(client, "get_risk_announcements"):
+                payload = await client.get_risk_announcements(
+                    symbol,
+                    start_dt.date().isoformat(),
+                    end_dt.date().isoformat(),
+                    keywords=["立案", "问询", "违规", "处罚", "减持", "业绩", "预亏", "退市"],
+                )
+                if isinstance(payload, dict):
+                    rows = payload.get("rows") or payload.get("data") or []
+                    evidence["announcements"] = rows if isinstance(rows, list) else []
+                    if payload.get("warnings"):
+                        evidence["warnings"].extend(payload.get("warnings") or [])
+        except Exception as exc:
+            logger.warning("Post-signal evidence fetch failed for %s: %s", symbol, exc)
+            evidence["warnings"].append(f"post_signal_evidence_failed: {exc}")
+        return evidence
+
+    async def generate_attribution(
+        self,
+        case: dict[str, Any],
+        outcome: dict[str, Any],
+        post_signal_evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Classify whether an outcome should feed strategy learning."""
+        try:
+            from tradingagents.llm_clients import create_llm_client
+
+            client = create_llm_client(
+                provider=self.config.get("llm_provider", "openai"),
+                model=resolve_model(self.config),
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
+            )
+            llm = runtime_model(client.get_llm(), "Reflection Agent", self.config)
+            prompt = _build_attribution_prompt(case, outcome, post_signal_evidence)
+            response = await llm.ainvoke(prompt)
+            return _parse_attribution_payload(str(getattr(response, "content", response)))
+        except Exception as exc:
+            logger.warning("LLM attribution failed; using heuristic attribution: %s", exc)
+            return _heuristic_attribution(case, outcome, post_signal_evidence)
+
+    def maybe_create_strategy_lesson(
+        self,
+        case: dict[str, Any],
+        attribution: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a reusable lesson for actionable misses or neutral learnings."""
+        label = attribution.get("attribution")
+        confidence_ok = str(attribution.get("confidence") or "low") in {"medium", "high"}
+
+        # Neutral-decision lessons (missed_upside / validated_avoidance) are about
+        # filter/gate calibration, so they apply to candidate-pool cases too and
+        # are intentionally NOT gated on eligible_for_strategy_learning (which
+        # only tracks directional decisions for the win-rate gate).
+        if label in {"missed_upside", "validated_avoidance"}:
+            if not confidence_ok:
+                return {}
+            return self._create_neutral_lesson(case, attribution)
+
+        if not case.get("eligible_for_strategy_learning"):
+            return {}
+        if label != "ex_ante_miss":
+            return {}
+        if not confidence_ok:
+            return {}
+
+        snapshot = case.get("snapshot_payload") or {}
+        symbol = case.get("symbol") or ""
+        industry = snapshot.get("industry") or (snapshot.get("candidate") or {}).get("industry") or ""
+        data_coverage = snapshot.get("data_coverage") or (snapshot.get("candidate") or {}).get("data_coverage") or {}
+        missing = [
+            key for key, value in data_coverage.items()
+            if str(value).lower() == "missing"
+        ] if isinstance(data_coverage, dict) else []
+
+        scope = "industry" if industry else "global"
+        target = str(industry or "")
+        missed = attribution.get("missed_evidence") or []
+        finding = attribution.get("strategy_lesson") or (
+            f"{symbol} 的历史样本显示信号时点已有风险未被充分处理。"
+        )
+        if missing:
+            finding += f" 数据缺失项: {', '.join(missing)}。"
+        suggested = attribution.get("suggested_adjustment") or (
+            "后续遇到类似候选时，要求 LLM 明确验证缺失数据和已知风险，再决定是否降级。"
+        )
+        lesson = {
+            "id": str(uuid.uuid4()),
+            "lesson_type": "signal_quality",
+            "scope": scope,
+            "target": target,
+            "finding": finding,
+            "suggested_adjustment": suggested,
+            "evidence_count": 1,
+            "confidence": str(attribution.get("confidence") or "medium"),
+            "case_id": case.get("id"),
+            "symbol": symbol,
+            "missed_evidence": missed,
+            "governance_status": "candidate",
+        }
+        try:
+            self.db.save_strategy_lesson(
+                lesson_id=lesson["id"],
+                lesson_type=lesson["lesson_type"],
+                scope=lesson["scope"],
+                target=lesson["target"],
+                finding=lesson["finding"],
+                suggested_adjustment=lesson["suggested_adjustment"],
+                evidence_count=lesson["evidence_count"],
+                confidence=lesson["confidence"],
+                active=False,
+                payload=lesson,
+            )
+        except Exception as exc:
+            logger.warning("Failed to save strategy lesson for %s: %s", symbol, exc)
+        return lesson
+
+    def _create_neutral_lesson(
+        self,
+        case: dict[str, Any],
+        attribution: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a lesson for a neutral decision with a large post-signal move.
+
+        missed_upside -> opportunity_cost (filter may be too conservative);
+        validated_avoidance -> risk_avoidance (caution paid off, reinforce it).
+        """
+        label = attribution.get("attribution")
+        snapshot = case.get("snapshot_payload") or {}
+        symbol = case.get("symbol") or ""
+        industry = snapshot.get("industry") or (snapshot.get("candidate") or {}).get("industry") or ""
+        scope = "industry" if industry else "global"
+        lesson_type = "opportunity_cost" if label == "missed_upside" else "risk_avoidance"
+        finding = attribution.get("strategy_lesson") or attribution.get("risk_monitor_lesson") or (
+            f"{symbol} 中性观望后出现显著超额波动。"
+        )
+        suggested = attribution.get("suggested_adjustment") or (
+            "复核该类候选的过滤条件与风险标签处理。"
+        )
+        lesson = {
+            "id": str(uuid.uuid4()),
+            "lesson_type": lesson_type,
+            "scope": scope,
+            "target": str(industry or ""),
+            "finding": finding,
+            "suggested_adjustment": suggested,
+            "evidence_count": 1,
+            "confidence": str(attribution.get("confidence") or "medium"),
+            "case_id": case.get("id"),
+            "symbol": symbol,
+            "missed_evidence": attribution.get("missed_evidence") or [],
+            "governance_status": "candidate",
+        }
+        try:
+            self.db.save_strategy_lesson(
+                lesson_id=lesson["id"],
+                lesson_type=lesson["lesson_type"],
+                scope=lesson["scope"],
+                target=lesson["target"],
+                finding=lesson["finding"],
+                suggested_adjustment=lesson["suggested_adjustment"],
+                evidence_count=lesson["evidence_count"],
+                confidence=lesson["confidence"],
+                active=False,
+                payload=lesson,
+            )
+        except Exception as exc:
+            logger.warning("Failed to save neutral strategy lesson for %s: %s", symbol, exc)
+        return lesson
+
+    async def generate_reflection(
+        self,
+        signal: dict[str, Any],
+        outcome: dict[str, Any],
+        evidence: str = "",
+    ) -> str:
+        """Generate a short reflection text using LLM."""
+        try:
+            from tradingagents.llm_clients import create_llm_client
+
+            client = create_llm_client(
+                provider=self.config.get("llm_provider", "openai"),
+                model=resolve_model(self.config),
+                base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
+            )
+            llm = runtime_model(client.get_llm(), "Reflection Agent", self.config)
+            prompt = (
+                f"你是 A 股交易系统的复盘助手。基于以下历史决策与结果，写 2-3 句可执行的中文反思。\n\n"
+                f"决策: {signal.get('original_decision', 'Unknown')}\n"
+                f"标的: {signal.get('ticker', '?')}\n"
+                f"日期: {signal.get('trade_date', '?')}\n"
+                f"实际收益: {outcome.get('actual_return', 0):.2%}（{outcome.get('horizon_days', 5)} 天）\n"
+                f"方向是否正确: {outcome.get('was_correct', '?')}\n"
+                f"{f'上下文: {evidence}' if evidence else ''}\n\n"
+                f"反思（2-3 句中文，聚焦可执行的经验，不展开 CoT）:"
+            )
+            response = await llm.ainvoke(prompt)
+            return str(response.content).strip()
+        except Exception as exc:
+            logger.warning("LLM reflection generation failed: %s", exc)
+            was_correct = outcome.get("was_correct")
+            ret = outcome.get("actual_return", 0)
+            if was_correct:
+                return f"Decision was directionally correct. Return: {ret:.2%}."
+            return f"Decision was incorrect. Actual return: {ret:.2%}. Review entry signals."
+
+    async def run_reflection_batch(
+        self,
+        lookback_days: int = 30,
+        max_per_run: int = 20,
+        horizon_days: int = 5,
+    ) -> dict[str, Any]:
+        """Run batch reflection on pending memory entries.
+
+        Returns summary of how many were processed.
+        """
+        pending_cases = []
+        if hasattr(self.db, "list_reflection_cases"):
+            # due_only=True returns only cases whose horizon has elapsed
+            # (oldest-first), so the batch reaches due cases instead of stalling
+            # on the newest pending cases that aren't due yet.
+            pending_cases = self.db.list_reflection_cases(
+                status="outcome_ready",
+                limit=max_per_run,
+                due_only=True,
+            )
+            remaining = max(0, max_per_run - len(pending_cases))
+            if remaining:
+                # due_only=True here too: without it the pending fallback
+                # orders newest-first and stalls on cases whose horizon has
+                # not elapsed yet (fetch_outcome returns None), so the batch
+                # never reaches the older, actually-due pending cases.
+                pending_cases.extend(self.db.list_reflection_cases(
+                    status="pending", limit=remaining, due_only=True,
+                ))
+
+        pending = self.memory_log.get_pending_entries() if self.memory_log is not None else []
+        if not pending_cases and not pending:
+            return {"processed": 0, "skipped": "no pending entries"}
+
+        # Filter to entries within lookback window. TradingMemoryLog uses
+        # "date"; newer callers may provide "trade_date".
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        eligible = [
+            e for e in pending
+            if _entry_trade_date(e) and _entry_trade_date(e) >= cutoff
+        ][:max(0, max_per_run - len(pending_cases))]
+
+        processed = 0
+        cases_processed = 0
+        lessons_created = 0
+        errors = 0
+
+        for case in pending_cases:
+            try:
+                symbol = str(case.get("symbol") or "")
+                signal_date = str(case.get("signal_date") or "")
+                case_horizon = int(case.get("horizon_days") or horizon_days)
+                if not symbol or not signal_date:
+                    continue
+                stored_outcome = case.get("outcome_payload") or {}
+                outcome = stored_outcome if isinstance(stored_outcome.get("actual_return"), (int, float)) else await self.fetch_outcome(symbol, signal_date, case_horizon)
+                if outcome is None:
+                    continue
+                original_decision = _case_original_decision(case)
+                was_correct = self.evaluate_accuracy(original_decision, outcome["actual_return"])
+                outcome["was_correct"] = was_correct
+                if was_correct is None:
+                    # Neutral calls (WATCHLIST/HOLD/MONITOR) carry no directional
+                    # right/wrong, but a large move vs the benchmark is still
+                    # learning material (missed upside / validated caution).
+                    # Enrich with excess-over-benchmark so attribution can tell
+                    # a stock-specific move from a broad market swing.
+                    benchmark = await self.fetch_benchmark_return(signal_date, case_horizon)
+                    if benchmark is not None and isinstance(benchmark.get("actual_return"), (int, float)):
+                        outcome["benchmark_symbol"] = benchmark.get("benchmark_symbol")
+                        outcome["benchmark_return"] = benchmark.get("actual_return")
+                        outcome["excess_return"] = round(
+                            float(outcome["actual_return"]) - float(benchmark["actual_return"]), 4
+                        )
+                    # Sector beta decomposition: subtracting the same-window
+                    # industry index return isolates a stock-specific move from
+                    # a whole-sector swing (选股规避 vs 板块普跌). Best-effort; the
+                    # miner falls back to broad excess when this is absent.
+                    industry = str((case.get("snapshot_payload") or {}).get("industry") or "")
+                    if industry:
+                        sector = await self.fetch_industry_return(industry, signal_date, case_horizon)
+                        if sector is not None and isinstance(sector.get("actual_return"), (int, float)):
+                            outcome["industry_group"] = sector.get("industry_group")
+                            outcome["industry_index_symbol"] = sector.get("industry_index_symbol")
+                            outcome["industry_index_return"] = sector.get("actual_return")
+                            outcome["sector_excess_return"] = round(
+                                float(outcome["actual_return"]) - float(sector["actual_return"]), 4
+                            )
+                evidence = await self.fetch_post_signal_evidence(symbol, signal_date, case_horizon)
+                attribution = await self.generate_attribution(case, outcome, evidence)
+                lesson = self.maybe_create_strategy_lesson(case, attribution)
+                if lesson:
+                    lessons_created += 1
+                reflection_text = _reflection_text_from_attribution(attribution, outcome)
+                self.db.update_reflection_case(
+                    case["id"],
+                    status="reflected",
+                    outcome_payload=outcome,
+                    post_signal_evidence_payload=evidence,
+                    attribution_payload=attribution,
+                    lesson_payload=lesson,
+                )
+                self.db.save_reflection({
+                    "id": str(uuid.uuid4()),
+                    "run_id": case.get("source_run_id", ""),
+                    "ticker": symbol,
+                    "trade_date": signal_date,
+                    "original_decision": original_decision,
+                    "actual_return": outcome["actual_return"],
+                    "was_correct": was_correct,
+                    "reflection_text": reflection_text,
+                })
+                cases_processed += 1
+                processed += 1
+            except Exception as exc:
+                logger.warning("Reflection case failed for %s: %s", case.get("symbol"), exc)
+                errors += 1
+
+        for entry in eligible:
+            try:
+                ticker = entry.get("ticker", "")
+                trade_date = _entry_trade_date(entry)
+                if not ticker or not trade_date:
+                    continue
+
+                outcome = await self.fetch_outcome(ticker, trade_date, horizon_days)
+                if outcome is None:
+                    continue
+
+                original_decision = entry.get("decision", "")
+                was_correct = self.evaluate_accuracy(original_decision, outcome["actual_return"])
+                outcome["was_correct"] = was_correct
+
+                reflection_text = await self.generate_reflection(entry, outcome)
+
+                # Update memory log
+                self.memory_log.update_with_outcome(
+                    ticker=ticker,
+                    trade_date=trade_date,
+                    raw_return=outcome["actual_return"],
+                    alpha_return=outcome["actual_return"],  # simplified; no benchmark calc here
+                    holding_days=horizon_days,
+                    reflection=reflection_text,
+                )
+
+                # Save to DB
+                self.db.save_reflection({
+                    "id": str(uuid.uuid4()),
+                    "run_id": entry.get("run_id", ""),
+                    "ticker": ticker,
+                    "trade_date": trade_date,
+                    "original_decision": original_decision,
+                    "actual_return": outcome["actual_return"],
+                    "was_correct": was_correct,
+                    "reflection_text": reflection_text,
+                })
+                processed += 1
+            except Exception as exc:
+                logger.warning("Reflection failed for %s: %s", entry.get("ticker"), exc)
+                errors += 1
+
+        result = {
+            "processed": processed,
+            "cases_processed": cases_processed,
+            "legacy_memory_processed": processed - cases_processed,
+            "lessons_created": lessons_created,
+            "errors": errors,
+            "eligible": len(eligible) + len(pending_cases),
+            "total_pending": len(pending),
+            "total_pending_cases": len(pending_cases),
+        }
+        if processed > 0:
+            try:
+                self.db.save_artifact(
+                    artifact_id=str(uuid.uuid4()),
+                    run_id="",
+                    skill_id="reflection",
+                    artifact_type="reflection_report",
+                    title=f"反思批处理 {datetime.now(timezone.utc).date().isoformat()}",
+                    subtitle=f"处理 {processed} 条决策",
+                    subject_type="system",
+                    subject_id="reflection",
+                    subject_name="反思闭环",
+                    status="success" if errors == 0 else "partial",
+                    summary=f"处理 {processed} 条，生成经验 {lessons_created} 条，错误 {errors} 条",
+                    content_markdown=_render_reflection_batch_report(result),
+                    payload=result,
+                    tags=["reflection", "batch"],
+                )
+            except Exception as exc:
+                logger.warning("Failed to save reflection artifact: %s", exc)
+
+        # Prune old reflected cases so the table does not grow without bound
+        # (daily_pipeline creates many pending cases per run; only max_per_run
+        # are resolved per day). Best-effort: never let cleanup failure break
+        # the reflection batch.
+        try:
+            if hasattr(self.db, "prune_reflection_cases"):
+                pruned = self.db.prune_reflection_cases(older_than_days=90, status="reflected")
+                if pruned:
+                    result["pruned_cases"] = pruned
+                    logger.info("Pruned %d old reflected cases", pruned)
+        except Exception as exc:
+            logger.warning("Failed to prune reflection cases: %s", exc)
+
+        # Cross-symbol pattern mining — runs after reflection batch to discover
+        # statistically significant patterns across symbols. Best-effort: never
+        # let mining failure break the reflection batch.
+        if self.config.get("cross_symbol_miner_enabled", False):
+            try:
+                from tradingagents.core.cross_symbol_pattern_miner import CrossSymbolPatternMiner
+
+                miner = CrossSymbolPatternMiner(
+                    db=self.db,
+                    config=self.config,
+                )
+                mining_result = await miner.mine(
+                    lookback_days=self.config.get("cross_symbol_miner_lookback_days", 30),
+                    min_samples=self.config.get("cross_symbol_miner_min_samples", 5),
+                    min_lift=self.config.get("cross_symbol_miner_min_lift", 0.15),
+                )
+                result["cross_symbol_lessons_created"] = mining_result.get("lessons_created", 0)
+                result["cross_symbol_lessons_updated"] = mining_result.get("lessons_updated", 0)
+                result["cross_symbol_buckets"] = mining_result.get("significant_buckets", 0)
+                if mining_result.get("lessons_created") or mining_result.get("lessons_updated"):
+                    logger.info(
+                        "CrossSymbolMiner: %d new, %d updated lessons from %d significant buckets",
+                        mining_result.get("lessons_created", 0),
+                        mining_result.get("lessons_updated", 0),
+                        mining_result.get("significant_buckets", 0),
+                    )
+            except Exception as exc:
+                logger.warning("CrossSymbolMiner failed: %s", exc)
+
+        return result
+
+
+def _entry_trade_date(entry: dict[str, Any]) -> str:
+    return str(entry.get("trade_date") or entry.get("date") or "")
+
+
+def _render_reflection_batch_report(result: dict[str, Any]) -> str:
+    return (
+        "# Reflection Batch\n\n"
+        f"- Processed: {result.get('processed', 0)}\n"
+        f"- Cases processed: {result.get('cases_processed', 0)}\n"
+        f"- Lessons created: {result.get('lessons_created', 0)}\n"
+        f"- Errors: {result.get('errors', 0)}\n"
+        f"- Eligible: {result.get('eligible', 0)}\n"
+        f"- Total pending: {result.get('total_pending', 0)}\n"
+        f"- Total pending cases: {result.get('total_pending_cases', 0)}\n"
+    )
+
+
+def _case_original_decision(case: dict[str, Any]) -> str:
+    snapshot = case.get("snapshot_payload") or {}
+    return str(
+        snapshot.get("final_decision")
+        or snapshot.get("signal")
+        or snapshot.get("quant_decision")
+        or snapshot.get("decision")
+        or ""
+    )
+
+
+def _build_attribution_prompt(
+    case: dict[str, Any],
+    outcome: dict[str, Any],
+    post_signal_evidence: dict[str, Any],
+) -> str:
+    snapshot = case.get("snapshot_payload") or {}
+    benchmark = outcome.get("benchmark") or "000001.SH"
+    return f"""你是 A 股交易系统的因果反思 Agent。请判断本次结果是否应该更新未来策略。
+
+核心原则：
+- 只有【信号时点已经存在、且模型本应看到或处理的信息】才属于 ex_ante_miss。
+- 信号后才出现的新公告/新政策/新利空，属于 ex_post_shock，不应惩罚原选股逻辑。
+- 大盘或行业系统性变化属于 market_regime_shift（参照 benchmark {benchmark} 同期涨跌）。
+
+【关键边界】下方 "Signal-time snapshot" 是信号时点模型可见的全部信息。
+- 凡 snapshot 中已存在的风险标签/数据缺失/gate_reasons/risk_flags 未被处理 → ex_ante_miss
+- 凡仅出现在 "Post-signal evidence" 中的公告/事件 → ex_post_shock
+- 不要用自己的世界知识补充 snapshot 外的信息。
+
+A 股典型判定示例：
+- ex_ante_miss：信号日 snapshot 已有 data_coverage.flow=missing + risk_flags 含"问询函"，但 final_decision=BUY 且未降级
+- ex_post_shock：信号后新增「业绩预亏/立案调查/减持公告/停牌/ST 处理」
+- market_regime_shift：benchmark {benchmark} 同期跌幅 > 个股跌幅，且无个股级利空
+
+【中性决策特判】若 final_decision 为 WATCHLIST/HOLD/MONITOR（无方向），不要用 ex_ante_miss/noise，而是根据 outcome.excess_return（相对基准超额，若缺失则退而看绝对 actual_return）判定：
+- 超额 ≥ +5% → missed_upside：观望过于保守，漏掉正向机会，复核过滤/降级条件
+- 超额 ≤ -5% → validated_avoidance：观望规避得当，沉淀当时生效的风险标签
+- 波动不足 → inconclusive
+
+【T+1/涨跌停注意】A 股 T+1 且涨跌停限制下，理论收益≠实际可成交收益：
+- 若信号日一字涨停（开盘即涨停且全天未开板），实际无法买入，不应归因于选股逻辑
+- 若持仓日跌停无法卖出，实际收益劣于理论收益，属流动性冲击
+
+Reflection case:
+{json.dumps({k: case.get(k) for k in ['symbol', 'signal_date', 'reflection_scope', 'eligible_for_strategy_learning']}, ensure_ascii=False)}
+
+Signal-time snapshot（信号时点已知信息，边界严格）:
+{json.dumps(snapshot, ensure_ascii=False)[:5000]}
+
+Outcome（理论收益，含 benchmark 与涨跌停标志）:
+{json.dumps(outcome, ensure_ascii=False)}
+
+Post-signal evidence（信号后新增信息，仅用于 ex_post_shock 判定）:
+{json.dumps(post_signal_evidence, ensure_ascii=False)[:3000]}
+
+请输出严格 JSON：
+{{
+  "attribution": "ex_ante_miss|ex_post_shock|market_regime_shift|noise|inconclusive|missed_upside|validated_avoidance",
+  "confidence": "low|medium|high",
+  "was_in_original_inputs": true,
+  "missed_evidence": ["..."],
+  "new_information": ["..."],
+  "strategy_lesson": "...",
+  "risk_monitor_lesson": "...",
+  "suggested_adjustment": "可执行规则，如：quant_score<70 且 data_coverage.flow=missing 时降级为 WATCHLIST"
+}}
+"""
+
+
+def _parse_attribution_payload(text: str) -> dict[str, Any]:
+    try:
+        stripped = text.strip()
+        if not stripped.startswith("{"):
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start >= 0 and end > start:
+                stripped = stripped[start : end + 1]
+        parsed = json.loads(stripped)
+    except Exception:
+        return {
+            "attribution": "inconclusive",
+            "confidence": "low",
+            "was_in_original_inputs": False,
+            "missed_evidence": [],
+            "new_information": [],
+            "strategy_lesson": "",
+            "risk_monitor_lesson": "",
+            "suggested_adjustment": "",
+        }
+    attribution = str(parsed.get("attribution") or "inconclusive")
+    if attribution not in {"ex_ante_miss", "ex_post_shock", "market_regime_shift", "noise", "inconclusive", "missed_upside", "validated_avoidance"}:
+        attribution = "inconclusive"
+    confidence = str(parsed.get("confidence") or "low")
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    parsed["attribution"] = attribution
+    parsed["confidence"] = confidence
+    parsed["was_in_original_inputs"] = bool(parsed.get("was_in_original_inputs"))
+    parsed["missed_evidence"] = parsed.get("missed_evidence") if isinstance(parsed.get("missed_evidence"), list) else []
+    parsed["new_information"] = parsed.get("new_information") if isinstance(parsed.get("new_information"), list) else []
+    return parsed
+
+
+def _heuristic_attribution(
+    case: dict[str, Any],
+    outcome: dict[str, Any],
+    post_signal_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    if outcome.get("was_correct") is None:
+        # Neutral decision (WATCHLIST/HOLD/MONITOR): no directional right/wrong,
+        # so route to the opportunity-cost / risk-validation track instead of
+        # the down-move-centric logic below.
+        return _neutral_attribution(case, outcome, post_signal_evidence)
+    actual_return = float(outcome.get("actual_return") or 0)
+    was_correct = bool(outcome.get("was_correct"))
+    snapshot = case.get("snapshot_payload") or {}
+    announcements = post_signal_evidence.get("announcements") or []
+    data_coverage = snapshot.get("data_coverage") or (snapshot.get("candidate") or {}).get("data_coverage") or {}
+    missing = [
+        key for key, value in data_coverage.items()
+        if str(value).lower() == "missing"
+    ] if isinstance(data_coverage, dict) else []
+    gate_reasons = snapshot.get("gate_reasons") or snapshot.get("quant_gate_reasons") or []
+    risk_flags = snapshot.get("risk_flags") or []
+    if was_correct:
+        attribution = "noise"
+        confidence = "medium"
+        lesson = "本次结果方向正确，无需调整策略。"
+    elif announcements:
+        attribution = "ex_post_shock"
+        confidence = "medium"
+        lesson = "信号后出现新增风险信息，应加强持仓后的风险监控，而不是惩罚信号时点判断。"
+    elif actual_return <= -0.03 and (missing or gate_reasons or risk_flags):
+        attribution = "ex_ante_miss"
+        confidence = "medium"
+        lesson = "信号时点已有数据缺失或风险标签，但最终决策未充分降级。"
+    elif actual_return <= -0.05:
+        attribution = "market_regime_shift"
+        confidence = "low"
+        lesson = "下跌幅度较大但缺少明确个股原因，先按市场环境变化处理。"
+    else:
+        attribution = "inconclusive"
+        confidence = "low"
+        lesson = "结果偏差较小或证据不足，不进入策略学习。"
+    return {
+        "attribution": attribution,
+        "confidence": confidence,
+        "was_in_original_inputs": attribution == "ex_ante_miss",
+        "missed_evidence": [*missing, *[str(x) for x in gate_reasons], *[str(x) for x in risk_flags]],
+        "new_information": [str(item.get("title") or item) for item in announcements[:5]] if isinstance(announcements, list) else [],
+        "strategy_lesson": lesson if attribution == "ex_ante_miss" else "",
+        "risk_monitor_lesson": lesson if attribution in {"ex_post_shock", "market_regime_shift"} else "",
+        "suggested_adjustment": "类似候选必须解释数据缺失和已知风险是否足以否定量化信号。",
+    }
+
+
+_NEUTRAL_MOVE_THRESHOLD = 0.05
+
+
+def _neutral_attribution(
+    case: dict[str, Any],
+    outcome: dict[str, Any],
+    post_signal_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Attribute neutral decisions (WATCHLIST/HOLD/MONITOR) by post-signal move.
+
+    Neutral calls have no directional right/wrong, so they stay out of the
+    win-rate gate. But a large move relative to the benchmark still teaches us
+    something: a strong outperformance means the filter may have been too
+    conservative (``missed_upside``); a strong underperformance means the caution
+    was validated (``validated_avoidance``). Excess-over-benchmark is preferred;
+    absolute return is a low-confidence fallback when the benchmark is missing.
+    """
+    actual_return = float(outcome.get("actual_return") or 0)
+    excess = outcome.get("excess_return")
+    has_excess = isinstance(excess, (int, float))
+    metric = float(excess) if has_excess else actual_return
+    confidence = "medium" if has_excess else "low"
+    basis = "excess_over_benchmark" if has_excess else "absolute_return"
+
+    snapshot = case.get("snapshot_payload") or {}
+    gate_reasons = snapshot.get("gate_reasons") or snapshot.get("quant_gate_reasons") or []
+    risk_flags = snapshot.get("risk_flags") or []
+    data_coverage = snapshot.get("data_coverage") or (snapshot.get("candidate") or {}).get("data_coverage") or {}
+    missing = [
+        key for key, value in data_coverage.items()
+        if str(value).lower() == "missing"
+    ] if isinstance(data_coverage, dict) else []
+
+    if metric >= _NEUTRAL_MOVE_THRESHOLD:
+        attribution = "missed_upside"
+        lesson = (
+            "中性观望后个股显著跑赢基准，复核当时的过滤/降级条件是否过于保守，"
+            "确认是否漏掉了可支持进攻的正向信号。"
+        )
+        suggested = "回看该候选被降级为观望的 gate_reasons，评估相关阈值是否需要放宽。"
+    elif metric <= -_NEUTRAL_MOVE_THRESHOLD:
+        attribution = "validated_avoidance"
+        lesson = (
+            "中性观望后个股显著跑输基准，观望判断得到验证，记录当时起作用的风险标签，"
+            "以强化同类信号的规避逻辑。"
+        )
+        suggested = "沉淀本次生效的风险标签/gate_reasons，作为同类候选优先降级的依据。"
+    else:
+        attribution = "inconclusive"
+        confidence = "low"
+        lesson = ""
+        suggested = ""
+
+    return {
+        "attribution": attribution,
+        "confidence": confidence,
+        "was_in_original_inputs": False,
+        "missed_evidence": [*missing, *[str(x) for x in gate_reasons], *[str(x) for x in risk_flags]],
+        "new_information": [],
+        "strategy_lesson": lesson if attribution == "missed_upside" else "",
+        "risk_monitor_lesson": lesson if attribution == "validated_avoidance" else "",
+        "suggested_adjustment": suggested,
+        "basis": basis,
+    }
+
+
+def _reflection_text_from_attribution(attribution: dict[str, Any], outcome: dict[str, Any]) -> str:
+    label = attribution.get("attribution", "inconclusive")
+    ret = float(outcome.get("actual_return") or 0)
+    excess = outcome.get("excess_return")
+    excess_str = f"，超额 {float(excess):.2%}" if isinstance(excess, (int, float)) else ""
+    if label == "ex_ante_miss":
+        return f"归因为信号时点误判，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。{attribution.get('strategy_lesson') or '应复核当时已有证据。'}"
+    if label == "ex_post_shock":
+        return f"归因为信号后新增信息冲击，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。{attribution.get('risk_monitor_lesson') or '应加强持仓后风险监控。'}"
+    if label == "market_regime_shift":
+        return f"归因为市场或行业环境变化，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。"
+    if label == "missed_upside":
+        return f"中性观望后显著跑赢，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}{excess_str}，疑似过滤过严错过机会。{attribution.get('strategy_lesson') or ''}".rstrip()
+    if label == "validated_avoidance":
+        return f"中性观望后显著跑输，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}{excess_str}，观望判断得到验证。{attribution.get('risk_monitor_lesson') or ''}".rstrip()
+    if label == "noise":
+        return f"结果未显示需要调整策略，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。"
+    return f"证据不足，暂不进入策略学习，{outcome.get('horizon_days', 5)}日收益 {ret:.2%}。"

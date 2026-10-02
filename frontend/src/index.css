@@ -1,0 +1,202 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ui-canvas: 244 245 242;
+  --ui-panel: 255 255 255;
+  --ui-subtle: 248 250 248;
+  --ui-hover: 237 242 237;
+  --ui-line: 223 230 223;
+  --ui-strong: 203 216 206;
+  --ui-ink: 31 41 34;
+  --ui-body: 64 80 71;
+  --ui-muted: 104 119 109;
+  --ui-faint: 130 144 135;
+  --ui-accent: 8 125 104;
+  --ui-accent-soft: 225 244 234;
+  --ui-on-accent: 255 255 255;
+  --ui-success: 19 122 75;
+  --ui-warning: 154 91 0;
+  --ui-on-warning: 255 255 255;
+  --ui-danger: 180 35 48;
+  --ui-info: 9 105 162;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --ui-canvas: 21 26 24;
+    --ui-panel: 32 38 34;
+    --ui-subtle: 25 31 28;
+    --ui-hover: 49 58 52;
+    --ui-line: 57 69 61;
+    --ui-strong: 83 99 87;
+    --ui-ink: 244 241 234;
+    --ui-body: 216 210 196;
+    --ui-muted: 170 180 169;
+    --ui-faint: 139 153 143;
+    --ui-accent: 45 212 191;
+    --ui-accent-soft: 20 62 54;
+    --ui-on-accent: 15 39 34;
+    --ui-success: 100 217 160;
+    --ui-warning: 246 195 110;
+    --ui-on-warning: 31 41 34;
+    --ui-danger: 251 113 133;
+    --ui-info: 125 211 252;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ui-canvas: 21 26 24;
+  --ui-panel: 32 38 34;
+  --ui-subtle: 25 31 28;
+  --ui-hover: 49 58 52;
+  --ui-line: 57 69 61;
+  --ui-strong: 83 99 87;
+  --ui-ink: 244 241 234;
+  --ui-body: 216 210 196;
+  --ui-muted: 170 180 169;
+  --ui-faint: 139 153 143;
+  --ui-accent: 45 212 191;
+  --ui-accent-soft: 20 62 54;
+  --ui-on-accent: 15 39 34;
+  --ui-success: 100 217 160;
+  --ui-warning: 246 195 110;
+  --ui-on-warning: 31 41 34;
+  --ui-danger: 251 113 133;
+  --ui-info: 125 211 252;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: rgb(var(--ui-canvas));
+  color: rgb(var(--ui-ink));
+  font-feature-settings: "tnum" 1, "ss01" 1;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+/* Reports use the same readable palette as the rest of the workspace. */
+.prose-invert {
+  --tw-prose-body: rgb(var(--ui-body));
+  --tw-prose-headings: rgb(var(--ui-ink));
+  --tw-prose-bold: rgb(var(--ui-ink));
+  --tw-prose-links: rgb(var(--ui-accent));
+  --tw-prose-code: rgb(var(--ui-ink));
+  --tw-prose-quotes: rgb(var(--ui-muted));
+  --tw-prose-quote-borders: rgb(var(--ui-strong));
+  --tw-prose-th-borders: rgb(var(--ui-line));
+  --tw-prose-td-borders: rgb(var(--ui-line));
+}
+
+.prose table {
+  font-size: 0.8rem;
+}
+
+.prose th {
+  background-color: rgb(var(--ui-subtle));
+  font-weight: 600;
+}
+
+.prose td,
+.prose th {
+  padding: 0.4rem 0.6rem;
+}
+
+.prose code {
+  background-color: rgb(var(--ui-subtle));
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+
+.prose code::before,
+.prose code::after {
+  content: "";
+}
+
+.prose pre {
+  background-color: rgb(var(--ui-subtle));
+  border: 1px solid rgb(var(--ui-line));
+}
+
+.prose hr {
+  border-color: rgb(var(--ui-line));
+}
+
+.prose strong {
+  color: rgb(var(--ui-ink));
+}
+
+.agent-workspace .agent-card {
+  border: 1px solid rgb(var(--ui-line));
+  border-radius: 8px;
+  background: rgb(var(--ui-panel));
+}
+
+.agent-workspace .agent-section-title {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgb(var(--ui-ink));
+}
+
+.agent-workspace .agent-thread {
+  position: relative;
+  isolation: isolate;
+}
+
+.agent-workspace .agent-thread::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 210px;
+  height: 150px;
+  background-image: radial-gradient(circle, rgb(var(--ui-accent) / 0.25) 0.8px, transparent 1px);
+  background-size: 14px 14px;
+  mask-image: linear-gradient(130deg, transparent 12%, #000 65%, transparent 100%);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.agent-workspace .agent-prose {
+  color: rgb(var(--ui-body));
+  font-size: 14px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.agent-workspace .agent-prose :is(p, ul, ol) {
+  margin-top: 0.7em;
+  margin-bottom: 0.7em;
+}
+
+.agent-workspace .agent-prose :is(h1, h2, h3, h4, strong) {
+  color: rgb(var(--ui-ink));
+}
+
+.agent-workspace .agent-prose a {
+  color: rgb(var(--ui-accent));
+}
+
+.agent-workspace .agent-prose :is(code, pre, th) {
+  color: rgb(var(--ui-ink));
+  background: rgb(var(--ui-hover));
+}

@@ -1,5 +1,29 @@
 import logging
 
+from .akshare_announcements import get_announcements as get_akshare_announcements
+from .akshare_cn_specific import (
+    get_lhb_detail as get_akshare_lhb_detail,
+    get_limit_status as get_akshare_limit_status,
+    get_margin_balance as get_akshare_margin_balance,
+    get_market_structure_snapshot as get_akshare_market_structure_snapshot,
+    get_northbound_flow as get_akshare_northbound_flow,
+    get_theme_heat as get_akshare_theme_heat,
+    get_unlock_schedule as get_akshare_unlock_schedule,
+)
+
+# AKShare vendor (A-share / CN market)
+from .akshare_common import AKShareError
+from .akshare_macro import get_macro_calendar as get_akshare_macro_calendar
+from .akshare_news import (
+    get_global_news as get_akshare_global_news,
+    get_insider_transactions as get_akshare_insider_transactions,
+    get_news as get_akshare_news,
+)
+from .akshare_social import get_social_sentiment as get_akshare_social_sentiment
+from .akshare_stock import (
+    get_indicator as get_akshare_indicator,
+    get_stock as get_akshare_stock,
+)
 from .alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
     get_cashflow as get_alpha_vantage_cashflow,
@@ -19,6 +43,20 @@ from .errors import (
 )
 from .fred import get_macro_data as get_fred_macro_data
 from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
+from .symbol_utils import detect_market
+
+# TuShare vendor (A-share fundamentals)
+from .tushare_common import TuShareRateLimitError
+from .tushare_fundamentals import (
+    get_balance_sheet as get_tushare_balance_sheet,
+    get_cashflow as get_tushare_cashflow,
+    get_fundamentals as get_tushare_fundamentals,
+    get_income_statement as get_tushare_income_statement,
+)
+from .tushare_stock import (
+    get_indicator as get_tushare_indicator,
+    get_stock as get_tushare_stock,
+)
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -67,6 +105,31 @@ TOOLS_CATEGORIES = {
         "description": "Macroeconomic indicators (rates, inflation, labor, growth)",
         "tools": [
             "get_macro_indicators",
+            "get_macro_calendar",
+        ]
+    },
+    "social_sentiment": {
+        "description": "Social / retail-investor sentiment (A-share only)",
+        "tools": [
+            "get_social_sentiment",
+        ]
+    },
+    "company_announcements": {
+        "description": "Official company filings / announcements",
+        "tools": [
+            "get_announcements",
+        ]
+    },
+    "cn_market_specific": {
+        "description": "A-share microstructure: limit-up/down, northbound, margin, unlock",
+        "tools": [
+            "get_market_structure_snapshot",
+            "get_theme_heat",
+            "get_lhb_detail",
+            "get_limit_status",
+            "get_northbound_flow",
+            "get_margin_balance",
+            "get_unlock_schedule",
         ]
     },
     "prediction_markets": {
@@ -82,6 +145,8 @@ VENDOR_LIST = [
     "fred",
     "polymarket",
     "alpha_vantage",
+    "akshare",
+    "tushare",
 ]
 
 # Optional enrichment categories. These add macro/event context to the news
@@ -97,45 +162,89 @@ VENDOR_METHODS = {
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
+        "akshare": get_akshare_stock,
+        "tushare": get_tushare_stock,
     },
     # technical_indicators
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+        "akshare": get_akshare_indicator,
+        "tushare": get_tushare_indicator,
     },
     # fundamental_data
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        "tushare": get_tushare_fundamentals,
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        "tushare": get_tushare_balance_sheet,
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
+        "tushare": get_tushare_cashflow,
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+        "tushare": get_tushare_income_statement,
     },
     # news_data
     "get_news": {
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
+        "akshare": get_akshare_news,
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
+        "akshare": get_akshare_global_news,
     },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        "akshare": get_akshare_insider_transactions,
     },
     # macro_data
     "get_macro_indicators": {
         "fred": get_fred_macro_data,
+    },
+    "get_macro_calendar": {
+        "akshare": get_akshare_macro_calendar,
+    },
+    # social_sentiment (A-share)
+    "get_social_sentiment": {
+        "akshare": get_akshare_social_sentiment,
+    },
+    # company_announcements (A-share)
+    "get_announcements": {
+        "akshare": get_akshare_announcements,
+    },
+    # cn_market_specific (A-share)
+    "get_limit_status": {
+        "akshare": get_akshare_limit_status,
+    },
+    "get_northbound_flow": {
+        "akshare": get_akshare_northbound_flow,
+    },
+    "get_margin_balance": {
+        "akshare": get_akshare_margin_balance,
+    },
+    "get_unlock_schedule": {
+        "akshare": get_akshare_unlock_schedule,
+    },
+    "get_market_structure_snapshot": {
+        "akshare": get_akshare_market_structure_snapshot,
+    },
+    "get_theme_heat": {
+        "akshare": get_akshare_theme_heat,
+    },
+    "get_lhb_detail": {
+        "akshare": get_akshare_lhb_detail,
     },
     # prediction_markets
     "get_prediction_markets": {
@@ -150,9 +259,28 @@ def get_category_for_method(method: str) -> str:
             return category
     raise ValueError(f"Method '{method}' not found in any category")
 
-def get_vendor(category: str, method: str = None) -> str:
+def _resolve_vendor_value(value, market: str) -> str | None:
+    """Resolve a vendor-config value against the given market.
+
+    Supports three forms:
+      - string: applied to all markets (back-compat)
+      - dict keyed by market: ``{"us": "yfinance", "cn_a": "akshare"}``
+      - None: no configured vendor for this market
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get(market)
+    return None
+
+
+def get_vendor(category: str, method: str | None = None, market: str = "us") -> str | None:
     """Get the configured vendor for a data category or specific tool method.
+
     Tool-level configuration takes precedence over category-level.
+    Values may be plain strings (back-compat) or market-aware dicts.
     """
     config = get_config()
 
@@ -160,19 +288,68 @@ def get_vendor(category: str, method: str = None) -> str:
     if method:
         tool_vendors = config.get("tool_vendors", {})
         if method in tool_vendors:
-            return tool_vendors[method]
+            resolved = _resolve_vendor_value(tool_vendors[method], market)
+            if resolved is not None:
+                return resolved
 
     # Fall back to category-level configuration
-    return config.get("data_vendors", {}).get(category, "default")
+    data_vendors = config.get("data_vendors", {})
+    if category not in data_vendors:
+        return None
+    cat_value = data_vendors.get(category)
+    resolved = _resolve_vendor_value(cat_value, market)
+    return resolved or "default"
+
+
+# Methods whose first positional argument is a ticker (used for market detection)
+_TICKER_FIRST_METHODS = {
+    "get_stock_data", "get_indicators", "get_fundamentals",
+    "get_balance_sheet", "get_cashflow", "get_income_statement",
+    "get_news", "get_insider_transactions", "get_social_sentiment",
+    "get_announcements", "get_limit_status", "get_margin_balance",
+    "get_unlock_schedule", "get_market_structure_snapshot",
+    "get_theme_heat", "get_lhb_detail",
+}
+
+# Rate-limit exceptions from CN vendors (caught during fallback chain)
+_FALLBACK_EXCEPTIONS: tuple = (AKShareError, TuShareRateLimitError)
+
+# Vendors that only serve US market data — excluded when market == "cn_a"
+_US_ONLY_VENDORS = {"yfinance"}
+
+
+def _infer_market(method: str, args: tuple, explicit_market: str | None = None) -> str:
+    """Infer the target market for a tool call.
+
+    Ticker-first methods infer from their first positional argument. CN-only
+    tools without a ticker can pass ``market="cn_a"`` explicitly; everything
+    else falls back to ``config["default_market"]``.
+    """
+    config = get_config()
+    default_market = config.get("default_market", "us")
+    if explicit_market:
+        return explicit_market
+    if method in _TICKER_FIRST_METHODS and args:
+        first = args[0]
+        if isinstance(first, str) and first:
+            try:
+                return detect_market(first)
+            except Exception:
+                return default_market
+    return default_market
+
 
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
-    category = get_category_for_method(method)
-    vendor_config = get_vendor(category, method)
-    primary_vendors = [v.strip() for v in vendor_config.split(',')]
+    explicit_market = kwargs.pop("market", None)
 
     if method not in VENDOR_METHODS:
         raise ValueError(f"Method '{method}' not supported")
+
+    market = _infer_market(method, args, explicit_market)
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method, market=market) or "default"
+    primary_vendors = [v.strip() for v in vendor_config.split(',')]
 
     all_available_vendors = list(VENDOR_METHODS[method].keys())
 
@@ -192,8 +369,15 @@ def route_to_vendor(method: str, *args, **kwargs):
     else:
         vendor_chain = all_available_vendors
 
+    # Exclude US-only vendors when analyzing CN market tickers
+    if market == "cn_a":
+        vendor_chain = [v for v in vendor_chain if v not in _US_ONLY_VENDORS]
+        if not vendor_chain:
+            vendor_chain = [v for v in all_available_vendors if v not in _US_ONLY_VENDORS]
+
     last_no_data: NoMarketDataError | None = None
     first_error: Exception | None = None
+    saw_rate_limit = False
     for vendor in vendor_chain:
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
@@ -201,6 +385,11 @@ def route_to_vendor(method: str, *args, **kwargs):
         try:
             return impl_func(*args, **kwargs)
         except VendorRateLimitError:
+            saw_rate_limit = True
+            logger.warning("Vendor %r rate-limited for %s; trying next vendor.", vendor, method)
+            continue
+        except _FALLBACK_EXCEPTIONS:
+            saw_rate_limit = True
             logger.warning("Vendor %r rate-limited for %s; trying next vendor.", vendor, method)
             continue
         except VendorNotConfiguredError as e:
@@ -258,5 +447,8 @@ def route_to_vendor(method: str, *args, **kwargs):
                 f"({first_error}). Proceed without it; do not fabricate values."
             )
         raise first_error
+
+    if saw_rate_limit:
+        raise RuntimeError(f"All vendors rate-limited for '{method}'")
 
     raise RuntimeError(f"No available vendor for '{method}'")

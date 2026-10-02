@@ -1,0 +1,707 @@
+"""Integration tests for API routes using FastAPI TestClient."""
+
+import pytest
+from fastapi.testclient import TestClient
+
+from tradingagents.api.app import create_app
+from tradingagents.core.persistence import Database
+from tradingagents.core.run_manager import RunManager, RunStatus
+from tradingagents.default_config import DEFAULT_CONFIG
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(tmp_path / "api-routes.db"))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+    app = create_app()
+    with TestClient(app) as c:
+        yield c
+
+
+def test_health(client):
+    res = client.get("/api/v1/health")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["status"] == "ok"
+    assert payload["service"] == "tradingagents-api"
+    assert payload["stockmanager_mcp"]["enabled"] is False
+    assert payload["stockmanager_mcp"]["connected"] is False
+
+
+def test_list_skills(client):
+    res = client.get("/api/v1/skills")
+    assert res.status_code == 200
+    skills = res.json()
+    assert len(skills) >= 1
+    assert "stock_analysis" in {skill["id"] for skill in skills}
+
+
+def test_get_skill_schema(client):
+    res = client.get("/api/v1/skills/stock_analysis/schema")
+    assert res.status_code == 200
+    schema = res.json()
+    assert "properties" in schema
+    assert "ticker" in schema["properties"]
+
+
+def test_get_skill_schema_not_found(client):
+    res = client.get("/api/v1/skills/nonexistent/schema")
+    assert res.status_code == 404
+
+
+def test_list_runs(client):
+    res = client.get("/api/v1/runs")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+
+def test_get_config(client):
+    res = client.get("/api/v1/config")
+    assert res.status_code == 200
+    config = res.json()
+    assert "llm_provider" in config
+    assert "deep_think_llm" in config
+    assert "agent_model" in config
+    assert "stockmanager_mcp_url" in config
+
+
+def test_deepseek_catalog_offers_agent_flash_and_pro(client):
+    response = client.get("/api/v1/config/providers")
+    assert response.status_code == 200
+    deepseek = next(item for item in response.json() if item["id"] == "deepseek")
+    quick = {item["value"] for item in deepseek["quick_models"]}
+    assert {"deepseek-flash", "deepseek-v4-pro"} <= quick
+
+
+def test_get_trading_time_context(client):
+    res = client.get("/api/v1/trading-time?market=us")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["market"] == "us"
+    assert payload["market_asof_date"]
+    assert payload["decision_target_date"]
+    assert payload["info_cutoff"]
+    assert payload["data_policy"]["price"] == "asof_market_close"
+
+
+def test_update_config(client):
+    res = client.put(
+        "/api/v1/config",
+        json={"max_debate_rounds": 3},
+    )
+    assert res.status_code == 200
+    assert res.json()["max_debate_rounds"] == 3
+
+
+def test_update_config_toggles_adaptive_alpha(client):
+    # Defaults off, and the toggle round-trips through the runtime config.
+    assert client.get("/api/v1/config").json()["adaptive_alpha_enabled"] is False
+    res = client.put(
+        "/api/v1/config",
+        json={"adaptive_alpha_enabled": True},
+    )
+    assert res.status_code == 200
+    assert res.json()["adaptive_alpha_enabled"] is True
+    assert client.get("/api/v1/config").json()["adaptive_alpha_enabled"] is True
+
+
+def test_update_config_enables_safe_top1_deep_analysis(client):
+    res = client.put(
+        "/api/v1/config",
+        json={
+            "daily_pipeline_deep_analysis_enabled": True,
+            "daily_pipeline_deep_analysis_limit": 1,
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["daily_pipeline_deep_analysis_enabled"] is True
+    assert res.json()["daily_pipeline_deep_analysis_limit"] == 1
+    assert client.put(
+        "/api/v1/config",
+        json={"daily_pipeline_deep_analysis_limit": -1},
+    ).status_code == 422
+
+
+def test_update_config_allows_backend_url_reset(client):
+    res = client.put(
+        "/api/v1/config",
+        json={"backend_url": "https://example.invalid/v1"},
+    )
+    assert res.status_code == 200
+    assert res.json()["backend_url"] == "https://example.invalid/v1"
+
+    res = client.put(
+        "/api/v1/config",
+        json={"backend_url": None},
+    )
+    assert res.status_code == 200
+    assert res.json()["backend_url"] is None
+
+
+def test_update_config_persists_across_app_restart(tmp_path, monkeypatch):
+    db_path = tmp_path / "persisted-config.db"
+    monkeypatch.setenv("TRADINGAGENTS_APP_DB", str(db_path))
+    monkeypatch.setitem(DEFAULT_CONFIG, "stockmanager_mcp_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "scheduler_enabled", False)
+    monkeypatch.setitem(DEFAULT_CONFIG, "ticker_name_backfill_enabled", False)
+
+    app = create_app()
+    with TestClient(app) as c:
+        res = c.put(
+            "/api/v1/config",
+            json={
+                "llm_provider": "deepseek",
+                "quick_think_llm": "deepseek-v4-flash",
+                "deep_think_llm": "deepseek-v4-pro",
+                "agent_model": "deepseek-v4-pro",
+                "backend_url": None,
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["llm_provider"] == "deepseek"
+
+    restarted = create_app()
+    with TestClient(restarted) as c:
+        res = c.get("/api/v1/config")
+        assert res.status_code == 200
+        payload = res.json()
+        assert payload["llm_provider"] == "deepseek"
+        assert payload["quick_think_llm"] == "deepseek-v4-flash"
+        assert payload["deep_think_llm"] == "deepseek-v4-pro"
+        assert payload["agent_model"] == "deepseek-v4-pro"
+
+
+def test_run_manager_reads_persisted_runs(tmp_path):
+    db = Database(tmp_path / "runs.db")
+    db.save_run("run-1", "market_scanner", {"limit": 3}, "pending")
+    db.update_run_status(
+        "run-1",
+        "completed",
+        result={"status": "success"},
+        started_at="2026-06-30T08:30:00+00:00",
+        completed_at="2026-06-30T08:31:00+00:00",
+    )
+
+    manager = RunManager(db=db)
+    runs = manager.list_runs()
+    assert [run.id for run in runs] == ["run-1"]
+    assert runs[0].status is RunStatus.COMPLETED
+    assert runs[0].params == {"limit": 3}
+    assert runs[0].result == {"status": "success"}
+
+    run = manager.get_run("run-1")
+    assert run is not None
+    assert run.skill_id == "market_scanner"
+
+
+def test_profile_get_and_update(client):
+    res = client.get("/api/v1/profile")
+    assert res.status_code == 200
+    assert res.json()["investment_style"] == "long_term"
+
+    res = client.put(
+        "/api/v1/profile",
+        json={
+            "investment_style": "short_term",
+            "risk_tolerance": "high",
+            "sector_prefs": ["新能源"],
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["investment_style"] == "short_term"
+    assert payload["risk_tolerance"] == "high"
+    assert payload["sector_prefs"] == ["新能源"]
+
+
+def test_holdings_crud(client):
+    res = client.put(
+        "/api/v1/holdings/600519.SH",
+        json={
+            "symbol": "600519.SH",
+            "quantity": 10,
+            "avg_cost": 1500,
+            "current_price": 1600,
+            "notes": "core",
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["symbol"] == "600519.SH"
+
+    res = client.get("/api/v1/holdings")
+    assert res.status_code == 200
+    assert len(res.json()) == 1
+
+    res = client.delete("/api/v1/holdings/600519.SH")
+    assert res.status_code == 200
+
+    res = client.get("/api/v1/holdings")
+    assert res.status_code == 200
+    assert res.json() == []
+
+
+def test_holdings_adjust_add_recomputes_avg_cost(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+    })
+    # 加仓 5 @ 1800 -> qty 15, avg = (10*1500 + 5*1800)/15 = 1600, price->1800
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "add", "quantity": 5, "price": 1800,
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["action"] == "add"
+    assert body["holding"]["quantity"] == 15
+    assert body["holding"]["avg_cost"] == 1600
+    assert body["holding"]["current_price"] == 1800
+    assert body["realized_pnl"] is None
+    assert body["closed"] is False
+
+
+def test_holdings_adjust_is_idempotent(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 200, "avg_cost": 1500, "current_price": 1600,
+    })
+    request = {
+        "action": "reduce", "quantity": 100, "price": 1700,
+        "idempotency_key": "test-reduce-600519-001",
+    }
+    first = client.post("/api/v1/holdings/600519.SH/adjust", json=request)
+    replay = client.post("/api/v1/holdings/600519.SH/adjust", json=request)
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["holding"]["quantity"] == 100
+    assert replay.json()["holding"]["quantity"] == 100
+    assert replay.json()["idempotent_replay"] is True
+    assert len(client.app.state.db.list_trade_executions(symbol="600519.SH")) == 1
+
+
+def test_holdings_adjust_reduce_realizes_pnl(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 300, "avg_cost": 1500, "current_price": 1600,
+    })
+    # 减仓 100 @ 1800 -> qty 200, avg unchanged 1500, realized = 100*(1800-1500)=30000
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 100, "price": 1800,
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["holding"]["quantity"] == 200
+    assert body["holding"]["avg_cost"] == 1500
+    assert body["realized_pnl"] == 30000
+    assert body["closed"] is False
+
+
+def test_holdings_adjust_rejects_50_share_partial_sell_from_100(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 100, "avg_cost": 1500, "current_price": 1600,
+    })
+
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 50, "price": 1600,
+    })
+
+    assert res.status_code == 400
+    assert "不支持部分减仓" in res.json()["detail"]
+    assert client.get("/api/v1/holdings").json()[0]["quantity"] == 100
+
+
+def test_holdings_adjust_reduce_full_close_and_oversell(client):
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+    })
+    # 清仓: sell all 10 @ 1700 -> realized = 10*(1700-1500)=2000, holding deleted
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 10, "price": 1700,
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["holding"] is None
+    assert body["closed"] is True
+    assert body["realized_pnl"] == 2000
+    assert client.get("/api/v1/holdings").json() == []
+
+    # oversell rejected (re-seed first)
+    client.put("/api/v1/holdings/600519.SH", json={
+        "symbol": "600519.SH", "quantity": 10, "avg_cost": 1500, "current_price": 1600,
+    })
+    res = client.post("/api/v1/holdings/600519.SH/adjust", json={
+        "action": "reduce", "quantity": 11, "price": 1700,
+    })
+    assert res.status_code == 400
+
+
+def test_holdings_include_latest_stock_analysis(client):
+    res = client.put(
+        "/api/v1/holdings/600519.SH",
+        json={
+            "symbol": "600519.SH",
+            "quantity": 10,
+            "avg_cost": 1500,
+            "current_price": 1600,
+            "notes": "core",
+        },
+    )
+    assert res.status_code == 200
+
+    client.app.state.db.save_report(
+        report_id="report-holding-1",
+        run_id="run-stock-analysis-1",
+        ticker="600519.SH",
+        ticker_name="贵州茅台",
+        rating="BUY",
+        content="维持买入。基本面稳定，风险可控。",
+        path=None,
+    )
+
+    res = client.get("/api/v1/holdings")
+    assert res.status_code == 200
+    analysis = res.json()[0]["latest_analysis"]
+    assert analysis["rating"] == "BUY"
+    assert analysis["date"]
+    assert analysis["artifact_id"] == "report-holding-1"
+    assert analysis["run_id"] == "run-stock-analysis-1"
+
+
+def test_holdings_accept_name_and_auto_latest_close(client, monkeypatch):
+    async def fake_latest_close(symbol, config):
+        return {"symbol": symbol, "close": 1688.5, "trade_date": "2026-07-02", "source": "test"}
+
+    monkeypatch.setattr("tradingagents.api.routes.portfolio.latest_close", fake_latest_close)
+
+    res = client.put(
+        "/api/v1/holdings/贵州茅台",
+        json={
+            "symbol": "贵州茅台",
+            "quantity": 10,
+            "avg_cost": 1500,
+            "current_price": None,
+            "notes": "core",
+        },
+    )
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["symbol"] == "600519.SH"
+    assert payload["current_price"] == 1688.5
+
+
+def test_holdings_refresh_prices_updates_current_price(client, monkeypatch):
+    async def fake_latest_close(symbol, config):
+        return {"symbol": symbol, "close": 20.5, "trade_date": "2026-07-02", "source": "test"}
+
+    monkeypatch.setattr("tradingagents.api.routes.portfolio.latest_close", fake_latest_close)
+
+    res = client.put(
+        "/api/v1/holdings/601899",
+        json={
+            "symbol": "601899",
+            "quantity": 100,
+            "avg_cost": 18,
+            "current_price": 19,
+            "notes": None,
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["symbol"] == "601899.SH"
+
+    res = client.post("/api/v1/portfolio/refresh-prices")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["updated"] == 1
+    assert payload["failed"] == []
+    assert payload["holdings"][0]["current_price"] == 20.5
+
+
+def test_list_reports(client):
+    res = client.get("/api/v1/reports")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+
+def test_get_report_not_found(client):
+    res = client.get("/api/v1/reports/nonexistent")
+    assert res.status_code == 404
+
+
+def test_get_run_not_found(client):
+    res = client.get("/api/v1/runs/nonexistent")
+    assert res.status_code == 404
+
+
+def test_create_run_invalid_skill(client):
+    res = client.post(
+        "/api/v1/runs",
+        json={"skill_id": "nonexistent", "params": {}},
+    )
+    assert res.status_code == 404
+
+
+def test_timeline_endpoint(client):
+    """Timeline endpoint returns list and respects since=today."""
+    res = client.get("/api/v1/timeline")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+    res = client.get("/api/v1/timeline?since=today&limit=5")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+
+def test_deactivate_strategy_lesson(client):
+    """Manual lesson retirement flips active=0 and drops it from the active list."""
+    db = client.app.state.db
+    db.save_strategy_lesson(
+        lesson_id="L-manual",
+        lesson_type="neutral_missed_upside",
+        scope="industry",
+        finding="地产板块超额",
+        target="地产",
+        confidence="high",
+        active=True,
+    )
+    # Visible in the active list before retirement.
+    res = client.get("/api/v1/strategy-lessons?active_only=true")
+    assert any(row["id"] == "L-manual" for row in res.json())
+
+    res = client.post("/api/v1/strategy-lessons/L-manual/deactivate")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+    # Gone from the active list after retirement.
+    res = client.get("/api/v1/strategy-lessons?active_only=true")
+    assert all(row["id"] != "L-manual" for row in res.json())
+
+    # An unknown id reports not_found (the UPDATE matches no row).
+    res = client.post("/api/v1/strategy-lessons/L-unknown/deactivate")
+    assert res.status_code == 200
+    assert res.json()["status"] == "not_found"
+
+
+def test_approve_strategy_lesson_candidate(client):
+    db = client.app.state.db
+    db.save_strategy_lesson(
+        lesson_id="L-candidate",
+        lesson_type="cross_symbol_pattern",
+        scope="global",
+        finding="待审规律",
+        active=False,
+        governance_status="validated",
+    )
+    assert db.get_strategy_lesson("L-candidate")["active"] is False
+
+    res = client.post("/api/v1/strategy-lessons/L-candidate/approve")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+    approved = db.get_strategy_lesson("L-candidate")
+    assert approved["active"] is True
+    assert approved["governance_status"] == "approved"
+
+
+def test_list_lesson_cases_resolves_evidence(client):
+    """The lesson->cases endpoint resolves the payload's evidence_cases ids to
+    full reflection cases, skips unresolvable ids, and returns [] for unknown
+    lessons or lessons without evidence."""
+    db = client.app.state.db
+    db.save_reflection_case(
+        case_id="rc-1",
+        source_type="system_signal",
+        reflection_scope="candidate_pool",
+        eligible_for_strategy_learning=False,
+        symbol="600000.SH",
+        name="浦发银行",
+        signal_date="2026-06-01",
+        horizon_days=5,
+        status="reflected",
+    )
+    db.save_strategy_lesson(
+        lesson_id="L-ev",
+        lesson_type="cross_symbol_pattern",
+        scope="industry",
+        finding="地产观望跑赢",
+        target="地产",
+        confidence="high",
+        active=True,
+        payload={
+            "dimension": "neutral:industry=地产",
+            "evidence_cases": [
+                {"id": "rc-1", "symbol": "600000.SH"},
+                {"id": "rc-missing", "symbol": "000001.SZ"},  # unresolvable, skipped
+            ],
+        },
+    )
+
+    res = client.get("/api/v1/strategy-lessons/L-ev/cases")
+    assert res.status_code == 200
+    rows = res.json()
+    assert [r["id"] for r in rows] == ["rc-1"]
+    assert rows[0]["symbol"] == "600000.SH"
+    assert rows[0]["due_date"]  # advance_trading_days populated
+
+    # Unknown lesson and lesson without evidence both yield an empty list.
+    assert client.get("/api/v1/strategy-lessons/L-nope/cases").json() == []
+    db.save_strategy_lesson(
+        lesson_id="L-bare",
+        lesson_type="cross_symbol_pattern",
+        scope="global",
+        finding="no evidence",
+        active=True,
+    )
+    assert client.get("/api/v1/strategy-lessons/L-bare/cases").json() == []
+
+
+def test_get_strategy_lesson_roundtrip(client):
+    """get_strategy_lesson returns the decoded payload and None for unknown ids."""
+    db = client.app.state.db
+    db.save_strategy_lesson(
+        lesson_id="L-get",
+        lesson_type="cross_symbol_pattern",
+        scope="global",
+        finding="f",
+        active=True,
+        payload={"dimension": "d", "history": [{"date": "2026-06-01", "win_rate": 0.4}]},
+    )
+    lesson = db.get_strategy_lesson("L-get")
+    assert lesson is not None
+    assert lesson["payload"]["history"][0]["win_rate"] == 0.4
+    assert lesson["active"] is True
+    assert db.get_strategy_lesson("nope") is None
+
+
+def test_prediction_scorecard_degrades_when_no_samples(client):
+    """With no reflected cases the route returns the graceful available=false shape."""
+    res = client.get("/api/v1/prediction-scorecard?lookback_days=90")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["available"] is False
+    assert payload["n_evaluated"] == 0
+    assert payload["lookback_days"] == 90
+    assert payload["reason"]
+
+
+def test_prediction_scorecard_returns_aggregated_shape(client, monkeypatch):
+    """Route serializes an available scorecard (mock db) with nested structure."""
+    fixed = {
+        "available": True,
+        "n_evaluated": 6,
+        "lookback_days": 90,
+        "as_of": "2026-06-01",
+        "overall": {
+            "count": 6,
+            "directional_count": 5,
+            "hit_rate": 0.6,
+            "avg_return": 0.021,
+            "avg_excess": 0.008,
+        },
+        "rank_ic": {
+            "quant_score": {"value": 0.42, "n": 6},
+            "llm_confidence": {"value": None, "n": 2},
+        },
+        "fusion_comparison": {
+            "quant_only": {
+                "bucket": "quant_only",
+                "count": 3,
+                "directional_count": 3,
+                "hit_rate": 0.33,
+                "avg_return": -0.01,
+                "avg_excess": -0.005,
+            },
+            "quant_llm_fused": {
+                "bucket": "quant_llm_fused",
+                "count": 3,
+                "directional_count": 2,
+                "hit_rate": 1.0,
+                "avg_return": 0.05,
+                "avg_excess": 0.02,
+            },
+        },
+        "buckets": {
+            "quant_score": [
+                {
+                    "bucket": "75-100",
+                    "count": 2,
+                    "directional_count": 2,
+                    "hit_rate": 1.0,
+                    "avg_return": 0.05,
+                    "avg_excess": 0.02,
+                }
+            ],
+            "llm_confidence": [],
+            "decision": [],
+        },
+        "horizon_distribution": {"5": 4, "10": 2},
+        "alpha_suggestion": {
+            "suggested_alpha": 0.62,
+            "static_alpha": 0.55,
+            "alpha_data": 0.8,
+            "data_weight": 0.3,
+            "delta": 0.07,
+            "quant_ic": 0.42,
+            "llm_ic": 0.1,
+            "n": 12,
+            "applicable": True,
+            "reason": "按 quant/LLM RankIC 相对占比推导。",
+            "style": "medium_term",
+        },
+    }
+    monkeypatch.setattr(
+        client.app.state.db,
+        "get_prediction_scorecard",
+        lambda lookback_days=90: fixed,
+    )
+    res = client.get("/api/v1/prediction-scorecard?lookback_days=90")
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["available"] is True
+    assert payload["n_evaluated"] == 6
+    assert payload["overall"]["hit_rate"] == 0.6
+    assert payload["rank_ic"]["quant_score"]["value"] == 0.42
+    assert payload["rank_ic"]["llm_confidence"]["value"] is None
+    assert payload["fusion_comparison"]["quant_llm_fused"]["hit_rate"] == 1.0
+    assert payload["buckets"]["quant_score"][0]["bucket"] == "75-100"
+    assert payload["horizon_distribution"] == {"5": 4, "10": 2}
+    assert payload["alpha_suggestion"]["suggested_alpha"] == 0.62
+    assert payload["alpha_suggestion"]["applicable"] is True
+    assert payload["alpha_suggestion"]["style"] == "medium_term"
+
+
+def test_prediction_scorecard_alpha_suggestion_optional(client, monkeypatch):
+    """A scorecard without alpha_suggestion serializes it as null."""
+    fixed = {
+        "available": True,
+        "n_evaluated": 6,
+        "lookback_days": 90,
+        "as_of": "2026-06-01",
+        "overall": {
+            "count": 6,
+            "directional_count": 5,
+            "hit_rate": 0.6,
+            "avg_return": 0.021,
+            "avg_excess": 0.008,
+        },
+        "rank_ic": {
+            "quant_score": {"value": 0.42, "n": 6},
+            "llm_confidence": {"value": None, "n": 2},
+        },
+        "fusion_comparison": {"quant_only": None, "quant_llm_fused": None},
+        "buckets": {"quant_score": [], "llm_confidence": [], "decision": []},
+        "horizon_distribution": {"5": 6},
+    }
+    monkeypatch.setattr(
+        client.app.state.db,
+        "get_prediction_scorecard",
+        lambda lookback_days=90: fixed,
+    )
+    res = client.get("/api/v1/prediction-scorecard?lookback_days=90")
+    assert res.status_code == 200
+    assert res.json()["alpha_suggestion"] is None
+
+
+def test_unified_policy_applies_to_compatibility_fields_and_rejects_null(client):
+    response = client.put('/api/v1/config', json={'model_policy': {'default_model': 'shared-model'}})
+    assert response.status_code == 200
+    config = response.json()
+    assert config['model_policy'] == {'default_model': 'shared-model', 'deep_model': None}
+    assert config['agent_model'] == config['quick_think_llm'] == config['deep_think_llm'] == 'shared-model'
+    assert client.put('/api/v1/config', json={'model_policy': None}).status_code == 422
+    assert client.put('/api/v1/config', json={'model_policy': {'default_model': 'custom'}}).status_code == 422

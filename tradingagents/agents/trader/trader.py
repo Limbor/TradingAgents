@@ -9,7 +9,9 @@ from langchain_core.messages import AIMessage
 from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
+    get_market_risk_instruction,
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
@@ -22,6 +24,7 @@ def create_trader(llm):
 
     def trader_node(state, name):
         company_name = state["company_of_interest"]
+        market = state.get("market")
         instrument_context = get_instrument_context_from_state(state)
         investment_plan = state["investment_plan"]
 
@@ -29,10 +32,16 @@ def create_trader(llm):
             {
                 "role": "system",
                 "content": (
-                    "You are a trading agent analyzing market data to make investment decisions. "
-                    "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
-                    "Anchor your reasoning in the analysts' reports and the research plan."
-                    + get_language_instruction()
+                    "You are a trading agent turning the Research Manager's investment plan into a "
+                    "concrete, executable transaction proposal. Ground your proposal in the analyst "
+                    "reports and research plan. Specify: (1) action (Buy/Sell/Hold); (2) entry "
+                    "approach — for A-shares prefer 集合竞价 (opening call 9:20-9:25) or first 30-min "
+                    "VWAP, and never assume you can buy at 涨停 if buy orders dominate the queue; "
+                    "(3) stop-loss in ATR×2 / -8% terms; (4) position sizing respecting T+1 and "
+                    "single-name limits; (5) time horizon consistent with the investment style."
+                    + get_market_risk_instruction(market)
+                    + get_investment_style_instruction(state.get("investment_style"))
+                    + get_language_instruction(market)
                 ),
             },
             {

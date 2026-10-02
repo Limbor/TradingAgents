@@ -1,0 +1,154 @@
+"""Base abstractions for the pluggable Skill framework.
+
+A Skill is a self-contained agent workflow with its own LangGraph
+StateGraph, input/output schemas, and shared core infrastructure
+(LLM clients, data flows, memory, config).
+"""
+
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+from pydantic import BaseModel
+
+
+@dataclass
+class SkillMetadata:
+    """Skill metadata used for registration, discovery, and routing."""
+
+    id: str
+    name: str
+    description: str
+    version: str
+    triggers: list[str] = field(default_factory=list)
+    icon: str = ""
+    category: str = "general"
+
+
+@dataclass
+class SkillEvent:
+    """An event emitted during skill execution."""
+
+    event_type: str
+    data: dict[str, Any]
+    schema_version: str = "1.0"
+
+    def __post_init__(self) -> None:
+        allowed = {
+            "skill_start", "skill_progress", "agent_status", "report_chunk",
+            "tool_call", "report_complete", "agent_runtime",
+            "portfolio_update", "position_advice", "risk_monitor_results",
+            "scanner_candidates", "daily_pipeline_candidates", "skill_complete",
+            "run_complete", "run_cancelled", "error",
+        }
+        if self.event_type not in allowed:
+            raise ValueError(f"Unknown skill event type: {self.event_type}")
+        if not isinstance(self.data, dict):
+            raise TypeError("SkillEvent.data must be a dict")
+        if self.event_type == "skill_progress":
+            required = {"stage_id", "stage_label", "status"}
+            missing = required.difference(self.data)
+            if missing:
+                raise ValueError(f"skill_progress missing fields: {sorted(missing)}")
+        elif self.event_type == "report_chunk" and not isinstance(self.data.get("content"), str):
+            raise ValueError("report_chunk.content must be a string")
+        elif self.event_type == "skill_complete" and "status" not in self.data:
+            raise ValueError("skill_complete.status is required")
+
+
+SkillProgressStatus = Literal["queued", "running", "completed", "failed"]
+
+
+def skill_progress(
+    *,
+    stage_id: str,
+    stage_label: str,
+    status: SkillProgressStatus = "running",
+    step_id: str | None = None,
+    step_label: str | None = None,
+    activity_id: str | None = None,
+    detail: str | None = None,
+    agent: str | None = None,
+    progress_pct: float | None = None,
+    data: dict[str, Any] | None = None,
+) -> SkillEvent:
+    """Build a normalized progress event for frontend timeline rendering.
+
+    This is the skill-to-frontend interaction contract. Skills may still emit
+    domain events such as ``agent_status`` and ``report_chunk``; this event is
+    the generic hierarchy used by Chat/Dashboard to render stages consistently.
+    """
+
+    payload: dict[str, Any] = {
+        "stage_id": stage_id,
+        "stage_label": stage_label,
+        "status": status,
+    }
+    if step_id:
+        payload["step_id"] = step_id
+    if step_label:
+        payload["step_label"] = step_label
+    if activity_id:
+        payload["activity_id"] = activity_id
+    if detail:
+        payload["detail"] = detail
+    if agent:
+        payload["agent"] = agent
+    if progress_pct is not None:
+        payload["progress_pct"] = progress_pct
+    if data:
+        payload["data"] = data
+    return SkillEvent(event_type="skill_progress", data=payload)
+
+
+class BaseSkill(ABC):
+    """Abstract base class for all Skills."""
+
+    @property
+    @abstractmethod
+    def metadata(self) -> SkillMetadata:
+        """Return skill metadata."""
+        ...
+
+    @property
+    @abstractmethod
+    def input_schema(self) -> type[BaseModel]:
+        """Return the Pydantic model for input parameters."""
+        ...
+
+    @property
+    @abstractmethod
+    def output_schema(self) -> type[BaseModel]:
+        """Return the Pydantic model for output results."""
+        ...
+
+    @abstractmethod
+    async def execute(
+        self,
+        params: BaseModel,
+        config: dict[str, Any],
+    ) -> AsyncIterator[SkillEvent]:
+        """Execute the skill, yielding events as they occur.
+
+        Args:
+            params: Validated input parameters (Pydantic instance)
+            config: Runtime configuration (LLM settings, etc.)
+
+        Yields:
+            SkillEvent: Execution progress and result events
+        """
+        ...
+
+    @abstractmethod
+    async def cancel(self) -> None:
+        """Cancel a currently running execution."""
+        ...
+
+    def validate_params(self, raw: dict) -> BaseModel:
+        """Validate raw input against the skill's input schema."""
+        return self.input_schema.model_validate(raw)
+
+    def validate_output(self, raw: dict[str, Any]) -> BaseModel:
+        """Validate a successful terminal payload against the declared schema."""
+        return self.output_schema.model_validate(raw)

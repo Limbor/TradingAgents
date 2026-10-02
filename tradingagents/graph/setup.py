@@ -21,6 +21,8 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.core.agent_runtime import role_node, runtime_model
+from tradingagents.core.agent_specs import AGENT_SPECS, ANALYSIS_TEMPLATES
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -43,7 +45,7 @@ class GraphSetup:
         self.conditional_logic = conditional_logic
 
     def setup_graph(
-        self, selected_analysts=("market", "social", "news", "fundamentals")
+        self, selected_analysts=("market", "social", "news", "fundamentals"), template="full"
     ):
         """Set up and compile the agent workflow graph.
 
@@ -54,45 +56,24 @@ class GraphSetup:
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
         """
+        if template not in ANALYSIS_TEMPLATES:
+            raise ValueError(f"Unknown analysis template: {template}")
         plan = build_analyst_execution_plan(selected_analysts)
 
         analyst_factories = {
-            "market": lambda: create_market_analyst(self.quick_thinking_llm),
-            "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
-            "news": lambda: create_news_analyst(self.quick_thinking_llm),
-            "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
+            "market": lambda: create_market_analyst(runtime_model(self.quick_thinking_llm, "Market Analyst", purpose="default")),
+            "social": lambda: create_sentiment_analyst(runtime_model(self.quick_thinking_llm, "Sentiment Analyst", purpose="default")),
+            "news": lambda: create_news_analyst(runtime_model(self.quick_thinking_llm, "News Analyst", purpose="default")),
+            "fundamentals": lambda: create_fundamentals_analyst(runtime_model(self.quick_thinking_llm, "Fundamentals Analyst", purpose="default")),
         }
-
-        # Create researcher and manager nodes
-        bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
-        bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
-        research_manager_node = create_research_manager(self.deep_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
-
-        # Create risk analysis nodes
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
 
         # Create workflow
         workflow = StateGraph(AgentState)
 
         # Add analyst nodes to the graph
         for spec in plan.specs:
-            workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
+            workflow.add_node(spec.agent_node, role_node(analyst_factories[spec.key](), AGENT_SPECS[spec.agent_node]))
             workflow.add_node(spec.clear_node, create_msg_delete())
-            workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
-
-        # Add other nodes
-        workflow.add_node("Bull Researcher", bull_researcher_node)
-        workflow.add_node("Bear Researcher", bear_researcher_node)
-        workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
-        workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
         # Start with the first analyst
@@ -101,22 +82,41 @@ class GraphSetup:
         # Connect analysts in sequence
         for i, spec in enumerate(plan.specs):
             current_analyst = spec.agent_node
-            current_tools = spec.tool_node
             current_clear = spec.clear_node
 
-            # Add conditional edges for current analyst
-            workflow.add_conditional_edges(
-                current_analyst,
-                getattr(self.conditional_logic, f"should_continue_{spec.key}"),
-                [current_tools, current_clear],
-            )
-            workflow.add_edge(current_tools, current_analyst)
+            # AgentSession executes each role's bounded tool loop internally.
+            workflow.add_edge(current_analyst, current_clear)
 
             # Connect to next analyst or to Bull Researcher if this is the last analyst
             if i < len(plan.specs) - 1:
                 workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                workflow.add_edge(current_clear, END if template == "research" else "Bull Researcher")
+
+        if template == "research":
+            return workflow
+
+        # Create researcher and manager nodes
+        bull_researcher_node = create_bull_researcher(runtime_model(self.quick_thinking_llm, "Bull Researcher", purpose="default"))
+        bear_researcher_node = create_bear_researcher(runtime_model(self.quick_thinking_llm, "Bear Researcher", purpose="default"))
+        research_manager_node = create_research_manager(runtime_model(self.deep_thinking_llm, "Research Manager", purpose="deep"))
+        trader_node = create_trader(runtime_model(self.quick_thinking_llm, "Trader", purpose="default"))
+
+        # Create risk analysis nodes
+        aggressive_analyst = create_aggressive_debator(runtime_model(self.quick_thinking_llm, "Aggressive Analyst", purpose="default"))
+        neutral_analyst = create_neutral_debator(runtime_model(self.quick_thinking_llm, "Neutral Analyst", purpose="default"))
+        conservative_analyst = create_conservative_debator(runtime_model(self.quick_thinking_llm, "Conservative Analyst", purpose="default"))
+        portfolio_manager_node = create_portfolio_manager(runtime_model(self.deep_thinking_llm, "Portfolio Manager", purpose="deep"))
+
+        # Add other nodes
+        workflow.add_node("Bull Researcher", role_node(bull_researcher_node, AGENT_SPECS["Bull Researcher"]))
+        workflow.add_node("Bear Researcher", role_node(bear_researcher_node, AGENT_SPECS["Bear Researcher"]))
+        workflow.add_node("Research Manager", role_node(research_manager_node, AGENT_SPECS["Research Manager"]))
+        workflow.add_node("Trader", role_node(trader_node, AGENT_SPECS["Trader"]))
+        workflow.add_node("Aggressive Analyst", role_node(aggressive_analyst, AGENT_SPECS["Aggressive Analyst"]))
+        workflow.add_node("Neutral Analyst", role_node(neutral_analyst, AGENT_SPECS["Neutral Analyst"]))
+        workflow.add_node("Conservative Analyst", role_node(conservative_analyst, AGENT_SPECS["Conservative Analyst"]))
+        workflow.add_node("Portfolio Manager", role_node(portfolio_manager_node, AGENT_SPECS["Portfolio Manager"]))
 
         # Add remaining edges
         workflow.add_conditional_edges(

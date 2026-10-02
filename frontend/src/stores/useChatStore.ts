@@ -1,0 +1,346 @@
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+
+export type ChatRole = "user" | "assistant" | "system";
+export type ChatMessageKind = "text" | "task" | "tool";
+export type ChatTaskStatus = "queued" | "running" | "completed" | "failed";
+
+export interface ChatTaskStep {
+  activityId?: string;
+  id: string;
+  label: string;
+  detail?: string;
+  status: ChatTaskStatus;
+  timestamp: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  scope?: string;
+  role: ChatRole;
+  kind?: ChatMessageKind;
+  content: string;
+  runId?: string;
+  skillId?: string;
+  taskStatus?: ChatTaskStatus;
+  steps?: ChatTaskStep[];
+  result?: string;
+  timestamp: string;
+  toolCall?: { tool: string; args: Record<string, unknown>; result: unknown; display: string };
+  citations?: Array<{
+    tool: string;
+    args: Record<string, unknown>;
+    summary: string;
+    as_of_date?: string;
+    source?: string;
+    warnings?: string[];
+  }>;
+  clarifyOptions?: string[];
+}
+
+interface ChatState {
+  messages: ChatMessage[];
+  activeScope: string;
+  responseScope: string | null;
+  connected: boolean;
+  running: boolean;
+  currentRunId: string | null;
+  setConnected: (connected: boolean) => void;
+  setActiveScope: (scope: string) => void;
+  setResponseScope: (scope: string | null) => void;
+  setRunning: (running: boolean) => void;
+  setCurrentRunId: (runId: string | null) => void;
+  addMessage: (message: Omit<ChatMessage, "id" | "timestamp">) => void;
+  addToolMessage: (message: {
+    content: string;
+    tool: string;
+    args: Record<string, unknown>;
+    result: unknown;
+    display: string;
+    citations?: ChatMessage["citations"];
+  }) => void;
+  addClarifyMessage: (message: {
+    content: string;
+    options?: string[];
+  }) => void;
+  createTask: (task: {
+    runId: string;
+    skillId?: string;
+    title: string;
+    detail?: string;
+  }) => void;
+  addTaskStep: (
+    runId: string,
+    step: { label: string; detail?: string; status?: ChatTaskStatus; activityId?: string }
+  ) => void;
+  appendTaskResult: (runId: string, content: string) => void;
+  finishTask: (runId: string, status: "completed" | "failed", detail?: string) => void;
+  reset: () => void;
+}
+
+function now() {
+  return new Date().toISOString();
+}
+
+const MAX_PERSISTED_MESSAGES = 100;
+const MAX_PERSISTED_RESULT_CHARS = 20_000;
+
+function persistedMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.slice(-MAX_PERSISTED_MESSAGES).map((message) => ({
+    ...message,
+    result: message.result && message.result.length > MAX_PERSISTED_RESULT_CHARS
+      ? `${message.result.slice(0, MAX_PERSISTED_RESULT_CHARS)}\n\n[完整内容请在产物库查看]`
+      : message.result,
+  }));
+}
+
+function newStep(
+  label: string,
+  detail?: string,
+  status: ChatTaskStatus = "running"
+): ChatTaskStep {
+  return {
+    id: crypto.randomUUID(),
+    label,
+    detail,
+    status,
+    timestamp: now(),
+  };
+}
+
+function closeActiveSteps(
+  steps: ChatTaskStep[] | undefined,
+  status: "completed" | "failed" = "completed"
+): ChatTaskStep[] {
+  return (steps ?? []).map((step) =>
+    step.status === "running" || step.status === "queued"
+      ? { ...step, status }
+      : step
+  );
+}
+
+export const useChatStore = create<ChatState>()(
+  persist(
+    (set) => ({
+  messages: [
+    {
+      id: "welcome",
+      role: "assistant",
+      kind: "text",
+      content:
+        "我会以交易 Agent 的方式执行任务：你可以让我分析股票、扫描机会、管理持仓或检查风险。",
+      timestamp: now(),
+    },
+  ],
+  activeScope: "general",
+  responseScope: null,
+  connected: false,
+  running: false,
+  currentRunId: null,
+  setConnected: (connected) => set({ connected }),
+  setActiveScope: (activeScope) => set({ activeScope }),
+  setResponseScope: (responseScope) => set({ responseScope }),
+  setRunning: (running) => set({ running }),
+  setCurrentRunId: (runId) => set({ currentRunId: runId }),
+  addMessage: (message) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          ...message,
+          id: crypto.randomUUID(),
+          scope: message.scope ?? state.responseScope ?? state.activeScope,
+          kind: message.kind ?? "text",
+          timestamp: now(),
+        },
+      ],
+    })),
+  addToolMessage: (msg) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: crypto.randomUUID(),
+          scope: state.responseScope ?? state.activeScope,
+          role: "assistant" as const,
+          kind: "tool" as const,
+          content: msg.content,
+          toolCall: {
+            tool: msg.tool,
+            args: msg.args,
+            result: msg.result,
+            display: msg.display,
+          },
+          citations: msg.citations,
+          timestamp: now(),
+        },
+      ],
+    })),
+  addClarifyMessage: (msg) =>
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          id: crypto.randomUUID(),
+          scope: state.responseScope ?? state.activeScope,
+          role: "assistant" as const,
+          kind: "text" as const,
+          content: msg.content,
+          clarifyOptions: msg.options,
+          timestamp: now(),
+        },
+      ],
+    })),
+  createTask: (task) =>
+    set((state) => {
+      const existing = state.messages.some(
+        (message) => message.kind === "task" && message.runId === task.runId
+      );
+      if (existing) return state;
+      return {
+        messages: [
+          ...state.messages,
+          {
+            id: `task-${task.runId}`,
+            scope: state.responseScope ?? state.activeScope,
+            role: "assistant",
+            kind: "task",
+            content: task.title,
+            runId: task.runId,
+            skillId: task.skillId,
+            taskStatus: "running",
+            steps: [newStep("已识别任务", task.detail, "completed")],
+            result: "",
+            timestamp: now(),
+          },
+        ],
+      };
+    }),
+  addTaskStep: (runId, step) =>
+    set((state) => ({
+      messages: state.messages.map((message) => {
+        if (message.kind !== "task" || message.runId !== runId) return message;
+        const nextStatus = step.status ?? "running";
+        const isTerminal =
+          message.taskStatus === "completed" || message.taskStatus === "failed";
+        if (isTerminal && (nextStatus === "running" || nextStatus === "queued")) {
+          return message;
+        }
+        if (step.activityId) {
+          const steps = [...(message.steps ?? [])];
+          const existing = steps.findIndex((s) => s.activityId === step.activityId);
+          const updated = { ...(existing >= 0 ? steps[existing]! : newStep(step.label, step.detail, nextStatus)),
+            label: step.label, detail: step.detail, status: nextStatus, activityId: step.activityId };
+          if (existing >= 0) steps[existing] = updated;
+          else steps.push(updated);
+          return { ...message, steps };
+        }
+        const lastStep = message.steps?.[message.steps.length - 1];
+        if (
+          lastStep &&
+          lastStep.label === step.label &&
+          lastStep.detail === step.detail &&
+          lastStep.status === nextStatus
+        ) {
+          return message;
+        }
+
+        // If a completed/failed step arrives for the same label as a running step,
+        // update the existing running step in-place instead of adding a duplicate.
+        if (nextStatus === "completed" || nextStatus === "failed") {
+          const existingIdx = message.steps?.findIndex(
+            (s) => s.label === step.label && (s.status === "running" || s.status === "queued")
+          );
+          if (existingIdx !== undefined && existingIdx >= 0 && message.steps) {
+            const existingStep = message.steps[existingIdx]!;
+            const updatedSteps = [...message.steps];
+            updatedSteps[existingIdx] = {
+              ...existingStep,
+              status: nextStatus,
+              detail: step.detail ?? existingStep.detail,
+            };
+            return {
+              ...message,
+              taskStatus: nextStatus === "failed" ? "failed" : message.taskStatus ?? "running",
+              steps: updatedSteps,
+            };
+          }
+        }
+
+        const closedSteps = closeActiveSteps(
+          message.steps,
+          nextStatus === "failed" ? "failed" : "completed"
+        );
+        return {
+          ...message,
+          taskStatus: nextStatus === "failed" ? "failed" : message.taskStatus ?? "running",
+          steps: [
+            ...closedSteps,
+            newStep(step.label, step.detail, nextStatus),
+          ],
+        };
+      }),
+    })),
+  appendTaskResult: (runId, content) =>
+    set((state) => ({
+      messages: state.messages.map((message) => {
+        if (message.kind !== "task" || message.runId !== runId) return message;
+        const current = message.result?.trim();
+        return {
+          ...message,
+          result: current ? `${current}\n\n${content}` : content,
+        };
+      }),
+    })),
+  finishTask: (runId, status, detail) =>
+    set((state) => ({
+      messages: state.messages.map((message) => {
+        if (message.kind !== "task" || message.runId !== runId) return message;
+        if (message.taskStatus === status) {
+          const lastStep = message.steps?.[message.steps.length - 1];
+          const terminalLabel = status === "completed" ? "任务完成" : "任务失败";
+          if (lastStep?.label === terminalLabel && lastStep.status === status) {
+            return message;
+          }
+        }
+        const closedSteps = closeActiveSteps(
+          message.steps,
+          status === "failed" ? "failed" : "completed"
+        );
+        return {
+          ...message,
+          taskStatus: status,
+          steps: [
+            ...closedSteps,
+            newStep(status === "completed" ? "任务完成" : "任务失败", detail, status),
+          ],
+        };
+      }),
+    })),
+  reset: () =>
+    set({
+      messages: [],
+      activeScope: "general",
+      responseScope: null,
+      connected: false,
+      running: false,
+      currentRunId: null,
+    }),
+    }),
+    {
+      name: "tradingagents-chat",
+      // Persist a bounded chat snapshot plus the active run id. The backend is
+      // authoritative and /runs/{id} returns the terminal result after reload.
+      partialize: (state) => ({
+        messages: persistedMessages(state.messages),
+        currentRunId: state.currentRunId,
+        running: state.running,
+      }),
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        state.messages = persistedMessages(state.messages);
+        state.running = Boolean(state.currentRunId);
+      },
+    }
+  )
+);

@@ -1,0 +1,822 @@
+import { MemoryDetails } from "@/pages/AgentWorkspace/MemoryPanel";
+import { Fragment, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertCircle, ArrowRight, ChevronDown, ChevronRight, Info, Plus, RefreshCw, ShieldCheck, TrendingUp } from "lucide-react";
+import { getTradeReview, saveCandidateAction, type ChipProfile, type TradeReviewResponse } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
+import { CandlestickChart } from "./CandlestickChart";
+
+export interface CandidateRow {
+  rank: number;
+  symbol: string;
+  name?: string;
+  industry?: string;
+  industryDetail?: string;
+  board?: string;
+  decision?: string;
+  quantDecision?: string;
+  llmView?: string;
+  catalystStrength?: string;
+  riskAssessment?: string;
+  score?: number;
+  quantScore?: number;
+  strategyScores?: {
+    attackScore?: number;
+    attackCoverage?: number;
+    defensiveScore?: number;
+    defensiveCoverage?: number;
+  };
+  activeSleeve?: string;
+  latestPrice?: number;
+  priceTradeDate?: string;
+  entryZone?: number[];
+  stopLoss?: number;
+  targets?: number[];
+  actionPlan?: Record<string, unknown>;
+  keyMetrics?: Record<string, unknown>;
+  gate_reasons?: string[];
+  quantGateReasons?: QuantGateReason[];
+  dataCoverageWarnings?: string[];
+  keyCatalysts?: string[];
+  keyRisks?: string[];
+  reasoning?: string;
+  strategyLessonHits?: Array<Record<string, unknown>>;
+  memoryTrace?: Record<string, unknown>;
+  lessonAdjustmentReason?: string;
+  raw?: Record<string, unknown>;
+}
+
+interface QuantGateReason {
+  gate: string;
+  passed?: boolean;
+  detail?: string;
+}
+
+interface CandidateTableProps {
+  candidates: CandidateRow[];
+  warnings?: string[];
+  asOfDate?: string;
+  dataWindowNote?: string;
+  sessionState?: string;
+  onAnalyze?: (symbol: string, context?: Record<string, unknown>) => void;
+  onAddWatchlist?: (symbols: string[]) => void;
+  actionContext?: {
+    runId?: string;
+    artifactId?: string;
+    tradeDate?: string;
+  };
+}
+
+export function CandidateTable({ candidates, warnings, asOfDate, dataWindowNote, sessionState, onAnalyze, onAddWatchlist, actionContext }: CandidateTableProps) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
+  const queryClient = useQueryClient();
+  if (candidates.length === 0) {
+    return (
+      <div className="rounded-lg border border-ui-warning/20 bg-ui-warning/5 p-4 text-sm text-ui-warning space-y-2">
+        <div className="flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 shrink-0 text-ui-warning" />
+          <span className="font-medium">没有找到候选标的</span>
+        </div>
+        {warnings && warnings.length > 0 && (
+          <ul className="ml-6 list-disc space-y-1 text-xs text-ui-warning/80">
+            {warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-ui-faint mt-1">
+          可能原因：非交易日、MCP 数据未更新、板块过滤过严或指数成分股缺失
+        </p>
+      </div>
+    );
+  }
+
+  const decisionColor = (decision?: string) => {
+    if (!decision) return "text-ui-muted";
+    const d = decision.toLowerCase();
+    if (d.includes("buy") || d.includes("strong")) return "text-ui-success";
+    if (d.includes("sell") || d.includes("avoid")) return "text-ui-danger";
+    if (d.includes("hold") || d.includes("neutral")) return "text-ui-warning";
+    return "text-ui-body";
+  };
+
+  return (
+    <div className="space-y-3">
+      {dataWindowNote && (
+        <div className="rounded-lg border border-ui-info/20 bg-ui-info/5 p-2.5 text-xs text-ui-info">
+          <div className="flex items-start gap-2">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ui-info" />
+            <div className="min-w-0 flex-1">
+              <span className="font-medium">数据窗口</span>
+              {sessionState && (
+                <span className="ml-2 rounded bg-ui-info/20 px-1.5 py-0.5 font-mono text-xs text-ui-info">
+                  {sessionLabel(sessionState)}
+                </span>
+              )}
+              <span className="ml-2 text-ui-info/90">{dataWindowNote}</span>
+              {asOfDate && <span className="ml-2 font-mono text-ui-info/70">as-of {asOfDate}</span>}
+            </div>
+          </div>
+        </div>
+      )}
+      {warnings && warnings.length > 0 && candidates.length > 0 && (
+        <div className="rounded-lg border border-ui-warning/20 bg-ui-warning/5 p-2.5 text-xs text-ui-warning">
+          <div className="flex items-center gap-2 font-medium">
+            <AlertCircle className="h-3.5 w-3.5 text-ui-warning" />
+            提示
+          </div>
+          <ul className="ml-5 mt-1 list-disc space-y-0.5 text-ui-warning/80">
+            {warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="overflow-x-auto rounded-lg border border-ui-line">
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead className="bg-ui-panel text-xs uppercase text-ui-faint">
+            <tr>
+              <th className="px-3 py-2 w-8">#</th>
+              <th className="px-3 py-2">标的</th>
+              <th className="px-3 py-2 text-center">最终</th>
+              <th className="px-3 py-2 text-center">量化</th>
+              <th className="px-3 py-2 text-center">LLM</th>
+              <th className="px-3 py-2 text-center">风险</th>
+              <th className="px-3 py-2 text-right">价格/计划</th>
+              <th className="px-3 py-2 text-right">分数</th>
+              <th className="px-3 py-2 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {candidates.map((row) => (
+              <Fragment key={row.symbol}>
+              <tr className="border-t border-ui-line hover:bg-ui-panel/50">
+                <td className="px-3 py-2 text-ui-faint">
+                  <button
+                    onClick={() => setExpanded(expanded === row.symbol ? null : row.symbol)}
+                    className="inline-flex items-center gap-1 text-ui-faint hover:text-ui-body"
+                    title="展开候选解释"
+                  >
+                    {expanded === row.symbol ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                    {row.rank}
+                  </button>
+                </td>
+                <td className="px-3 py-2">
+                  <span className="font-mono text-ui-ink">{row.symbol}</span>
+                  {row.name && <span className="ml-2 text-ui-muted">{row.name}</span>}
+                  <div className="mt-1 flex flex-wrap gap-1 text-xs text-ui-faint">
+                    {row.board && <span>{row.board}</span>}
+                    {row.industry && (
+                      <span>
+                        {row.industry}
+                        {row.industryDetail && row.industryDetail !== row.industry ? ` · ${row.industryDetail}` : ""}
+                      </span>
+                    )}
+                    {row.gate_reasons?.slice(0, 2).map((reason) => (
+                      <span key={reason} className="rounded bg-ui-hover px-1.5 py-0.5" title={explainGateReason(reason)}>{reason}</span>
+                    ))}
+                    {row.dataCoverageWarnings?.map((warning) => (
+                      <span key={warning} className="rounded bg-ui-warning/10 px-1.5 py-0.5 text-ui-warning">{warning}</span>
+                    ))}
+                  </div>
+                </td>
+                <td className={`px-3 py-2 text-center font-medium ${decisionColor(row.decision)}`}>
+                  <span title={explainFinalDecision(row.decision)}>{row.decision ?? "-"}</span>
+                </td>
+                <td className="px-3 py-2 text-center text-ui-body">
+                  <span title="量化层门控结论，只代表候选资格，不等同最终买入">{row.quantDecision ?? "-"}</span>
+                </td>
+                <td className="px-3 py-2 text-center text-ui-body">
+                  <div title="LLM 对量化信号是否仍成立的离散判断">{row.llmView ?? "-"}</div>
+                  {row.catalystStrength && (
+                    <div className="text-xs text-ui-faint" title="催化剂强度：confirmed/likely/speculative/none">{row.catalystStrength}</div>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-center text-ui-body">
+                  <span title="LLM 风险评估：low/moderate/high/critical">{row.riskAssessment ?? "-"}</span>
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-ui-body">
+                  {row.latestPrice !== undefined ? (
+                    <>
+                      <div>{formatPrice(row.latestPrice)}</div>
+                      {row.targets?.length ? <div className="text-xs text-ui-success">T {row.targets.map(formatPrice).join("/")}</div> : null}
+                      {row.stopLoss !== undefined ? <div className="text-xs text-ui-danger">S {formatPrice(row.stopLoss)}</div> : null}
+                    </>
+                  ) : (
+                    <span className="text-xs text-ui-faint" title="MCP 未返回收盘价，且日线补价不可用">缺收盘价</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-ui-body">
+                  {row.score !== undefined ? row.score : "-"}
+                  {row.quantScore !== undefined && (
+                    <div className="text-xs text-ui-faint">Q {row.quantScore}</div>
+                  )}
+                  {row.strategyScores && (
+                    <div
+                      className="mt-0.5 whitespace-nowrap text-xs text-ui-faint"
+                      title={`当前采用${strategySleeveLabel(row.activeSleeve)}评分；括号内为因子覆盖率`}
+                    >
+                      进 {formatStrategyScore(row.strategyScores.attackScore, row.strategyScores.attackCoverage)}
+                      <span className="mx-1 text-ui-faint">/</span>
+                      稳 {formatStrategyScore(row.strategyScores.defensiveScore, row.strategyScores.defensiveCoverage)}
+                    </div>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <div className="flex justify-end gap-1">
+                  {onAnalyze && (
+                    <button
+                      onClick={() => onAnalyze(row.symbol, { selection_context: rowSelectionContext(row) })}
+                      className="inline-flex items-center gap-1 rounded border border-ui-accent/30 px-2 py-1 text-xs text-ui-accent transition hover:bg-ui-accent/10"
+                    >
+                      <TrendingUp className="h-3 w-3" />
+                      分析
+                    </button>
+                  )}
+                  </div>
+                </td>
+              </tr>
+              {expanded === row.symbol && (
+                <tr className="border-t border-ui-line bg-ui-subtle/80">
+                  <td />
+                  <td colSpan={8} className="px-3 py-3">
+                    <CandidateExpanded
+                      row={row}
+                      tradeDate={actionContext?.tradeDate ?? asOfDate ?? row.priceTradeDate}
+                      feedback={actionFeedback[row.symbol]}
+                      onAction={async (action, review) => {
+                        try {
+                          const result = await saveCandidateAction({
+                            action,
+                            symbol: row.symbol,
+                            name: row.name,
+                            run_id: actionContext?.runId,
+                            artifact_id: actionContext?.artifactId,
+                            trade_date: actionContext?.tradeDate,
+                            payload: { ...(row.raw ?? {}), ...(review ? { trade_review: review } : {}) },
+                          });
+                          setActionFeedback((prev) => ({ ...prev, [row.symbol]: result.message }));
+                          if (result.plan_id) await queryClient.invalidateQueries({ queryKey: queryKeys.plans() });
+                        } catch (exc) {
+                          setActionFeedback((prev) => ({ ...prev, [row.symbol]: exc instanceof Error ? exc.message : "操作失败" }));
+                        }
+                      }}
+                    />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {onAddWatchlist && candidates.length > 0 && (
+        <div className="flex gap-2">
+          <button
+            onClick={() => onAnalyze?.(candidates[0]!.symbol, { selection_context: rowSelectionContext(candidates[0]!) })}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-accent/30 bg-ui-accent/10 px-3 py-1.5 text-xs font-medium text-ui-accent transition hover:bg-ui-accent/20"
+          >
+            <ArrowRight className="h-3.5 w-3.5" />
+            深度分析第1名
+          </button>
+          <button
+            onClick={() => onAddWatchlist(candidates.map((c) => c.symbol))}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body transition hover:bg-ui-hover"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            全部加入关注
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CandidateExpanded({
+  row,
+  tradeDate,
+  feedback,
+  onAction,
+}: {
+  row: CandidateRow;
+  tradeDate?: string;
+  feedback?: string;
+  onAction: (action: "adopt" | "wait_trigger" | "watch" | "private" | "ignore", review?: TradeReviewResponse) => void;
+}) {
+  const lessonHits = row.strategyLessonHits ?? [];
+  const [chartDays, setChartDays] = useState(60);
+  const reviewPlan = candidateReviewPlan(row);
+  const reviewQuery = useQuery({
+    queryKey: ["trade-review", row.symbol, tradeDate, reviewPlan],
+    queryFn: () => getTradeReview({
+      symbol: row.symbol,
+      trade_date: tradeDate,
+      lookback_days: 120,
+      plan: reviewPlan,
+      recommendation_context: {
+        final_decision: row.decision,
+        quant_decision: row.quantDecision,
+        llm_view: row.llmView,
+        data_coverage_warnings: row.dataCoverageWarnings ?? [],
+        requested_trade_date: tradeDate,
+      },
+    }),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const review = reviewQuery.data;
+  const gateStatus = review?.pretrade_gate.status;
+  const planAction = gateStatus === "actionable" ? "adopt" : "wait_trigger";
+  return (
+    <div className="grid gap-3 text-xs text-ui-muted lg:grid-cols-2">
+      <div className="space-y-2">
+        <InfoBlock title="LLM 分析结论" empty="暂无 LLM reasoning">
+          {row.reasoning}
+        </InfoBlock>
+        <ListBlock title="关键催化剂" items={row.keyCatalysts} empty="暂无明确催化剂" tone="emerald" />
+        <ListBlock title="关键风险" items={row.keyRisks} empty="暂无显式风险" tone="amber" />
+        <TradePlanBlock row={row} />
+        {row.memoryTrace && <MemoryDetails trace={row.memoryTrace} />}
+        <QuantGateBlock row={row} />
+        <DataCoverageBlock row={row} />
+      </div>
+      <div className="space-y-2">
+        <TradeReviewPanel
+          review={review}
+          loading={reviewQuery.isLoading}
+          refreshing={reviewQuery.isFetching}
+          error={reviewQuery.error}
+          days={chartDays}
+          onDaysChange={setChartDays}
+          onRefresh={() => reviewQuery.refetch()}
+        />
+        {!row.memoryTrace && <ListBlock
+          title="反思经验命中（历史案例复盘，非本次门控状态）"
+          items={lessonHits.map((item) => String(item.finding || item.suggested_adjustment || item.id || ""))}
+          empty="本次未命中历史策略经验"
+          tone="purple"
+        />}
+        {row.lessonAdjustmentReason && (
+          <div className="rounded border border-ui-info/20 bg-ui-info/5 p-2 text-ui-info">
+            {row.lessonAdjustmentReason}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <button
+            disabled={!review || review.degraded || gateStatus === "reject" || reviewQuery.isFetching}
+            onClick={() => onAction(planAction, review)}
+            className="rounded border border-ui-success/30 px-2 py-1 text-ui-success hover:bg-ui-success/10 disabled:cursor-not-allowed disabled:border-ui-strong disabled:text-ui-faint"
+            title={gateStatus === "reject" ? "硬门控未通过，不能加入交易计划" : undefined}
+          >
+            {reviewQuery.isLoading ? "交易前复核中…" : review?.degraded ? "MCP 不可用，不能加入计划" : gateStatus === "actionable" ? "加入可执行计划" : gateStatus === "wait" ? "加入等待触发" : "不建议加入"}
+          </button>
+          <button onClick={() => onAction("watch")} className="rounded border border-ui-accent/30 px-2 py-1 text-ui-accent hover:bg-ui-accent/10">
+            仅观察
+          </button>
+          <button onClick={() => onAction("private")} className="rounded border border-ui-strong px-2 py-1 text-ui-body hover:bg-ui-hover">
+            私人复盘
+          </button>
+          <button onClick={() => onAction("ignore")} className="rounded border border-ui-strong px-2 py-1 text-ui-faint hover:bg-ui-hover">
+            忽略
+          </button>
+        </div>
+        {feedback && <div className="rounded border border-ui-strong bg-ui-panel p-2 text-ui-body">{feedback}</div>}
+      </div>
+    </div>
+  );
+}
+
+function TradeReviewPanel({
+  review,
+  loading,
+  refreshing,
+  error,
+  days,
+  onDaysChange,
+  onRefresh,
+}: {
+  review?: TradeReviewResponse;
+  loading: boolean;
+  refreshing: boolean;
+  error: unknown;
+  days: number;
+  onDaysChange: (days: number) => void;
+  onRefresh: () => void;
+}) {
+  if (loading) {
+    return <div className="rounded border border-ui-line bg-ui-panel p-4 text-center text-ui-faint">正在加载时点 K 线并执行交易前复核…</div>;
+  }
+  if (error || !review) {
+    return (
+      <div className="rounded border border-ui-danger/20 bg-ui-danger/5 p-3 text-ui-danger">
+        交易前复核加载失败，当前禁止直接加入执行计划。
+        <button onClick={onRefresh} className="ml-2 underline">重试</button>
+      </div>
+    );
+  }
+  const gate = review.pretrade_gate;
+  const reliability = review.recommendation_reliability;
+  const statusLabel = review.degraded ? "无法复核" : gate.status === "actionable" ? "可以执行" : gate.status === "wait" ? "等待触发" : "取消计划";
+  const statusClass = review.degraded
+    ? "border-ui-strong bg-ui-hover text-ui-body"
+    : gate.status === "actionable"
+    ? "border-ui-success/30 bg-ui-success/10 text-ui-success"
+    : gate.status === "wait"
+      ? "border-ui-warning/30 bg-ui-warning/10 text-ui-warning"
+      : "border-ui-danger/30 bg-ui-danger/10 text-ui-danger";
+  return (
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-ui-accent" />
+          <span className="font-medium text-ui-body">近期 K 线与交易前复核</span>
+          <span className={`rounded border px-2 py-0.5 font-medium ${statusClass}`}>{statusLabel}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {[30, 60, 120].map((value) => (
+            <button key={value} onClick={() => onDaysChange(value)} className={`rounded px-1.5 py-0.5 ${days === value ? "bg-ui-hover text-ui-ink" : "text-ui-faint hover:text-ui-body"}`}>{value}日</button>
+          ))}
+          <button onClick={onRefresh} disabled={refreshing} title="重新拉取并复核" className="ml-1 rounded p-1 text-ui-faint hover:bg-ui-hover hover:text-ui-body disabled:opacity-50">
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+      <CandlestickChart candles={review.candles} plan={review.plan} days={days} chipProfile={review.chip_profile} />
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <MiniMetric label="推荐可靠性" value={review.degraded ? "不可用（缺正式门控）" : `${reliability.score}/100 · ${reliability.level}`} />
+        <MiniMetric label="技术门控可信度" value={review.degraded ? "不可用" : `${gate.reliability_score}/100`} />
+      </div>
+      <ChipProfileSummary profile={review.chip_profile} />
+      <div className="mt-2 text-ui-faint">
+        截止 {review.effective_trade_date ?? review.as_of_date} · {review.gate_authority === "stockmanager_mcp" ? "MCP 确定性门控" : "本地降级，仅供看图"}。{reliability.note}
+      </div>
+      <div className="mt-2 space-y-1">
+        {gate.checks.map((check) => (
+          <div key={check.code} className="flex items-start gap-2 rounded bg-ui-subtle px-2 py-1">
+            <span className={check.passed === true ? "text-ui-success" : check.passed === false ? "text-ui-danger" : "text-ui-faint"}>
+              {check.passed === true ? "通过" : check.passed === false ? "未过" : "未知"}
+            </span>
+            <span className="font-mono text-ui-body">{check.code}</span>
+            <span className="min-w-0 flex-1 text-ui-faint">{check.detail}</span>
+          </div>
+        ))}
+      </div>
+      {review.warnings.length > 0 && <div className="mt-2 text-ui-warning">{review.warnings.join("；")}</div>}
+    </div>
+  );
+}
+
+function ChipProfileSummary({ profile }: { profile?: ChipProfile }) {
+  if (!profile || profile.status !== "available" || !profile.current || !profile.trend) {
+    return (
+      <div className="mt-2 rounded border border-ui-line bg-ui-subtle px-2 py-1.5 text-ui-faint">
+        筹码趋势：暂不可用（{profile?.reason ?? "数据源尚未返回筹码分布"}）
+      </div>
+    );
+  }
+  const { current, trend } = profile;
+  const labels: Record<string, string> = {
+    bullish_confirmed: "趋势确认",
+    improving: "成本改善",
+    neutral: "中性观察",
+    weakening: "趋势转弱",
+    crowded: "获利拥挤",
+  };
+  const tone = trend.state === "bullish_confirmed" || trend.state === "improving"
+    ? "text-ui-success"
+    : trend.state === "weakening" || trend.state === "crowded"
+      ? "text-ui-warning"
+      : "text-ui-body";
+  return (
+    <div className="mt-2 rounded border border-ui-accent/20 bg-ui-accent/5 p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-medium text-ui-body">筹码成本辅助判断</span>
+        <span className={tone}>{labels[trend.state] ?? trend.state} · {trend.confirmation_score}/100</span>
+      </div>
+      <div className="mt-1 grid grid-cols-2 gap-1 font-mono text-ui-muted sm:grid-cols-4">
+        <span>成本 {current.avg_cost.toFixed(2)}</span>
+        <span>获利盘 {(current.profit_ratio * 100).toFixed(1)}%</span>
+        <span>70%区间 {current.cost_70_low.toFixed(2)}–{current.cost_70_high.toFixed(2)}</span>
+        <span>成本偏离 {trend.price_vs_avg_cost_pct >= 0 ? "+" : ""}{trend.price_vs_avg_cost_pct.toFixed(1)}%</span>
+      </div>
+      {trend.reasons.length > 0 && <div className="mt-1 text-ui-success/80">确认：{trend.reasons.join("；")}</div>}
+      {trend.risks.length > 0 && <div className="mt-1 text-ui-warning">风险：{trend.risks.join("；")}</div>}
+      <div className="mt-1 text-ui-faint">概率估算，仅作趋势确认，不会单独改变交易门控。</div>
+    </div>
+  );
+}
+
+function candidateReviewPlan(row: CandidateRow): Record<string, unknown> {
+  return {
+    plan_action: row.actionPlan?.plan_action ?? row.actionPlan?.action ?? "ENTER",
+    action_zone: row.entryZone ?? row.actionPlan?.action_zone ?? row.actionPlan?.entry_zone ?? [],
+    invalidation_level: row.stopLoss ?? row.actionPlan?.invalidation_level ?? row.actionPlan?.stop_loss,
+    objective_levels: row.targets ?? row.actionPlan?.objective_levels ?? row.actionPlan?.take_profit ?? [],
+  };
+}
+
+function QuantGateBlock({ row }: { row: CandidateRow }) {
+  const gates = row.quantGateReasons ?? [];
+  return (
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">量化门控</div>
+      {gates.length === 0 ? (
+        <div className="text-ui-faint">暂无 MCP 量化门控明细</div>
+      ) : (
+        <div className="space-y-1">
+          {gates.map((item, index) => (
+            <div key={`${item.gate}-${index}`} className="flex items-start gap-2 rounded bg-ui-subtle px-2 py-1">
+              <span className={item.passed === false ? "text-ui-danger" : "text-ui-success"}>
+                {item.passed === false ? "未过" : "通过"}
+              </span>
+              <div className="min-w-0">
+                <div className="font-mono text-ui-body">{item.gate}</div>
+                {item.detail && <div className="text-ui-faint">{item.detail}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DataCoverageBlock({ row }: { row: CandidateRow }) {
+  const warnings = row.dataCoverageWarnings ?? [];
+  const metrics = row.keyMetrics ?? {};
+  return (
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">数据覆盖</div>
+      {warnings.length === 0 ? (
+        <div className="text-ui-success">MCP 未标记关键数据缺失。</div>
+      ) : (
+        <div className="space-y-1">
+          {warnings.map((warning) => (
+            <div key={warning} className="text-ui-warning">• {warning}</div>
+          ))}
+          <div className="text-ui-faint">
+            这些字段来自 MCP 的 data_coverage。若显示 missing，说明当前数据源没有返回该类因子，前端没有进行默认补值。
+          </div>
+        </div>
+      )}
+      {Object.keys(metrics).length > 0 && (
+        <div className="mt-2 grid gap-1 sm:grid-cols-2">
+          {Object.entries(metrics).slice(0, 8).map(([key, value]) => (
+            <div key={key} className="rounded bg-ui-subtle px-2 py-1 font-mono text-ui-muted">
+              {key}: {String(value)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TradePlanBlock({ row }: { row: CandidateRow }) {
+  const entryCondition = row.actionPlan?.entry_condition;
+  return (
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">价格与交易计划</div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <MiniMetric label="收盘价" value={row.latestPrice !== undefined ? `${formatPrice(row.latestPrice)}${row.priceTradeDate ? ` · ${row.priceTradeDate}` : ""}` : "数据源缺失"} />
+        <MiniMetric label="入场区间" value={row.entryZone?.length ? row.entryZone.map(formatPrice).join(" - ") : "未生成"} />
+        <MiniMetric label="止损" value={row.stopLoss !== undefined ? formatPrice(row.stopLoss) : "未生成"} />
+        <MiniMetric label="目标价" value={row.targets?.length ? row.targets.map(formatPrice).join(" / ") : "未生成"} />
+      </div>
+      {Boolean(entryCondition) && (
+        <div className="mt-2 text-ui-muted">{String(entryCondition)}</div>
+      )}
+      <div className="mt-2 text-ui-faint">
+        目标价来自融合层：优先按 ATR 倍数生成；无 ATR 时使用收盘价的固定比例作为展示参考。
+      </div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-ui-line bg-ui-subtle px-2 py-1.5">
+      <div className="text-ui-faint">{label}</div>
+      <div className="mt-0.5 font-mono text-ui-body">{value}</div>
+    </div>
+  );
+}
+
+function InfoBlock({ title, children, empty }: { title: string; children?: string; empty: string }) {
+  return (
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">{title}</div>
+      <div className="leading-5 text-ui-muted">{children || empty}</div>
+    </div>
+  );
+}
+
+function ListBlock({ title, items, empty, tone }: { title: string; items?: string[]; empty: string; tone: "emerald" | "amber" | "purple" }) {
+  const color = tone === "emerald" ? "text-ui-success" : tone === "amber" ? "text-ui-warning" : "text-ui-info";
+  const values = (items ?? []).filter(Boolean);
+  return (
+    <div className="rounded border border-ui-line bg-ui-panel p-2">
+      <div className="mb-1 font-medium text-ui-body">{title}</div>
+      {values.length === 0 ? (
+        <div className="text-ui-faint">{empty}</div>
+      ) : (
+        <ul className="space-y-1">
+          {values.map((item, index) => (
+            <li key={`${item}-${index}`} className={color}>• {item}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function explainFinalDecision(decision?: string) {
+  const value = String(decision || "").toUpperCase();
+  if (value === "BUY") return "最终状态机结论：量化通过，LLM 支持，催化剂较明确。";
+  if (value === "WATCHLIST") return "最终状态机结论：值得观察，但缺少足够买入确认。";
+  if (value === "MONITOR") return "最终状态机结论：保留监控，不进入强候选。";
+  if (value === "HOLD_REVIEW") return "最终状态机结论：量化与 LLM 有分歧，需要人工复核。";
+  if (value === "SKIP") return "最终状态机结论：交易性、风险或证据不满足要求。";
+  return "最终状态机结论。";
+}
+
+function explainGateReason(reason: string) {
+  if (reason.includes("llm_neutral")) return "LLM 对量化信号保持中性，因此降级观察。";
+  if (reason.includes("quant_buy")) return "量化层认为该标的达到候选买入门槛。";
+  if (reason.includes("default_gate")) return "未触发更强规则，使用默认门控结果。";
+  if (reason.includes("missing")) return "关键数据缺失，需要谨慎解读。";
+  return "状态机门控原因。";
+}
+
+function rowSelectionContext(row: CandidateRow): Record<string, unknown> {
+  const ctx: Record<string, unknown> = {
+    symbol: row.symbol,
+    final_decision: row.decision,
+  };
+  const raw = row.raw ?? {};
+  const evidenceKeys = [
+    "quant_decision", "quant_score", "llm_score", "llm_view",
+    "catalyst_strength", "risk_assessment", "score_confidence",
+    "factor_scores", "strategy_scores", "active_sleeve", "data_coverage", "quant_gate_reasons", "gate_reasons",
+    "risk_flags", "key_catalysts", "key_risks",
+  ];
+  evidenceKeys.forEach((key) => {
+    const value = raw[key];
+    if (value !== undefined && value !== null) ctx[key] = value;
+  });
+  if (row.score !== undefined) ctx.display_score = row.score;
+  if (row.quantScore !== undefined) ctx.quant_score = row.quantScore;
+  if (row.entryZone) ctx.entry_zone = row.entryZone;
+  if (row.stopLoss !== undefined) ctx.stop_loss = row.stopLoss;
+  if (row.targets) ctx.targets = row.targets;
+  if (row.actionPlan) ctx.action_plan = row.actionPlan;
+  if (row.reasoning) ctx.reasoning = row.reasoning;
+  if (row.priceTradeDate) {
+    ctx.price_trade_date = row.priceTradeDate;
+    ctx.trade_date = row.priceTradeDate;
+  }
+  return ctx;
+}
+
+function sessionLabel(state: string): string {
+  if (state === "before_close_data") return "盘前";
+  if (state === "after_close_data") return "盘后";
+  if (state === "non_trading") return "非交易日";
+  return state;
+}
+
+function formatPrice(value: number) {
+  return Number.isFinite(value) ? value.toFixed(2) : "-";
+}
+
+function strategySleeveLabel(value?: string): string {
+  if (value === "defensive") return "稳健轨";
+  if (value === "attack") return "进攻轨";
+  return "双轨";
+}
+
+function formatStrategyScore(score?: number, coverage?: number): string {
+  if (score === undefined) return "-";
+  const renderedScore = Number.isInteger(score) ? String(score) : score.toFixed(1);
+  if (coverage === undefined) return renderedScore;
+  return `${renderedScore} (${Math.round(coverage * 100)}%)`;
+}
+
+/**
+ * Parse raw candidate data from WebSocket into typed rows.
+ */
+export function parseCandidates(raw: unknown): CandidateRow[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  return raw.slice(0, 10).map((item, index) => {
+    const row = item as Record<string, unknown>;
+    const symbol = String(row.symbol ?? row.ticker ?? row.ts_code ?? `#${index + 1}`);
+    const name = row.name ? String(row.name) : undefined;
+    const industry = row.industry ? String(row.industry) : undefined;
+    const industryDetail = row.industry_detail ? String(row.industry_detail) : undefined;
+    const board = row.board ? String(row.board) : undefined;
+    const decision = row.final_decision ?? row.signal ?? row.quant_decision;
+    const score = row.display_score ?? row.final_score ?? row.score ?? row.total_score;
+    const quantScore = row.quant_score;
+    const strategyScores = parseStrategyScores(row.strategy_scores);
+    const keyMetrics = row.key_metrics as Record<string, unknown> | undefined;
+    const factorSnapshot = row.factor_snapshot as Record<string, unknown> | undefined;
+    const latestPrice = firstNumber(row.latest_price, row.current_price, row.close, keyMetrics?.latest_price, keyMetrics?.close, factorSnapshot?.latest_price, factorSnapshot?.close);
+    const entryZone = numberArray(row.entry_zone);
+    const targets = numberArray(row.targets ?? (row.action_plan as Record<string, unknown> | undefined)?.take_profit);
+    const stopLoss = firstNumber(row.stop_loss, (row.action_plan as Record<string, unknown> | undefined)?.stop_loss);
+    const dataCoverage = row.data_coverage as Record<string, unknown> | undefined;
+    const dataCoverageWarnings = dataCoverage
+      ? Object.entries(dataCoverage)
+          .filter(([, value]) => String(value).toLowerCase() === "missing")
+          .map(([key]) => `${key} missing`)
+      : undefined;
+    return {
+      rank: index + 1,
+      symbol,
+      name,
+      industry,
+      industryDetail,
+      board,
+      decision: decision ? String(decision) : undefined,
+      quantDecision: row.quant_decision ? String(row.quant_decision) : undefined,
+      llmView: row.llm_view ? String(row.llm_view) : undefined,
+      catalystStrength: row.catalyst_strength ? String(row.catalyst_strength) : undefined,
+      riskAssessment: row.risk_assessment ? String(row.risk_assessment) : undefined,
+      score: score !== undefined ? Number(score) : undefined,
+      quantScore: quantScore !== undefined ? Number(quantScore) : undefined,
+      strategyScores,
+      activeSleeve: row.active_sleeve ? String(row.active_sleeve) : undefined,
+      latestPrice,
+      priceTradeDate: row.price_trade_date ? String(row.price_trade_date) : undefined,
+      entryZone,
+      stopLoss,
+      targets,
+      actionPlan: row.action_plan as Record<string, unknown> | undefined,
+      keyMetrics,
+      gate_reasons: Array.isArray(row.gate_reasons) ? row.gate_reasons.map(String) : undefined,
+      quantGateReasons: parseQuantGateReasons(row.quant_gate_reasons ?? row.mcp_gate_reasons),
+      dataCoverageWarnings,
+      keyCatalysts: Array.isArray(row.key_catalysts) ? row.key_catalysts.map(String) : undefined,
+      keyRisks: Array.isArray(row.key_risks) ? row.key_risks.map(String) : undefined,
+      reasoning: typeof row.reasoning === "string"
+        ? row.reasoning
+        : typeof (row.llm_review as Record<string, unknown> | undefined)?.reasoning === "string"
+          ? String((row.llm_review as Record<string, unknown>).reasoning)
+          : undefined,
+      memoryTrace: row.memory_trace && typeof row.memory_trace === "object" ? row.memory_trace as Record<string, unknown> : undefined,
+      strategyLessonHits: Array.isArray(row.strategy_lesson_hits)
+        ? row.strategy_lesson_hits as Array<Record<string, unknown>>
+        : undefined,
+      lessonAdjustmentReason: row.lesson_adjustment_reason ? String(row.lesson_adjustment_reason) : undefined,
+      raw: row,
+    };
+  });
+}
+
+function parseStrategyScores(raw: unknown): CandidateRow["strategyScores"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  const scores = {
+    attackScore: firstNumber(value.attack_score),
+    attackCoverage: firstNumber(value.attack_coverage),
+    defensiveScore: firstNumber(value.defensive_score),
+    defensiveCoverage: firstNumber(value.defensive_coverage),
+  };
+  return Object.values(scores).some((item) => item !== undefined) ? scores : undefined;
+}
+
+function parseQuantGateReasons(raw: unknown): QuantGateReason[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const gates = raw.flatMap((item) => {
+    if (typeof item === "string") {
+      return [{ gate: item }];
+    }
+    if (!item || typeof item !== "object") return [];
+    const value = item as Record<string, unknown>;
+    const gate = value.gate ?? value.name ?? value.type;
+    if (!gate) return [];
+    return [{
+      gate: String(gate),
+      passed: typeof value.passed === "boolean" ? value.passed : undefined,
+      detail: value.detail ? String(value.detail) : undefined,
+    }];
+  });
+  return gates.length ? gates : undefined;
+}
+
+function firstNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return undefined;
+}
+
+function numberArray(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.map(Number).filter(Number.isFinite);
+  return values.length ? values : undefined;
+}

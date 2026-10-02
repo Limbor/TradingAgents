@@ -1,6 +1,8 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
+    get_investment_style_instruction,
     get_language_instruction,
+    get_market_risk_instruction,
 )
 
 
@@ -17,6 +19,7 @@ def create_bull_researcher(llm):
         fundamentals_report = state["fundamentals_report"]
         instrument_context = get_instrument_context_from_state(state)
         asset_type = state.get("asset_type", "stock")
+        market = state.get("market")
         target_label = "stock" if asset_type == "stock" else "asset"
         fundamentals_label = (
             "Company fundamentals report"
@@ -36,13 +39,13 @@ Key points to focus on:
 Resources available:
 {instrument_context}
 Market research report: {market_research_report}
-Social media sentiment report: {sentiment_report}
+Sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}
 {fundamentals_label}: {fundamentals_report}
 Conversation history of the debate: {history}
 Last bear argument: {current_response}
 Use this information to deliver a compelling bull argument, refute the bear's concerns, and engage in a dynamic debate that demonstrates the strengths of the bull position.
-""" + get_language_instruction()
+    """ + get_market_risk_instruction(market) + get_investment_style_instruction(state.get("investment_style")) + get_language_instruction(market)
 
         response = llm.invoke(prompt)
 
