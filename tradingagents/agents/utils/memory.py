@@ -4,8 +4,10 @@ import re
 import tempfile
 import threading
 from contextlib import contextmanager
+from datetime import datetime, time, timezone
 from functools import wraps
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from tradingagents.agents.utils.rating import parse_rating
 
@@ -84,9 +86,25 @@ class TradingMemoryLog:
         """Return entries with outcome:pending (for Phase B)."""
         return [e for e in self.load_entries() if e.get("pending")]
 
-    def get_past_context(self, ticker: str, n_same: int = 5, n_cross: int = 3) -> str:
+    def get_past_context(self, ticker: str, n_same: int = 5, n_cross: int = 3,
+                         *, as_of_date: str | None = None) -> str:
         """Return formatted past context string for agent prompt injection."""
         entries = [e for e in self.load_entries() if not e.get("pending")]
+        if as_of_date:
+            try:
+                cutoff = datetime.combine(datetime.strptime(as_of_date, "%Y-%m-%d").date(),
+                                          time.max, ZoneInfo("Asia/Shanghai"))
+            except ValueError:
+                return ""
+            visible = []
+            for entry in entries:
+                try:
+                    available = datetime.fromisoformat(entry.get("available_at") or "")
+                    if available.tzinfo and available <= cutoff and entry["date"] <= as_of_date:
+                        visible.append(entry)
+                except ValueError:
+                    continue
+            entries = visible
         if not entries:
             return ""
 
@@ -165,6 +183,7 @@ class TradingMemoryLog:
                 rest = "\n".join(lines[1:])
                 new_blocks.append(
                     f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{reflection}"
+                    f"\n<!-- AVAILABLE_AT:{datetime.now(timezone.utc).isoformat()} -->"
                 )
                 updated = True
             else:
@@ -218,6 +237,7 @@ class TradingMemoryLog:
                     rest = "\n".join(lines[1:])
                     new_blocks.append(
                         f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{upd['reflection']}"
+                        f"\n<!-- AVAILABLE_AT:{datetime.now(timezone.utc).isoformat()} -->"
                     )
                     del update_map[(trade_date, ticker)]
                     matched = True
@@ -324,7 +344,9 @@ class TradingMemoryLog:
             "alpha": fields[4] if len(fields) > 4 else None,
             "holding": fields[5] if len(fields) > 5 else None,
         }
-        body = "\n".join(lines[1:]).strip()
+        available = re.search(r"<!-- AVAILABLE_AT:(.*?) -->", raw)
+        entry["available_at"] = available[1] if available else None
+        body = re.sub(r"<!-- AVAILABLE_AT:.*? -->", "", "\n".join(lines[1:])).strip()
         decision_match = self._DECISION_RE.search(body)
         reflection_match = self._REFLECTION_RE.search(body)
         entry["decision"] = decision_match.group(1).strip() if decision_match else ""

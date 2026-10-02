@@ -167,6 +167,7 @@ def test_apply_llm_reviews_forces_lesson_matching_candidate_past_limit():
                 "target": "地产",
                 "finding": "地产板块近期超额显著",
                 "confidence": "high",
+                "created_at": "2026-06-01T00:00:00+00:00",
             }
         ]
         warnings, meta = await apply_llm_reviews(

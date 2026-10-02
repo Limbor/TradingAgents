@@ -469,38 +469,30 @@ def make_get_mcp_risk_announcements(config: dict[str, Any]):
 
 
 def make_get_strategy_lessons(db: Any):
-    """Build handler: get_strategy_lessons — list active strategy lessons.
+    """Retrieve governed historical lessons for the current task context."""
+    async def _handler(symbol: str = "", industries: list[str] | None = None,
+                       board: str = "", factors: list[str] | None = None,
+                       style: str = "", regime: str = "", task_type: str = "",
+                       as_of_date: str | None = None, limit: int = 5) -> dict[str, Any]:
+        from tradingagents.core.strategy_memory import (
+            load_strategy_lessons,
+            select_strategy_lessons,
+        )
 
-    Returns recent reflection-derived lessons with findings and suggested
-    adjustments.
-    """
-
-    async def _handler() -> dict[str, Any]:
+        cutoff = as_of_date or datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
         try:
-            lessons = db.list_strategy_lessons(limit=20, active_only=True)
+            date.fromisoformat(cutoff)
+            context = {"symbol": symbol, "industries": industries or [], "board": board,
+                       "factors": factors or [], "style": style, "regime": regime, "task_type": task_type}
+            lessons = select_strategy_lessons(load_strategy_lessons(db), context,
+                                              as_of_date=cutoff, limit=limit)
         except Exception as exc:
-            return {"error": f"Failed to load strategy lessons: {exc}", "warnings": []}
-
-        if not lessons:
-            return {"lessons": [], "message": "No active strategy lessons yet."}
-
-        return {
-            "lessons": [
-                {
-                    "id": lesson.get("id", ""),
-                    "lesson_type": lesson.get("lesson_type", ""),
-                    "scope": lesson.get("scope", ""),
-                    "target": lesson.get("target", ""),
-                    "finding": lesson.get("finding", ""),
-                    "suggested_adjustment": lesson.get("suggested_adjustment", ""),
-                    "confidence": lesson.get("confidence", ""),
-                    "evidence_count": lesson.get("evidence_count", 0),
-                    "created_at": lesson.get("created_at", ""),
-                }
-                for lesson in lessons
-            ],
-            "total": len(lessons),
-        }
+            return {"error": f"Failed to retrieve strategy lessons: {exc}", "warnings": []}
+        return {"lessons": lessons, "total": len(lessons), "memory_cutoff": cutoff,
+                "context": context, "kind": "historical_memory",
+                "source": "TradingAgents reflection store",
+                "warnings": ["历史经验仅作条件参考，不代表当前行情或已验证的收益改善"],
+                "message": "No applicable approved lessons." if not lessons else ""}
 
     return _handler
 
@@ -672,13 +664,24 @@ def build_all_tools(
         {
             "name": "get_strategy_lessons",
             "description": (
-                "List active strategy lessons from the reflection engine. Each lesson "
-                "contains a finding (pattern discovered) and a suggested adjustment. Use "
-                "when the user asks about lessons learned, recent reflections, or strategy improvements."
+                "Retrieve up to five relevant approved historical lessons for this task, "
+                "ranked by symbol, industry, board, factor and reliability. Supply the "
+                "current task context before making an analysis; these lessons are not current market evidence."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "symbol": {"type": "string", "maxLength": 32},
+                    "industries": {"type": "array", "items": {"type": "string", "maxLength": 80}, "maxItems": 10},
+                    "board": {"type": "string", "maxLength": 40},
+                    "factors": {"type": "array", "items": {"type": "string", "maxLength": 40}, "maxItems": 10},
+                    "style": {"type": "string", "maxLength": 40},
+                    "regime": {"type": "string", "maxLength": 40},
+                    "task_type": {"type": "string", "maxLength": 40},
+                    "as_of_date": {"type": "string", "format": "date"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 5},
+                },
+                "additionalProperties": False,
             },
             "handler": make_get_strategy_lessons(db),
             "display": "text",

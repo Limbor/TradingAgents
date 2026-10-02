@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from tradingagents.core.signal_fusion import quant_evidence_markdown
+from tradingagents.core.strategy_memory import lesson_prompt_section, select_strategy_lessons
 from tradingagents.llm_clients import create_llm_client
 
 if TYPE_CHECKING:
@@ -44,6 +45,7 @@ class CandidateLLMReview(BaseModel):
     )
     llm_confidence: float | None = Field(default=None, ge=0, le=100)
     catalyst_score: float | None = Field(default=None, ge=0, le=100)
+    memory_usage: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("llm_view", mode="before")
     @classmethod
@@ -98,6 +100,7 @@ class CandidateReviewer:
         self,
         candidate: dict[str, Any],
         context: CandidateContext | None = None,
+        strategy_lessons: list[dict] | None = None,
     ) -> CandidateLLMReview:
         """Review a candidate with optional real-time context."""
         prompt = _build_prompt(
@@ -105,9 +108,16 @@ class CandidateReviewer:
             self._style,
             self._trade_date,
             context=context,
-            strategy_lessons=_matching_lessons(candidate, self._strategy_lessons),
+            strategy_lessons=(strategy_lessons if strategy_lessons is not None else
+                              self.select_memory(candidate)),
         )
         return await asyncio.to_thread(self._review_sync, prompt)
+
+    def select_memory(self, candidate: dict) -> list[dict]:
+        return select_strategy_lessons(
+            self._strategy_lessons, {**candidate, "style": self._style},
+            as_of_date=self._trade_date,
+        )
 
     def _review_sync(self, prompt: str) -> CandidateLLMReview:
         if self._structured_llm is not None:
@@ -212,35 +222,7 @@ def _build_prompt(
         except Exception:
             pass
 
-    lesson_section = ""
-    if strategy_lessons:
-        lesson_lines = []
-        # Sort: cross_symbol_pattern first, then by confidence + evidence_count, then scope specificity
-        def _lesson_priority(lesson: dict) -> tuple[int, int, int, int]:
-            lt = str(lesson.get("lesson_type") or "")
-            conf = {"high": 3, "medium": 2, "low": 1}.get(str(lesson.get("confidence") or "").lower(), 0)
-            ev = int(lesson.get("evidence_count") or 0)
-            scope_prio = {"symbol": 4, "industry": 3, "board": 2, "factor": 1, "global": 0}.get(
-                str(lesson.get("scope") or "").lower(), 0
-            )
-            # cross_symbol_pattern: highest priority
-            type_prio = 1 if lt == "cross_symbol_pattern" else 0
-            return (-type_prio, -conf, -ev, -scope_prio)
-
-        sorted_lessons = sorted(strategy_lessons, key=_lesson_priority)
-        for lesson in sorted_lessons[:5]:
-            finding = str(lesson.get("finding") or "").strip()
-            adjustment = str(lesson.get("suggested_adjustment") or "").strip()
-            confidence = str(lesson.get("confidence") or "")
-            scope = str(lesson.get("scope") or "global")
-            target = str(lesson.get("target") or "")
-            if finding:
-                lesson_lines.append(
-                    f"- [{confidence}] {scope}{':' + target if target else ''}: {finding}"
-                    + (f" 建议: {adjustment}" if adjustment else "")
-                )
-        if lesson_lines:
-            lesson_section = "\n\n## 近期策略反思摘要\n" + "\n".join(lesson_lines)
+    lesson_section = lesson_prompt_section(strategy_lessons or [])
 
     return f"""你是 A 股候选股票的快速复核 Agent。请基于下方结构化量化证据和市场信息进行判断。
 
@@ -294,25 +276,7 @@ def _build_prompt(
 
 
 def _matching_lessons(candidate: dict[str, Any], lessons: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not lessons:
-        return []
-    symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
-    industry = str(candidate.get("industry") or "")
-    board = str(candidate.get("board") or "")
-    factor_scores = candidate.get("factor_scores") or {}
-    data_coverage = candidate.get("data_coverage") or {}
-    missing_keys = {
-        key for key, value in data_coverage.items()
-        if str(value).lower() == "missing"
-    } if isinstance(data_coverage, dict) else set()
-    factor_keys = set(factor_scores.keys()) if isinstance(factor_scores, dict) else set()
-    matched: list[dict[str, Any]] = []
-    for lesson in lessons:
-        scope = str(lesson.get("scope") or "global")
-        target = str(lesson.get("target") or "")
-        if scope == "global" or scope == "symbol" and target == symbol or scope == "industry" and target and target == industry or scope == "board" and target and target == board or scope == "factor" and target and (target in factor_keys or target in missing_keys):
-            matched.append(lesson)
-    return matched
+    return select_strategy_lessons(lessons, candidate)
 
 
 def _coerce_review(value: Any) -> CandidateLLMReview:

@@ -446,7 +446,7 @@ class TradingAgentsGraph:
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
-        past_context = self._merge_memory_context(self.memory_log.get_past_context(company_name))
+        past_context = self._merge_memory_context(self.memory_log.get_past_context(company_name, as_of_date=str(trade_date)))
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
         market = detect_market(company_name)
         init_agent_state = self.propagator.create_initial_state(
@@ -589,7 +589,7 @@ class TradingAgentsGraph:
         self.ticker = ticker
 
         instrument_context = self.resolve_instrument_context(ticker, asset_type)
-        past_context = self._merge_memory_context(self.memory_log.get_past_context(ticker))
+        past_context = self._merge_memory_context(self.memory_log.get_past_context(ticker, as_of_date=str(date)))
         market = detect_market(ticker)
 
         init_agent_state = self.propagator.create_initial_state(

@@ -19,12 +19,12 @@ from typing import Any
 from pydantic import BaseModel
 
 from tradingagents.core.candidate_enrichment import CandidateContext, enrich_candidates
-from tradingagents.core.industry_taxonomy import normalize_industry
 from tradingagents.core.llm_candidate_review import (
     CandidateLLMReview,
     build_candidate_reviewer,
 )
 from tradingagents.core.signal_fusion import fuse_candidate_signal
+from tradingagents.core.strategy_memory import select_strategy_lessons, validate_memory_usage
 from tradingagents.skills._shared import candidate_rationale
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ async def apply_llm_reviews(
         for candidate in candidates[review_limit:]:
             if len(forced) >= lesson_extra_cap:
                 break
-            if candidate_lesson_hits(candidate, lessons):
+            if select_strategy_lessons(lessons, {**candidate, "style": style}, as_of_date=trade_date):
                 forced.append(candidate)
     review_set = candidates[:review_limit] + forced
     reviewed_ids = {id(c) for c in review_set}
@@ -131,13 +131,30 @@ async def apply_llm_reviews(
         try:
             symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
             ctx = context_map.get(symbol)
-            # Pass context only if the reviewer supports it; degrade gracefully.
-            if "context" in inspect.signature(reviewer.review).parameters:
-                raw_review = await reviewer.review(candidate, context=ctx)
-            else:
-                raw_review = await reviewer.review(candidate)
+            selector = getattr(reviewer, "select_memory", None)
+            selected = (selector(candidate) if callable(selector) else select_strategy_lessons(
+                lessons, {**candidate, "style": style}, as_of_date=trade_date,
+            ))
+            candidate["strategy_lesson_hits"] = selected
+            kwargs = {}
+            parameters = inspect.signature(reviewer.review).parameters
+            if "context" in parameters:
+                kwargs["context"] = ctx
+            if "strategy_lessons" in parameters:
+                kwargs["strategy_lessons"] = selected
+            injected = selected if "strategy_lessons" in parameters else []
+            candidate["memory_trace"] = {
+                "retrieved_ids": [row["id"] for row in selected],
+                "injected_ids": [row["id"] for row in injected],
+                "snapshots": injected, "as_of_date": trade_date,
+                "status": "pending" if injected else "not_injected",
+            }
+            raw_review = await reviewer.review(candidate, **kwargs)
+            candidate["memory_trace"]["status"] = "injected" if injected else "not_injected"
             return candidate, raw_review, None
         except Exception as exc:
+            if candidate.get("memory_trace", {}).get("injected_ids"):
+                candidate["memory_trace"]["status"] = "review_failed"
             return candidate, None, exc
 
     results = await asyncio.gather(*[_do_review(c) for c in review_set])
@@ -149,13 +166,16 @@ async def apply_llm_reviews(
             warnings.append(f"LLM review failed for {symbol}; kept quant-only signal.")
             continue
         review = coerce_llm_review(raw_review)
-        lesson_hits = candidate_lesson_hits(candidate, lessons)
+        lesson_hits = candidate.get("strategy_lesson_hits") or []
+        injected = candidate.get("memory_trace", {}).get("snapshots") or []
+        review.memory_usage = validate_memory_usage(review.memory_usage, injected)
+        candidate["memory_trace"]["usage"] = review.memory_usage
         candidate["llm_review"] = review.model_dump()
         candidate["key_catalysts"] = review.key_catalysts
         candidate["key_risks"] = review.key_risks
         candidate["strategy_lesson_hits"] = lesson_hits
-        if lesson_hits:
-            candidate["lesson_adjustment_reason"] = "LLM review considered recent strategy reflection lessons."
+        if injected:
+            candidate["lesson_adjustment_reason"] = "历史经验已注入；具体引用情况见 memory_trace，不代表已验证收益改善。"
         candidate.update(
             fuse_candidate_signal(
                 candidate,
@@ -192,45 +212,9 @@ def coerce_llm_review(value: Any) -> CandidateLLMReview:
 
 
 def candidate_lesson_hits(candidate: dict[str, Any], lessons: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return strategy lessons whose scope matches this candidate (max 5)."""
-    if not lessons:
-        return []
-    symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
-    industry = str(candidate.get("industry") or "")
-    # Industry-scope lessons are keyed by the coarse taxonomy group, so the
-    # candidate's raw industry must be normalized the same way before an exact
-    # comparison (otherwise e.g. target "地产" never matches raw "房地产").
-    industry_group = normalize_industry(industry)
-    board = str(candidate.get("board") or "")
-    data_coverage = candidate.get("data_coverage") or {}
-    missing_keys = {
-        key for key, value in data_coverage.items()
-        if str(value).lower() == "missing"
-    } if isinstance(data_coverage, dict) else set()
-    hits: list[dict[str, Any]] = []
-    for lesson in lessons:
-        scope = str(lesson.get("scope") or "global")
-        target = str(lesson.get("target") or "")
-        matched = scope == "global"
-        matched = matched or (scope == "symbol" and target == symbol)
-        matched = matched or (
-            scope == "industry" and target and target in (industry, industry_group)
-        )
-        matched = matched or (scope == "board" and target and target == board)
-        matched = matched or (scope == "factor" and target in missing_keys)
-        if matched:
-            hits.append(
-                {
-                    "id": lesson.get("id"),
-                    "lesson_type": lesson.get("lesson_type"),
-                    "scope": scope,
-                    "target": target,
-                    "finding": lesson.get("finding"),
-                    "suggested_adjustment": lesson.get("suggested_adjustment"),
-                    "confidence": lesson.get("confidence"),
-                }
-            )
-    return hits[:5]
+    """Compatibility entry point sharing the prompt's exact matching and ranking."""
+    return select_strategy_lessons(lessons, candidate)
+
 
 
 __all__ = ["apply_llm_reviews", "coerce_llm_review", "candidate_lesson_hits"]

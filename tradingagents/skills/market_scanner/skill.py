@@ -531,7 +531,15 @@ async def _apply_llm_reviews(
     reviewer = config.get("market_scanner_llm_reviewer")
     review_limit = int(config.get("market_scanner_llm_review_limit", 5) or 0)
     enrich = bool(config.get("market_scanner_llm_review_enrich", True))
-    return await apply_llm_reviews(
+    from tradingagents.core.strategy_memory import load_strategy_lessons
+
+    memory_warnings = []
+    try:
+        lessons = load_strategy_lessons(config.get("db"))
+    except Exception:
+        lessons = []
+        memory_warnings.append("历史经验检索不可用；本轮复核未注入策略经验。")
+    warnings, meta = await apply_llm_reviews(
         candidates,
         config=config,
         trade_date=trade_date,
@@ -539,11 +547,12 @@ async def _apply_llm_reviews(
         reviewer=reviewer,
         review_limit=review_limit,
         enabled=enabled,
-        strategy_lessons=None,
+        strategy_lessons=lessons,
         enrich=enrich,
         disabled_warning="Market scanner LLM review disabled by config.",
         unavailable_warning="Market scanner LLM reviewer unavailable; using quant-only fusion.",
     )
+    return [*memory_warnings, *warnings], meta
 
 
 def _data_window(

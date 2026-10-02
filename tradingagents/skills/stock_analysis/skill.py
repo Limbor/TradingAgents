@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field
 
 from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
 from tradingagents.core.reflection_enroll import enroll_reflection_case
+from tradingagents.core.strategy_memory import (
+    lesson_prompt_section,
+    load_strategy_lessons,
+    select_strategy_lessons,
+)
 from tradingagents.dataflows.symbol_utils import detect_market
 from tradingagents.skills._shared import optional_float, resolve_temporal_context
 from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
@@ -162,10 +167,25 @@ class StockAnalysisSkill(BaseSkill):
                 holding=holding_context,
             )
 
+        selected_memory = []
+        memory_error = None
+        try:
+            selected_memory = select_strategy_lessons(
+                load_strategy_lessons(db), {
+                    "symbol": input_params.ticker,
+                    "industry": (input_params.selection_context or {}).get("industry") or
+                                (holding_context or {}).get("industry"),
+                    "style": config.get("investment_style", "medium_term"),
+                }, as_of_date=temporal_context.market_asof_date,
+            )
+        except Exception as exc:
+            memory_error = "历史经验检索不可用，本轮未注入策略经验"
+            logger.warning("Stock analysis memory unavailable: %s", exc)
         memory_context = _join_context_blocks(
             _format_holding_context(holding_context),
             _format_reflection_context(input_params.reflection_context),
             _format_selection_context(input_params.selection_context),
+            lesson_prompt_section(selected_memory),
         )
 
         run_config = {
@@ -297,6 +317,12 @@ class StockAnalysisSkill(BaseSkill):
             holding_context,
             market=market,
         )
+        structured_conclusion["memory_trace"] = {
+            "injected_ids": [row["id"] for row in selected_memory],
+            "snapshots": selected_memory, "as_of_date": temporal_context.market_asof_date,
+            "status": "provided_to_analysis" if selected_memory else "not_injected",
+            "usage": [], "warning": memory_error,
+        }
         structured_conclusion["selection_alignment"] = reconcile_selection_analysis(
             input_params.selection_context,
             structured_conclusion,

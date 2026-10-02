@@ -1528,6 +1528,7 @@ def _reflection_snapshot(
         "position_pct",
         "rationale",
         "strategy_lesson_hits",
+        "memory_trace",
         "lesson_adjustment_reason",
         "deep_analysis",
         "selection_alignment",
@@ -1965,6 +1966,7 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "action_plan": item.get("action_plan") or {},
             "position_pct": item.get("position_pct", 0.0),
             "strategy_lesson_hits": item.get("strategy_lesson_hits") or [],
+            "memory_trace": item.get("memory_trace") or {},
             "lesson_adjustment_reason": item.get("lesson_adjustment_reason"),
             "decision_id": item.get("decision_id"),
             "deep_analysis": item.get("deep_analysis"),
@@ -1978,7 +1980,9 @@ def _decision_pack(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _load_strategy_lessons(db: Database) -> list[dict[str, Any]]:
     try:
-        return db.list_strategy_lessons(limit=20, active_only=True)
+        from tradingagents.core.strategy_memory import load_strategy_lessons
+
+        return load_strategy_lessons(db)
     except Exception as exc:
         logger.warning("Failed to load strategy lessons for daily pipeline: %s", exc)
         return []

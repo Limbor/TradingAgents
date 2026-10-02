@@ -40,6 +40,73 @@ class _Skills:
         raise AssertionError("写入型 Skill 不得启动")
 
 
+@pytest.mark.asyncio
+async def test_agent_automatically_retrieves_dated_memory_and_audits_actual_injection(tmp_path, monkeypatch):
+    from tradingagents.core.lightweight_tools import build_all_tools
+
+    lesson = {"id": "sector-lesson", "scope": "industry", "target": "地产",
+              "finding": "行业经验，仅作条件参考", "confidence": "medium", "evidence_count": 5,
+              "created_at": "2026-06-01", "updated_at": "2026-06-02",
+              "governance_status": "approved", "active": True}
+    future = {**lesson, "id": "future-lesson", "updated_at": "2026-07-02", "finding": "未来经验不能出现"}
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    memory_db = SimpleNamespace(list_strategy_lessons=lambda **_kwargs: [lesson, future])
+    definition = next(tool for tool in build_all_tools(memory_db, None, {})
+                      if tool["name"] == "get_strategy_lessons")
+    harness.tools.register(LightweightTool(**definition))
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "market_overview" else None)
+    harness._run_skill = AsyncMock(return_value={
+        "source": "TradingAgents Skill: market_overview", "as_of_date": "2026-07-01",
+        "result": {"industry_stances": [{"industry": "房地产", "rating": "bullish", "score": 80}]},
+    })
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    class Model:
+        planning = False
+        rounds = 0
+
+        def bind_tools(self, _schemas):
+            self.planning = True
+            return self
+
+        async def ainvoke(self, messages):
+            if self.planning:
+                self.rounds += 1
+                if self.rounds == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "run_analysis_skill", "id": "overview-call", "type": "tool_call",
+                        "args": {"skill_id": "market_overview", "args": {}},
+                    }])
+                return AIMessage(content="完成")
+            text = str(messages[-1].content)
+            assert "行业经验，仅作条件参考" in text
+            assert "未来经验不能出现" not in text
+            evidence = store.list_evidence(task["id"])
+            return AIMessage(content=json.dumps({
+                "summary": "观察板块", "verdict": "conditional", "response_markdown": "观察量价是否持续。",
+                "reasons": [], "risks": [], "assumptions": [], "next_actions": [],
+                "evidence_refs": [evidence[0]["id"]], "memory_usage": [
+                    {"lesson_id": "sector-lesson", "status": "referenced", "reason": "行业相同，检查适用条件"},
+                    {"lesson_id": "future-lesson", "status": "referenced", "reason": "本轮不允许"},
+                ],
+            }, ensure_ascii=False))
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_kwargs: SimpleNamespace(get_llm=Model))
+    conversation = store.create_conversation("板块研究", None)
+    task = harness.submit(conversation["id"], "分析房地产板块")
+    await harness._active[task["id"]]
+    detail = store.get_task(task["id"])
+    assert detail["status"] == "completed"
+    memory = store.list_evidence(task["id"])[-1]
+    assert memory["tool_name"] == "get_strategy_lessons"
+    assert memory["result"]["memory_cutoff"] == "2026-07-01"
+    assert detail["result"]["memory_trace"]["injected_ids"] == ["sector-lesson"]
+    assert [row["lesson_id"] for row in detail["result"]["memory_trace"]["usage"]] == ["sector-lesson"]
+    events = store.list_events(task["id"])
+    assert {"memory_retrieved", "memory_injected", "memory_reviewed"} <= {event["event_type"] for event in events}
+
+
 def test_concurrent_submissions_keep_one_active_task_per_conversation(tmp_path):
     database = Database(tmp_path / "agent.db")
     first_store = AgentStore(database)
