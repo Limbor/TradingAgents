@@ -40,6 +40,7 @@ dependencies = [
 dev = [
     "ruff>=0.15",
     "pytest>=8.0",
+    "pytest-asyncio>=0.25",
     "pytest-subtests>=0.13",
 ]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
