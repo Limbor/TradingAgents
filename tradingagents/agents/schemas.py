@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class StrategyMemoryUsage(BaseModel):
@@ -33,6 +33,19 @@ class StrategyMemoryUsage(BaseModel):
 class MemoryAwareReport(BaseModel):
     memory_usage: list[StrategyMemoryUsage] = Field(default_factory=list,
         description="Report only supplied lesson IDs, referenced or not_applicable with a brief reason. Empty without lessons.")
+
+
+# LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
+# numeric field instead of omitting it. Coerce those to None so the structured
+# call validates instead of erroring (#1058). Pydantic still parses real numeric
+# strings ("189.5") to float.
+_NULLISH_FLOAT = {"", "none", "n/a", "na", "null", "nil", "-", "tbd", "unknown"}
+
+
+def _coerce_optional_float(value):
+    if isinstance(value, str) and value.strip().lower() in _NULLISH_FLOAT:
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +173,11 @@ class TraderProposal(MemoryAwareReport):
         default=None,
         description="Optional holding horizon, e.g. '3-10 trading days'.",
     )
+
+    @field_validator("entry_price", "stop_loss", mode="before")
+    @classmethod
+    def _nullish_float_to_none(cls, v):
+        return _coerce_optional_float(v)
 
 
 def render_trader_proposal(proposal: TraderProposal) -> str:
@@ -463,6 +481,11 @@ class PortfolioDecision(BaseModel):
             if condition.trigger_action is None:
                 condition.trigger_action = defaults[condition.kind]
         return self
+
+    @field_validator("price_target", mode="before")
+    @classmethod
+    def _nullish_float_to_none(cls, v):
+        return _coerce_optional_float(v)
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:

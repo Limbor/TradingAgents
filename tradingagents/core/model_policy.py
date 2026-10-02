@@ -32,9 +32,12 @@ def model_policy(config: dict[str, Any]) -> ModelPolicy:
     return ModelPolicy(default_model=default, deep_model=deep if deep and deep != default else None)
 
 
-def resolve_model(config: dict[str, Any], purpose: str = "default", override: str | None = None) -> str:
+def resolve_model(config: dict[str, Any], purpose: str = "default", override: str | None = None,
+                  *, require_config: bool = False) -> str:
     if override is not None:
         return ModelPolicy(default_model=override).default_model
+    if require_config and not any(config.get(key) for key in ("model_policy", "agent_model", "quick_think_llm", "deep_think_llm")):
+        raise ValueError("未配置默认模型")
     policy = model_policy(config)
     return (policy.deep_model or policy.default_model) if purpose == "deep" else policy.default_model
 

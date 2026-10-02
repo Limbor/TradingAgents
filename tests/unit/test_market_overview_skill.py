@@ -31,6 +31,29 @@ from tradingagents.skills.market_overview.skill import (
 mo = importlib.import_module("tradingagents.skills.market_overview.skill")
 
 
+@pytest.mark.parametrize("provider,settings,expected", [
+    ("deepseek", {"temperature": 0.1}, {"temperature": 0.1}),
+    ("openai", {"temperature": 0.2, "openai_reasoning_effort": "high"},
+     {"temperature": 0.2, "reasoning_effort": "high"}),
+])
+def test_shared_provider_settings_are_forwarded_once(monkeypatch, provider, settings, expected):
+    received = {}
+    class Native:
+        def with_structured_output(self, schema):
+            return self
+    def factory(**kwargs):
+        received.update(kwargs)
+        return SimpleNamespace(get_llm=lambda: Native())
+    monkeypatch.setattr(mo, "create_llm_client", factory)
+    degraded = []
+    models = mo._make_structured_llms({"llm_provider": provider,
+        "model_policy": {"default_model": "shared-model"}, **settings}, degraded)
+    assert len(models) == 3
+    assert degraded == []
+    assert received["model"] == "shared-model"
+    assert all(received[key] == value for key, value in expected.items())
+
+
 def _board_rows(n: int) -> list[dict]:
     return [
         {"industry": f"板块{i}", "pct_change": float(i), "main_inflow": None, "leader_stock": None}

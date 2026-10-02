@@ -34,7 +34,6 @@ from tradingagents.core.industry_taxonomy import (
     industry_selection_metadata,
     is_investable_industry_concept,
 )
-from tradingagents.core.llm_candidate_review import _provider_kwargs
 from tradingagents.core.model_policy import provider_kwargs, resolve_model
 from tradingagents.llm_clients.factory import create_llm_client
 from tradingagents.skills._shared import drive_with_progress, resolve_temporal_context
@@ -924,14 +923,13 @@ def _make_structured_llms(config: dict[str, Any], degraded: list[str]) -> dict[s
     """Create structured-output bindings for the 3 batch calls, or {} on failure."""
     try:
         provider = config.get("llm_provider", "openai")
-        model = resolve_model(config)
+        model = resolve_model(config, require_config=True)
         if not model:
             raise ValueError("Shared model policy is not configured")
         llm = create_llm_client(
             provider=provider,
             model=model,
             base_url=config.get("backend_url"), **provider_kwargs(config),
-            **_provider_kwargs(config),
         ).get_llm()
         llm = runtime_model(llm, "Market Researcher", config)
     except Exception as exc:

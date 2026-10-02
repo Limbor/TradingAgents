@@ -168,7 +168,7 @@ def build_candidate_reviewer(
     """Create a reviewer from the unified LLM backbone, returning None on config errors."""
     try:
         provider = config.get("llm_provider", "openai")
-        model = resolve_model(config)
+        model = resolve_model(config, require_config=True)
         if not model:
             raise ValueError("Shared model policy is not configured")
         client = create_llm_client(

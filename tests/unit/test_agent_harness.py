@@ -2574,6 +2574,9 @@ async def test_paper_model_cannot_override_explicit_day(tmp_path, monkeypatch):
         return ledger
 
     harness, store = _harness(tmp_path, paper_handler=paper)
+    # Exercise the legacy date planner explicitly, independent of API-key
+    # fixture values and the primary native tool session's availability.
+    harness._open_native_tool_session = AsyncMock(return_value=None)
     monkeypatch.setattr("tradingagents.core.agent_harness._shanghai_today",
                         lambda: "2026-09-30")
     harness._request_paper_advance_tool = AsyncMock(
