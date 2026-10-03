@@ -166,6 +166,7 @@ async def test_stock_skill_translates_tool_states_without_merging_agent_stage(mo
 @pytest.mark.asyncio
 async def test_ordinary_stock_research_does_not_load_cached_holdings(monkeypatch, tmp_path):
     import importlib
+
     from tradingagents.core.persistence import Database
     from tradingagents.graph import trading_graph
     module = importlib.import_module("tradingagents.skills.stock_analysis.skill")
