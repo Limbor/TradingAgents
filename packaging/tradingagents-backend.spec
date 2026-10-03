@@ -16,7 +16,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 packaging_dir = Path(SPECPATH)
 project_root = packaging_dir.parent
@@ -28,6 +28,7 @@ binaries = []
 # The application package: skills are auto-discovered at runtime, so every
 # submodule must be bundled even if not statically imported.
 hiddenimports += collect_submodules("tradingagents")
+datas += collect_data_files("tradingagents.skills", includes=["*/SKILL.md"])
 
 # uvicorn's protocol/loop implementations are imported by name at runtime.
 hiddenimports += collect_submodules("uvicorn")

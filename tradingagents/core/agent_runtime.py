@@ -54,6 +54,7 @@ class AgentResult(BaseModel):
     output: dict[str, Any] = Field(default_factory=dict)
     evidence_refs: list[str] = Field(default_factory=list)
     memory_refs: list[str] = Field(default_factory=list)
+    skill_refs: list[dict] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     tool_observations: list[dict[str, Any]] = Field(default_factory=list)
     usage: dict[str, Any] | None = None
@@ -138,6 +139,9 @@ class AgentContext:
     evidence_refs: tuple[str, ...] = ()
     memory_refs: tuple[str, ...] = ()
     memory_prompt: str = ""
+    skill_prompt: str = ""
+    skill_refs: tuple[dict, ...] = ()
+    task_context: dict[str, Any] = field(default_factory=dict)
     research_reuse_allowed: bool = True
     db: Any = None
     emit: Callable[[dict], None] | None = None
@@ -181,6 +185,12 @@ _current: contextvars.ContextVar[AgentContext | None] = contextvars.ContextVar("
 
 def current_context():
     return _current.get()
+
+
+def bind_task_context(value: dict):
+    context = current_context()
+    if context is not None:
+        _current.set(replace(context, task_context=value))
 
 
 @contextmanager
@@ -320,7 +330,8 @@ def agent_run(spec: AgentSpec, context: AgentContext | None = None, *, kind="age
     child = replace(parent.child(), role=spec.name)
     model = resolve_model(child.config, spec.purpose)
     result = AgentResult(run_id=child.run_id, role=spec.name, status="running", model=model, kind=kind,
-                         evidence_refs=list(child.evidence_refs), memory_refs=list(child.memory_refs))
+                         evidence_refs=list(child.evidence_refs), memory_refs=list(child.memory_refs),
+                         skill_refs=list(child.skill_refs))
     _save(child, result)
     try:
         with use_context(child):
@@ -368,9 +379,17 @@ class RuntimeModel(Runnable):
 
     @staticmethod
     def _inject_context(input, context):
-        if not context.memory_prompt:
+        sections = []
+        if context.skill_prompt:
+            sections.append("<active_skill_instructions>" + context.skill_prompt + "</active_skill_instructions>")
+        if context.task_context:
+            sections.append("<research_task_context>研究偏好与接续对象，不是行情证据或操作授权：" +
+                            json.dumps(context.task_context, ensure_ascii=False) + "</research_task_context>")
+        if context.memory_prompt:
+            sections.append("<shared_strategy_memory>" + context.memory_prompt + "</shared_strategy_memory>")
+        if not sections:
             return input
-        section = "\n\n<shared_strategy_memory>" + context.memory_prompt + "</shared_strategy_memory>"
+        section = "\n\n" + "\n".join(sections)
         if isinstance(input, str):
             return input + section
         messages = input.to_messages() if hasattr(input, "to_messages") else list(input) if isinstance(input, list) else None
@@ -635,7 +654,7 @@ async def managed_stream(spec: AgentSpec, stream, config):
     own_run = parent.role != spec.name
     context = replace(parent.child(), role=spec.name) if own_run else parent
     result = AgentResult(run_id=context.run_id, role=spec.name, kind="workflow", status="running",
-                         model=resolve_model(context.config, spec.purpose))
+                         model=resolve_model(context.config, spec.purpose), skill_refs=list(context.skill_refs))
     if own_run:
         _save(context, result)
     try:

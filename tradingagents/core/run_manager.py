@@ -232,7 +232,7 @@ class RunManager:
             run_config = {**config, "run_id": run.id}
             if self._db is not None:
                 run_config["db"] = self._db
-            async for event in skill.execute(validated_params, run_config):
+            async for event in skill.managed_execute(validated_params, run_config):
                 if event.event_type == "skill_complete":
                     saw_skill_complete = True
                     await self._record_event(run, run.id, event)

@@ -1828,7 +1828,7 @@ async def _run_deep_analysis_once(
         selection_context=selection_context,
     )
     conclusion: dict[str, Any] = {}
-    async for event in analysis_skill.execute(params, config):
+    async for event in analysis_skill.managed_execute(params, config):
         if event.event_type == "skill_progress" and config.get("_activity_progress"):
             payload = {**event.data}
             payload["activity_id"] = f"deep:{symbol}:{payload.get('activity_id') or payload['stage_id']}"

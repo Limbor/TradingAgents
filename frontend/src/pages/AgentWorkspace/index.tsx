@@ -115,7 +115,7 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
       {task.status === "reviewing" && <p className="pl-6 text-xs text-ui-muted">正在核对证据并形成回答…</p>}
       {textOnly && <p className="text-xs text-ui-muted">本轮未运行分析工具，也没有可引用的结果数据。</p>}
       {task.status === "failed" && <p role="alert" className="text-xs text-ui-danger">{task.error || "任务执行失败"}</p>}
-      {task.status === "interrupted" && <div className="space-y-2"><p role="alert" className="text-xs text-ui-warning">服务重启中断了本次任务；原有记录仍保留。</p><button disabled={retryDisabled} onClick={onRetry} className="rounded-md border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body disabled:opacity-50">重新运行任务</button></div>}
+      {['interrupted', 'failed'].includes(task.status) && !task.proposal && <div className="space-y-2"><p role="alert" className="text-xs text-ui-warning">{task.status === 'interrupted' ? '服务重启中断了本次任务；原有记录仍保留。' : '本次任务未完成。重试会核验已有查询，重新执行失败部分。'}</p><button disabled={retryDisabled} onClick={onRetry} className="rounded-md border border-ui-strong px-3 py-1.5 text-xs font-medium text-ui-body disabled:opacity-50">重新运行任务</button></div>}
       {task.status === "needs_review" && <p role="alert" className="text-xs text-ui-warning">外部执行状态不确定。请在模拟盘账本核对，系统不会自动重复提交。</p>}
     </div>
   </div>;
@@ -252,6 +252,17 @@ function Inspector({ task, paperId, paperName, overlay, onClose, conversationUsa
       {paperId && <section><h3 className="agent-section-title">账户范围</h3><strong className="mt-2 block truncate text-sm font-medium" title={paperId}>{paperName}</strong><div className="mt-1 flex min-w-0 items-center gap-2"><code className="min-w-0 flex-1 truncate text-xs text-ui-muted" title={paperId}>{paperId}</code><button type="button" aria-label="复制账户 ID" title="复制账户 ID" onClick={() => { void navigator.clipboard?.writeText(paperId); }} className="shrink-0 text-ui-muted hover:text-ui-accent"><Copy className="h-3.5 w-3.5" /></button></div><Link to={`/paper?session=${encodeURIComponent(paperId)}`} className="mt-2 inline-flex items-center gap-1 whitespace-nowrap text-xs text-ui-accent">查看完整账本 <ArrowRight className="h-3 w-3" /></Link></section>}
       <section className={paperId ? "border-t border-ui-line pt-4" : ""}><h3 className="agent-section-title">当前目标</h3><p className="mt-2 break-words text-sm leading-6 text-ui-body">{task?.goal || "输入交易问题后，这里显示目标、证据和结果。"}</p></section>
       <UsageSummary usage={conversationUsage} conversation />
+      {task?.task_context && <section className="border-t border-ui-line pt-4">
+        <h3 className="agent-section-title">研究条件</h3>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs text-ui-muted">
+          {[...task.task_context.symbols, ...task.task_context.industries,
+            task.task_context.horizon === 'medium_term' ? '中线' : task.task_context.horizon === 'short_term' ? '短线' : task.task_context.horizon === 'long_term' ? '长线' : '',
+            task.task_context.filters.board_filter === 'main_board' ? '排除科创与创业板' : task.task_context.filters.board_filter === 'dual_growth_only' ? '仅科创与创业板' : '',
+            task.task_context.filters.limit ? `${task.task_context.filters.limit} 个关注方向` : '',
+          ].filter(Boolean).map(value => <span key={value} className="rounded-md border border-ui-line px-2 py-1">{value}</span>)}
+        </div>
+        <p className="mt-2 text-xs leading-5 text-ui-faint">{task.task_context.inherited_from ? '已接续上一轮研究对象与条件；行情依据会重新核验。' : '按本轮问题整理研究条件。'}</p>
+      </section>}
       {task && <div className="space-y-4 border-t border-ui-line pt-4">{taskMemory(task) && <MemoryDetails trace={taskMemory(task)} />}<RoleMemory task={task} /></div>}
       <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">证据快照 <span className="font-normal text-ui-faint">{task?.evidence.length ?? 0} 项</span></h3>
         {task?.evidence.length ? <div className="mt-3">{task.evidence.map((item) => <EvidenceCard key={item.id} item={item} />)}</div> : <p className="mt-2 text-xs leading-5 text-ui-faint">等待工具返回可核对的数据来源。</p>}
@@ -412,7 +423,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     } catch { /* Storage may be unavailable in a restricted browser. */ }
   }, [conversations.isSuccess, queryClient]);
 
-  const send = useCallback(async (raw: string, intentHint?: IntentHint) => {
+  const send = useCallback(async (raw: string, intentHint?: IntentHint, retryTaskId?: string) => {
     const message = raw.trim();
     if (!message || busy || running || loadingRequested || modelSaving) return;
     setBusy(true);
@@ -425,7 +436,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
         selectCreatedConversation(created);
         await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
       }
-      await submitAgentTask(id, message, intentHint);
+      await submitAgentTask(id, message, intentHint, undefined, retryTaskId);
       setInput("");
       setPendingHint(undefined);
       await queryClient.invalidateQueries({ queryKey: ["agent-conversation", id] });
@@ -532,7 +543,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
                 {message.role === "assistant" && task && <UsageSummary usage={task.usage_stats} />}
               </div>
             </div>
-            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} paperName={paperName} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} onCloseReview={() => void decideProposal("close_review", task)} /></div>}
+            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal, undefined, task.id)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} paperName={paperName} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} onCloseReview={() => void decideProposal("close_review", task)} /></div>}
           </div>;
         })}
       </div></div>

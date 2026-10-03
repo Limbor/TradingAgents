@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -28,6 +28,7 @@ class NewTask(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     intent_hint: dict | None = None
     model_selection: TaskModelSelection | None = None
+    retry_task_id: str | None = Field(default=None, max_length=64)
 
 
 class LegacyMessage(BaseModel):
@@ -112,8 +113,9 @@ async def create_task(request: Request, conversation_id: str, body: NewTask):
     try:
         if body.intent_hint and len(json.dumps(body.intent_hint, ensure_ascii=False)) > 4096:
             raise ValueError("指定技能参数过大")
+        retry = {"retry_task_id": body.retry_task_id} if body.retry_task_id else {}
         return request.app.state.agent_harness.submit(conversation_id, body.message,
-                                                      body.intent_hint, body.model_selection)
+                                                      body.intent_hint, body.model_selection, **retry)
     except KeyError as exc:
         raise HTTPException(404, "对话不存在") from exc
     except ValueError as exc:
@@ -130,6 +132,18 @@ def get_task(request: Request, task_id: str):
     return {**task, "agent_runs": records, "usage_stats": summarize_usage(records), "events": request.app.state.agent_store.list_events(task_id),
             "evidence": request.app.state.agent_store.list_evidence(task_id),
             "proposal": request.app.state.agent_store.proposal_for_task(task_id)}
+
+
+@router.get("/tasks/{task_id}/evidence/{evidence_id}")
+def read_task_evidence(request: Request, task_id: str, evidence_id: str,
+                       path: Annotated[list[str], Query()] = (),
+                       offset: int = Query(default=0, ge=0, le=100000),
+                       limit: int = Query(default=10, ge=1, le=20)):
+    try:
+        return request.app.state.agent_store.read_evidence(task_id, evidence_id,
+                                                          path=path, offset=offset, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}/events")

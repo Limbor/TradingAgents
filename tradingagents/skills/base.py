@@ -152,3 +152,37 @@ class BaseSkill(ABC):
     def validate_output(self, raw: dict[str, Any]) -> BaseModel:
         """Validate a successful terminal payload against the declared schema."""
         return self.output_schema.model_validate(raw)
+
+    async def managed_execute(self, params: BaseModel, config: dict[str, Any]) -> AsyncIterator[SkillEvent]:
+        """Use the same selected instructions for API runs and nested workflows."""
+        from dataclasses import replace
+
+        from tradingagents.core.agent_runtime import AgentContext, current_context, use_context
+        from tradingagents.skills.documents import load_skill_document
+
+        document = load_skill_document(self.metadata.id)
+        if document is None:
+            async for event in self.execute(params, config):
+                yield event
+            return
+        run_config = {**config, "skill_document_hash": document.digest}
+        context = current_context() or AgentContext.root(run_config)
+        context = replace(context, config=run_config,
+                          skill_prompt=document.instructions, skill_refs=(document.reference(),))
+        yield skill_progress(stage_id=f"skill-document:{self.metadata.id}",
+                             stage_label="读取研究流程与约束", status="completed",
+                             detail=f"{self.metadata.name} · 文档 v{document.version}",
+                             data={"skill_document": document.reference()})
+        stream = self.execute(params, run_config)
+        try:
+            while True:
+                try:
+                    with use_context(context):
+                        event = await stream.__anext__()
+                        context = current_context()
+                except StopAsyncIteration:
+                    break
+                yield event
+        finally:
+            with use_context(context):
+                await stream.aclose()

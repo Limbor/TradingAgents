@@ -93,8 +93,9 @@ test("interrupted read task requires an explicit retry", async ({ page }) => {
     let body: unknown = detail;
     if (path === "/api/v1/agent/conversations") body = [conversation];
     else if (path.endsWith("/tasks") && route.request().method() === "POST") {
-      const request = route.request().postDataJSON() as { message: string };
+      const request = route.request().postDataJSON() as { message: string; retry_task_id: string };
       expect(request.message).toBe(goal);
+      expect(request.retry_task_id).toBe("task-old");
       submissions += 1;
       body = { id: "task-new" };
     }

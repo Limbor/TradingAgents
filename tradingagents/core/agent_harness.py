@@ -28,10 +28,12 @@ from tradingagents.core.agent_runtime import (
     AgentSession,
     ToolExecutor,
     bind_scope,
+    bind_task_context,
     current_context,
     runtime_model,
     use_context,
 )
+from tradingagents.core.evidence_context import evidence_slice
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
 from tradingagents.core.llm_usage import summarize_usage
 from tradingagents.core.model_policy import (
@@ -47,7 +49,15 @@ from tradingagents.core.strategy_memory import (
     select_strategy_lessons,
     validate_memory_usage,
 )
+from tradingagents.core.task_context import (
+    accept_skill_context,
+    apply_context_args,
+    build_task_context,
+    is_continuation,
+)
+from tradingagents.core.task_recovery import checkpoint_key, checkpoint_valid
 from tradingagents.dataflows.symbol_utils import normalize_cn_display
+from tradingagents.skills.documents import load_skill_document, skill_contract
 
 logger = logging.getLogger(__name__)
 _PAPER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
@@ -75,6 +85,7 @@ _STOCK_REFERENCE = re.compile(
 )
 _MAX_EVIDENCE_CHARS = 60_000
 _MAX_PLAN_STEPS = 4
+_MAX_TOOL_ROUNDS = 6
 _ADVANCE_PREFIX = r"推进(?:(?:组合|策略)?模拟盘)?(?:至|到)\s*"
 _ADVANCE_INTENT = re.compile(_ADVANCE_PREFIX + r"\S")
 _ADVANCE_TARGET = re.compile(_ADVANCE_PREFIX + r"(\d{4}-\d{2}-\d{2})")
@@ -371,7 +382,27 @@ class AgentStore:
             return None
         result = dict(row)
         result["result"] = json.loads(result.pop("result_json") or "{}")
+        result["task_context"] = self.task_context(task_id)
         return result
+
+    def task_context(self, task_id: str) -> dict:
+        with self.db._conn() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM agent_events WHERE task_id = ? "
+                "AND event_type = 'task_context_updated' ORDER BY seq DESC LIMIT 1", (task_id,),
+            ).fetchone()
+        return json.loads(row[0]).get("context", {}) if row else {}
+
+    def previous_context(self, conversation_id: str, task_id: str) -> tuple[str | None, dict]:
+        with self.db._conn() as conn:
+            row = conn.execute(
+                "SELECT e.task_id, e.payload_json FROM agent_events e JOIN agent_tasks t "
+                "ON t.id=e.task_id WHERE t.conversation_id=? "
+                "AND t.rowid < (SELECT rowid FROM agent_tasks WHERE id=?) "
+                "AND e.event_type='task_context_updated' ORDER BY t.rowid DESC, e.seq DESC LIMIT 1",
+                (conversation_id, task_id),
+            ).fetchone()
+        return (row[0], json.loads(row[1]).get("context", {})) if row else (None, {})
 
     def list_tasks(self, conversation_id: str) -> list[dict]:
         with self.db._conn() as conn:
@@ -431,13 +462,6 @@ class AgentStore:
         warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
         summary = _evidence_summary(tool_name, result)
         raw = _json(result)
-        if len(raw) > _MAX_EVIDENCE_CHARS:
-            compact = _answer_evidence_result({"tool_name": tool_name, "result": result})
-            if compact.get("compacted") and len(_json(compact)) <= _MAX_EVIDENCE_CHARS:
-                raw = _json(compact)
-            else:
-                raw = _json({"truncated": True, "summary": summary})
-                warnings = [*warnings, "工具结果过长，完整结果未保存到任务证据中"]
         with self.db._conn() as conn:
             conn.execute(
                 "INSERT INTO agent_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -446,7 +470,7 @@ class AgentStore:
             )
         return {"id": eid, "task_id": task_id, "tool_name": tool_name,
                 "source": source, "as_of_date": as_of, "retrieved_at": now,
-                "summary": summary, "warnings": warnings, "result": json.loads(raw)}
+                "summary": summary, "warnings": warnings, "result": self._evidence_projection(tool_name, result)}
 
     def list_evidence(self, task_id: str) -> list[dict]:
         with self.db._conn() as conn:
@@ -458,7 +482,29 @@ class AgentStore:
                  "tool_name": row["tool_name"], "source": row["source"],
                  "as_of_date": row["as_of_date"], "retrieved_at": row["retrieved_at"],
                  "summary": row["summary"], "warnings": json.loads(row["warnings_json"]),
-                 "result": json.loads(row["result_json"])} for row in rows]
+                 "result": self._evidence_projection(row["tool_name"], json.loads(row["result_json"]))} for row in rows]
+
+    @staticmethod
+    def _evidence_projection(tool_name: str, result: dict) -> dict:
+        raw = _json(result)
+        if len(raw) <= _MAX_EVIDENCE_CHARS:
+            return result
+        compact = _answer_evidence_result({"tool_name": tool_name, "result": result})
+        if not compact.get("compacted") or len(_json(compact)) > _MAX_EVIDENCE_CHARS:
+            compact = {"compacted": True, "available_fields": list(result),
+                       **{key: result[key] for key in ("error", "source", "as_of_date") if key in result}}
+        return {**compact, "storage": {"full_result_saved": True, "chars": len(raw),
+                                      "sha256": hashlib.sha256(raw.encode()).hexdigest()},
+                "projection_note": "此处为摘要；可按证据 ID 和字段分页读取完整数据"}
+
+    def read_evidence(self, task_id: str, evidence_id: str, *, path=(), offset=0, limit=10) -> dict:
+        with self.db._conn() as conn:
+            row = conn.execute("SELECT result_json, source, as_of_date FROM agent_evidence "
+                               "WHERE task_id=? AND id=?", (task_id, evidence_id)).fetchone()
+        if row is None:
+            raise ValueError("当前任务不存在该证据")
+        return {"evidence_id": evidence_id, "source": row["source"], "as_of_date": row["as_of_date"],
+                **evidence_slice(json.loads(row["result_json"]), list(path), offset, limit)}
 
     def create_proposal(self, task_id: str, session_id: str, target_date: str,
                         baseline: dict) -> dict:
@@ -867,13 +913,13 @@ class _NativeToolSession(AgentSession):
     """Compatibility adapter for server-verified observations and compact evidence."""
     def __init__(self, llm, goal, system_prompt, allowed, timeout, history=None):
         super().__init__(llm, goal, system_prompt, allowed, timeout, history,
-                         max_rounds=_MAX_PLAN_STEPS + 2,
+                         max_rounds=_MAX_TOOL_ROUNDS + 2,
                          encode=lambda value: _bounded_tool_context(value, limit=16000))
 
     def observe_server_step(self, name, item):
         from langchain_core.messages import HumanMessage
         self.messages.append(HumanMessage(content=_bounded_tool_context({
-            "server_verified_tool": name, "source": item["source"],
+            "server_verified_tool": name, "evidence_id": item["id"], "source": item["source"],
             "as_of_date": item["as_of_date"], "summary": item["summary"],
             "data": _answer_evidence_result(item),
         })))
@@ -936,7 +982,8 @@ class TradingAgentHarness:
 
     def submit(self, conversation_id: str, goal: str,
                intent_hint: dict | None = None,
-               model_selection: TaskModelSelection | dict | None = None) -> dict:
+               model_selection: TaskModelSelection | dict | None = None,
+               retry_task_id: str | None = None) -> dict:
         conversation = self.store.get_conversation(conversation_id)
         if not conversation:
             raise KeyError(conversation_id)
@@ -944,6 +991,13 @@ class TradingAgentHarness:
         if not goal or len(goal) > 4000:
             raise ValueError("请输入 1–4000 字的交易问题")
         snapshot = task_model_config(self.config, model_selection)
+        if retry_task_id:
+            source = self.store.get_task(retry_task_id)
+            if (not source or source["conversation_id"] != conversation_id or
+                    source["status"] not in {"failed", "interrupted"} or source["goal"] != goal or
+                    self.store.proposal_for_task(retry_task_id)):
+                raise ValueError("仅可恢复同一对话中失败或中断的只读任务")
+            snapshot["retry_task_id"] = retry_task_id
         user_input = goal
         clarified_from = None
         skill_clarified_from = None
@@ -986,7 +1040,7 @@ class TradingAgentHarness:
         self.store.event(task["id"], "task_created", {
             "goal": goal, "budget": {"total_seconds": timeout_seconds,
                                      "max_tool_steps": _MAX_PLAN_STEPS,
-                                     "max_harness_model_calls": _MAX_PLAN_STEPS + 2},
+                                     "max_harness_model_calls": _MAX_TOOL_ROUNDS + 2},
             "model": selected_model,
             "provider": snapshot.get("llm_provider"),
             "model_source": "chat_selection" if model_selection else "default",
@@ -1485,10 +1539,13 @@ class TradingAgentHarness:
                         available_skills.append(skill_id)
                         metadata = getattr(skill, "metadata", None)
                         input_schema = getattr(skill, "input_schema", None)
+                        document = load_skill_document(skill_id)
                         skill_catalog.append({
                             "skill_id": skill_id,
-                            "description": str(getattr(metadata, "description", ""))[:1200],
-                            "parameters": input_schema.model_json_schema() if input_schema else {},
+                            "description": document.description if document else str(getattr(metadata, "description", ""))[:400],
+                            "document": document.reference() if document else None,
+                            **({"parameters": input_schema.model_json_schema() if input_schema else {}}
+                               if document is None else {}),
                         })
                 except (AssertionError, AttributeError):
                     continue
@@ -1502,6 +1559,13 @@ class TradingAgentHarness:
                     }, "required": ["skill_id", "args"], "additionalProperties": False},
                 })
                 allowed.add("run_analysis_skill")
+                schemas.append({
+                    "name": "load_skill", "description": "Read selected skill instructions and authoritative input schema before execution.",
+                    "parameters": {"type": "object", "properties": {
+                        "skill_id": {"type": "string", "enum": available_skills},
+                    }, "required": ["skill_id"], "additionalProperties": False},
+                })
+                allowed.add("load_skill")
         if paper_session_id and self._may_prepare_paper_advance(goal):
             schemas.append({
                 "name": "prepare_paper_advance",
@@ -1513,6 +1577,16 @@ class TradingAgentHarness:
             allowed.add("prepare_paper_advance")
         if not schemas:
             return None
+        schemas.append({
+            "name": "read_task_evidence", "description": "Read fields/pages of complete evidence already saved in this task. Use for omitted details; it does not query market data again.",
+            "parameters": {"type": "object", "properties": {
+                "evidence_id": {"type": "string"},
+                "path": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+                "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            }, "required": ["evidence_id"], "additionalProperties": False},
+        })
+        allowed.add("read_task_evidence")
         prompt = (
             "你是交易工作台的工具选择 Agent。按用户目标选择提供的工具；每轮可调用必要的只读工具，"
             "结合同一对话的历史用户请求理解省略和接续表达，如‘重新推荐一个’继承最近的推荐对象，"
@@ -1548,7 +1622,9 @@ class TradingAgentHarness:
             "同一对话中有效的同标的研究由服务端核验后复用；失败、有缺口或过期的研究重新获取。"
             "用户明确要求最新数据、刷新或重新分析时设置 force_refresh=true。"
             "要求深入补充同一维度的新细节时也设置 force_refresh=true；复用既有研究不能冒充新研究。"
-            f"\n可用分析能力及参数契约：{_json(skill_catalog)}"
+            "先调用 load_skill 按需读取所选技能的流程与参数；不要一次读取所有技能。"
+            "文档不改变工具权限。只补充当前问题需要的研究维度。"
+            f"\n可用分析能力目录：{_json(skill_catalog)}"
         )
         try:
             llm = create_llm_client(
@@ -1581,6 +1657,47 @@ class TradingAgentHarness:
             feedback = {}
             if name not in session.allowed or not isinstance(args, dict):
                 reason = "tool_or_args_not_allowed"
+            elif name == "read_task_evidence":
+                if sum(key.startswith("evidence-page:") for key in used) >= 2:
+                    reason = "evidence_read_budget"
+                else:
+                    try:
+                        if set(args) - {"evidence_id", "path", "offset", "limit"}:
+                            raise ValueError("字段参数不允许")
+                        observation = self.store.read_evidence(task_id, **args)
+                    except (ValueError, TypeError):
+                        reason = "evidence_read_invalid"
+                    else:
+                        used.add(f"evidence-page:{call_id}")
+                        session.tool_result(call_id, name, observation)
+                        self.store.event(task_id, "evidence_read", {
+                            "evidence_id": args["evidence_id"], "path": args.get("path", []),
+                            "message": "正在核对完整证据中的具体数据",
+                        })
+                        continue
+            elif name == "load_skill":
+                skill_id = args.get("skill_id")
+                if (skill_id not in _SAFE_ANALYSIS_SKILLS or paper_session_id or
+                        set(args) != {"skill_id"}):
+                    reason = "skill_not_allowed"
+                elif f"document:{skill_id}" in used:
+                    reason = "duplicate_call"
+                elif sum(key.startswith("document:") for key in used) >= 2:
+                    reason = "skill_document_budget"
+                else:
+                    skill = self.skills.get(skill_id)
+                    if skill is None:
+                        reason = "skill_not_available"
+                    else:
+                        used.add(f"document:{skill_id}")
+                        session.tool_result(call_id, name, skill_contract(skill))
+                        document = load_skill_document(skill_id)
+                        self.store.event(task_id, "skill_loaded", {
+                            "skill_id": skill_id, "name": skill.metadata.name,
+                            "document": document.reference() if document else None,
+                            "message": "已读取所选研究流程与参数，正在选择所需能力",
+                        })
+                        continue
             elif name == "prepare_paper_advance":
                 if (not paper_session_id or len(calls) != 1 or
                         not self._may_prepare_paper_advance(self.store.get_task(task_id)["goal"])):
@@ -1698,9 +1815,20 @@ class TradingAgentHarness:
             return
         goal = task["goal"]
         history = self._conversation_history(conversation["id"], task_id)
+        previous_id, previous_context = self.store.previous_context(conversation["id"], task_id)
+        task_context = build_task_context(goal, previous_context, previous_task_id=previous_id,
+                                          paper_session_id=conversation.get("paper_session_id"))
+        self.store.event(task_id, "task_context_updated", {"context": task_context,
+                         "message": "已整理本轮研究对象与条件"})
+        bind_task_context(task_context)
         fallback_hint = intent_hint
         if fallback_hint is None and not conversation.get("paper_session_id"):
             fallback_hint = self._sector_fallback_hint(goal, history)
+            if (fallback_hint is None and task_context.get("target") == "sector" and
+                    is_continuation(goal)):
+                fallback_hint = {"skill_id": "market_overview", "params": {
+                    "focus_industries": task_context.get("industries", []),
+                }}
         model = model or self._agent_model()
         timed_out = False
         active_step_id: str | None = None
@@ -1729,6 +1857,9 @@ class TradingAgentHarness:
         try:
             enforce_budget()
             tickers = self._goal_tickers(goal)
+            if (not tickers and is_continuation(goal) and task_context.get("target") == "stock"):
+                tickers = [symbol for symbol in task_context.get("symbols", [])
+                           if _A_SHARE_TICKER.fullmatch(symbol)]
             if not tickers and self._is_stock_followup(goal):
                 tickers, scope_error = self._resolve_stock_reference(conversation["id"], task_id)
                 if scope_error:
@@ -1741,6 +1872,9 @@ class TradingAgentHarness:
                 })
             if tickers:
                 bind_scope(symbols=tickers)
+                task_context["symbols"] = tickers
+                self.store.event(task_id, "task_context_updated", {"context": task_context})
+                bind_task_context(task_context)
             if (not tickers and not conversation.get("paper_session_id") and
                     self._asks_trade_decision(goal)):
                 content = ("请直接回复要评估的 A 股代码（例如 600519.SH），我会继续这项问题；"
@@ -1827,7 +1961,7 @@ class TradingAgentHarness:
                 date_retried: set[tuple[str, str]] = set()
                 while True:
                     if step_index >= len(plan):
-                        if (native and not native_finished and native.rounds < _MAX_PLAN_STEPS and
+                        if (native and not native_finished and native.rounds < _MAX_TOOL_ROUNDS and
                                 len(plan) < _MAX_PLAN_STEPS and native_action is None):
                             try:
                                 calls = await native.choose()
@@ -1854,7 +1988,7 @@ class TradingAgentHarness:
                                     continue
                                 if native_action is not None:
                                     break
-                                if native.rounds < _MAX_PLAN_STEPS:
+                                if native.rounds < _MAX_TOOL_ROUNDS:
                                     continue  # Rejected calls received ToolMessages; let the model repair them.
                             elif native:
                                 native_finished = True
@@ -1954,6 +2088,8 @@ class TradingAgentHarness:
                             "end_date" not in step["args"]):
                         result = {"error": "模拟盘账本缺少有效基准日，不能查询对应时点的风险公告",
                                   "ts_code": step["args"]["ts_code"]}
+                    elif (restored := self._restore_read_checkpoint(task_id, step, tickers, paper_session_id)) is not None:
+                        result = restored
                     elif step["tool"] == "skill":
                         result = await self._run_skill(task_id, step["skill_id"], step["args"])
                     else:
@@ -2033,6 +2169,14 @@ class TradingAgentHarness:
                         result.setdefault("source", tool_policy.data_source)
                     item = self.store.add_evidence(task_id, step["tool"], result)
                     evidence.append(item)
+                    key = checkpoint_key(step["tool"], step["args"], self.config)
+                    requested_date = step["args"].get("trade_date") or step["args"].get("end_date")
+                    if (key and not paper_session_id and not result.get("error") and
+                            item["as_of_date"] == requested_date and item["source"] and
+                            not result.get("reused_checkpoint")):
+                        self.store.event(task_id, "read_checkpoint_saved", {
+                            "key": key, "evidence_id": item["id"], "retrieved_at": item["retrieved_at"],
+                        })
                     if step["tool"] == "get_strategy_lessons" and result.get("error"):
                         self.store.event(task_id, "memory_unavailable", {
                             "message": "历史经验检索暂不可用，本轮继续依据当前数据分析",
@@ -2056,7 +2200,7 @@ class TradingAgentHarness:
                     active_step_id = None
                     if native:
                         observation = {
-                            "source": item["source"], "as_of_date": item["as_of_date"],
+                            "evidence_id": item["id"], "source": item["source"], "as_of_date": item["as_of_date"],
                             "summary": item["summary"], "warnings": item["warnings"],
                             "data": _answer_evidence_result(item),
                         }
@@ -3142,18 +3286,63 @@ class TradingAgentHarness:
                 self.store.set_status(task_id, "needs_review", error=str(exc))
                 self.store.event(task_id, "action_unknown", {"message": str(exc)})
 
+    def _restore_read_checkpoint(self, task_id: str, step: dict, tickers: list[str],
+                                 paper_session_id: str | None) -> dict | None:
+        source_id = self.config.get("retry_task_id")
+        key = checkpoint_key(step["tool"], step["args"], self.config)
+        tool = self.tools.get(step["tool"])
+        if (not source_id or not key or paper_session_id or not tool or tool.permission != "read" or
+                step["args"].get("ts_code") not in tickers):
+            return None
+        source = self.store.get_task(source_id)
+        task = self.store.get_task(task_id)
+        if (not source or not task or source["conversation_id"] != task["conversation_id"] or
+                source["status"] not in {"failed", "interrupted"} or
+                self.store.proposal_for_task(source_id)):
+            return None
+        for event in reversed(self.store.list_events(source_id)):
+            if event["event_type"] != "read_checkpoint_saved" or not checkpoint_valid(event["payload"], key=key):
+                continue
+            receipt = event["payload"]
+            with self.store.db._conn() as conn:
+                row = conn.execute("SELECT result_json FROM agent_evidence WHERE id=? AND task_id=?",
+                                   (receipt["evidence_id"], source_id)).fetchone()
+            if row is None:
+                continue
+            result = json.loads(row[0])
+            if result.get("error"):
+                continue
+            self.store.event(task_id, "checkpoint_reused", {
+                "source_task_id": source_id, "evidence_id": receipt["evidence_id"],
+                "message": "沿用同日期且仍有效的查询；失败部分重新执行",
+            })
+            return {**result, "reused_checkpoint": {"task_id": source_id,
+                     "evidence_id": receipt["evidence_id"], "retrieved_at": receipt["retrieved_at"]}}
+        return None
+
     async def _run_skill(self, task_id: str, skill_id: str, params: dict) -> dict:
         if skill_id not in _SAFE_ANALYSIS_SKILLS:
             return {"error": "该技能不允许在只读 Agent 中运行"}
         skill = self.skills.get(skill_id)
         if skill is None:
             return {"error": f"找不到分析能力：{skill_id}"}
+        task_context = self.store.task_context(task_id)
+        params = apply_context_args(skill_id, params, task_context)
         schema = getattr(skill, "input_schema", None)
         try:
             if schema:
                 Draft202012Validator(schema.model_json_schema()).validate(params)
         except ValidationError as exc:
             return {"error": f"分析参数不符合契约：{exc.message}", "error_type": "invalid_skill_args"}
+        task_context = accept_skill_context(task_context, skill_id, params)
+        self.store.event(task_id, "task_context_updated", {"context": task_context})
+        bind_task_context(task_context)
+        document = load_skill_document(skill_id)
+        if document:
+            self.store.event(task_id, "skill_loaded", {
+                "skill_id": skill_id, "name": skill.metadata.name, "document": document.reference(),
+                "message": "已读取所选研究流程与参数，正在执行研究",
+            })
         if skill_id == "stock_analysis":
             ticker = normalize_cn_display(str(params.get("ticker") or ""))
             if _A_SHARE_TICKER.fullmatch(ticker):
@@ -3162,6 +3351,8 @@ class TradingAgentHarness:
         # This task owns its cancellation and evidence. Reusing another task's
         # active Skill run would let one conversation cancel the other's work.
         skill_config = dict(self.config)
+        if task_context.get("horizon"):
+            skill_config["investment_style"] = task_context["horizon"]
         if skill_id == "stock_analysis":
             task = self.store.get_task(task_id)
             skill_config["research_conversation_id"] = task["conversation_id"]

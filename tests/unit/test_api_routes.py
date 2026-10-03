@@ -729,3 +729,27 @@ def test_unified_policy_applies_to_compatibility_fields_and_rejects_null(client)
     assert config['agent_model'] == config['quick_think_llm'] == config['deep_think_llm'] == 'shared-model'
     assert client.put('/api/v1/config', json={'model_policy': None}).status_code == 422
     assert client.put('/api/v1/config', json={'model_policy': {'default_model': 'custom'}}).status_code == 422
+
+
+def test_skill_instructions_share_schema_and_document_version(client):
+    response = client.get('/api/v1/skills/stock_analysis/instructions')
+    assert response.status_code == 200
+    contract = response.json()
+    assert contract['document']['skill_id'] == 'stock_analysis'
+    assert contract['document']['version'] == '1.0.0'
+    assert 'fundamentals' in contract['instructions']
+    assert contract['parameters'] == client.get('/api/v1/skills/stock_analysis/schema').json()
+    assert client.get('/api/v1/skills/missing/instructions').status_code == 404
+
+
+def test_full_evidence_api_is_scoped_and_paginated(client):
+    store = client.app.state.agent_store
+    conversation = store.create_conversation('test', None)
+    task = store.create_task(conversation['id'], 'offline')
+    item = store.add_evidence(task['id'], 'test', {'source': 'fixture', 'rows': list(range(100))})
+    response = client.get(f"/api/v1/agent/tasks/{task['id']}/evidence/{item['id']}",
+                          params={'path': 'rows', 'offset': 95, 'limit': 2})
+    assert response.status_code == 200 and response.json()['items'] == [95, 96]
+    assert client.get(f"/api/v1/agent/tasks/other/evidence/{item['id']}").status_code == 422
+    assert client.get(f"/api/v1/agent/tasks/{task['id']}/evidence/{item['id']}", params={'limit': 21}).status_code == 422
+    store.set_status(task['id'], 'completed')

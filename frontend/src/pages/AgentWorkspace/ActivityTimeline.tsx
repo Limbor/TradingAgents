@@ -32,6 +32,15 @@ export function taskActivities(task: AgentTask): Activity[] {
   const normalizedAgents = new Set(task.events.filter((e) => e.event_type === 'skill_progress' && e.payload.event_type === 'skill_progress')
     .map((e) => `${String(e.payload.run_id ?? '')}:${String(object(e.payload.payload).agent ?? '')}`));
   for (const event of task.events) {
+    if (['skill_loaded', 'task_context_updated', 'evidence_read', 'checkpoint_reused'].includes(event.event_type)) {
+      const label = event.event_type === 'skill_loaded' ? '读取技能流程'
+        : event.event_type === 'evidence_read' ? '核对完整证据'
+        : event.event_type === 'checkpoint_reused' ? '恢复已完成的查询' : '整理研究对象与条件';
+      const id = `${event.event_type}:${String(event.payload.skill_id ?? event.payload.evidence_id ?? '')}`;
+      activities.set(id, { id, label, message: label, status: 'completed',
+        detail: text(event.payload.name) ?? text(event.payload.message) });
+      continue;
+    }
     if (event.event_type === 'agent_runtime') {
       const record = event.payload;
       const id = text(record.run_id);

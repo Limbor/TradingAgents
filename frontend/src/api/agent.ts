@@ -69,7 +69,19 @@ export interface SpecialistRun {
   memory_refs: string[];
 }
 
+export interface ResearchTaskContext {
+  target: string;
+  symbols: string[];
+  industries: string[];
+  filters: { board_filter?: string; limit?: number };
+  horizon: string | null;
+  dimensions: string[];
+  inherited_from: string | null;
+  last_skill: string | null;
+}
+
 export interface AgentTask {
+  task_context?: ResearchTaskContext;
   usage_stats?: UsageStats;
   agent_runs?: SpecialistRun[];
   id: string;
@@ -213,11 +225,11 @@ export async function readAgentTaskStream(
   return { lastSeq, done };
 }
 
-export const submitAgentTask = (id: string, message: string, intentHint?: IntentHint, modelSelection?: TaskModelSelection) =>
+export const submitAgentTask = (id: string, message: string, intentHint?: IntentHint, modelSelection?: TaskModelSelection, retryTaskId?: string) =>
   fetchJson<AgentTask>(`${agentApiBase}/conversations/${encodeURIComponent(id)}/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, intent_hint: intentHint, model_selection: modelSelection }),
+    body: JSON.stringify({ message, intent_hint: intentHint, model_selection: modelSelection, retry_task_id: retryTaskId }),
   });
 
 export const cancelAgentTask = (id: string) =>

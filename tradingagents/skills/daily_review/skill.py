@@ -103,7 +103,7 @@ class DailyReviewSkill(BaseSkill):
             progress_pct=30,
         )
         risk_result: dict[str, Any] = {}
-        async for event in risk_monitor_skill.execute(
+        async for event in risk_monitor_skill.managed_execute(
             RiskMonitorInput(lookback_days=input_params.risk_lookback_days),
             config,
         ):
@@ -148,7 +148,7 @@ class DailyReviewSkill(BaseSkill):
             progress_pct=75,
         )
         daily_result: dict[str, Any] = {}
-        async for event in daily_pipeline_skill.execute(
+        async for event in daily_pipeline_skill.managed_execute(
             DailyPipelineInput(
                 trade_date=input_params.trade_date,
                 limit=input_params.daily_limit,

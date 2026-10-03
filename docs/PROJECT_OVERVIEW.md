@@ -17,7 +17,8 @@ flowchart TD
     H --> RT[统一 Agent Runtime：模型、工具、范围、预算、用量]
     H --> LT[轻量只读工具]
     H --> RM[RunManager / SkillRegistry]
-    RM --> SK[专业 Skills]
+    RM --> SD[按需加载 SKILL.md / 参数契约]
+    SD --> SK[专业 Skills]
     SK --> LG[LangGraph 研究 / 完整交易评估]
     SK --> RT
     LG --> RT
@@ -53,6 +54,9 @@ flowchart TD
 | `core/agent_harness.py` | 用户目标到结论的任务编排；多轮工具调用、上下文、证据、提案及恢复 |
 | `core/agent_runtime.py` | 统一模型和工具执行、父子运行、范围约束、共享预算、用量回执 |
 | `core/model_policy.py`、`llm_clients/` | 统一模型选择、渠道适配；任务冻结配置；密钥保持在服务端 |
+| `core/task_context.py`、`core/task_recovery.py` | 持久化研究条件、显式重试的只读查询检查点 |
+| `skills/documents.py`、`skills/*/SKILL.md` | 渐进加载业务技能文档；流程、共享约束与版本追溯 |
+| `core/evidence_context.py` | 完整证据按字段分页读取，模型摘要与原始存储分离 |
 | `core/run_manager.py`、`skills/registry.py` | 长任务创建、取消、并发、事件流、Skill 注册与发现 |
 | `agents/`、`graph/` | 专业分析角色和依赖编排；结构化研究、交易与风控结果 |
 | `core/research_context.py` | 有效研究复用；报告和辩论摘要；保留完整原文与原始来源 |
@@ -80,14 +84,16 @@ flowchart TD
 | `strategy_backtest` | 量化规则回测与结果归档 |
 | `decision_audit` | 历史决策的事后核验与统计 |
 
-轻量工具当前有 7 个：`get_paper_session`、`get_portfolio_summary`、`search_artifacts`、`get_recent_runs`、`get_mcp_factor_snapshot`、`get_mcp_risk_announcements`、`get_strategy_lessons`。Harness 另外提供 `run_analysis_skill`；绑定模拟盘且请求适合时提供 `prepare_paper_advance`。专业分析内部还有各角色的数据工具，不能把这 7 个理解为全系统全部数据接口。
+轻量工具当前有 7 个：`get_paper_session`、`get_portfolio_summary`、`search_artifacts`、`get_recent_runs`、`get_mcp_factor_snapshot`、`get_mcp_risk_announcements`、`get_strategy_lessons`。Harness 另外提供 `load_skill`、`run_analysis_skill` 和 `read_task_evidence`；绑定模拟盘且请求适合时提供 `prepare_paper_advance`。专业分析内部还有各角色的数据工具，不能把这 7 个理解为全系统全部数据接口。
+
+10 个技能均使用业务 `SKILL.md`，工作台按需加载，执行时共享对应文档。研究类文档指导模型选择维度，回测、过滤和写操作继续由程序实现。详见 [AGENT_SKILLS.md](AGENT_SKILLS.md)。
 
 ### 研究与完整评估
 
 - **研究模式 `research`**：只执行需要的分析师，适合“补充营收、行业、现金流”等追问。模型工具未指定模板时默认使用该模式。
 - **完整模式 `full`**：分析师 → 多空研究 → 研究负责人 → 交易员 → 激进/中性/保守风控 → 组合负责人。独立 Skill/CLI 保留完整模式默认值。
 - 这些角色共享统一 Runtime、模型策略、范围、证据、预算和用量记录；LangGraph 仍用于表达依赖，不是每个角色都成为完全自由的自治 Agent。
-- 同一会话最近 12 轮、原始研究完成后 30 分钟内，范围和模型/数据/经验上下文一致且取证完整的报告可复用。失败、缺失、过期、显式持仓/选股/反思上下文或强制刷新重新执行。旧记录缺少校验字段时也不直接复用。
+- 同一会话最近 12 轮、原始研究完成后 30 分钟内，范围和模型/数据/经验/技能文档版本一致且取证完整的报告可复用。失败、缺失、过期、显式持仓/选股/反思上下文或强制刷新重新执行。旧记录缺少校验字段时也不直接复用。
 - 下游模型使用按预估 token 限制的原文摘取摘要；完整报告和辩论历史仍存档。压缩不产生额外模型请求，省略内容不能被解释为没有风险。
 
 ## 5. 记忆与学习闭环

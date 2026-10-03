@@ -738,7 +738,7 @@ async def test_native_tool_loop_returns_tool_results_for_another_model_round(tmp
     await harness._active[task["id"]]
 
     assert fake.rounds == 2
-    assert {schema["name"] for schema in fake.schemas} == {"get_recent_runs"}
+    assert {schema["name"] for schema in fake.schemas} == {"get_recent_runs", "read_task_evidence"}
     assert [item["tool_name"] for item in store.list_evidence(task["id"])] == [
         "get_portfolio_summary", "get_recent_runs",
     ]
@@ -817,7 +817,7 @@ async def test_native_tool_loop_prepares_paper_proposal_without_write(tmp_path, 
 
     class FakeModel:
         def bind_tools(self, schemas):
-            assert {schema["name"] for schema in schemas} == {"prepare_paper_advance"}
+            assert {schema["name"] for schema in schemas} == {"prepare_paper_advance", "read_task_evidence"}
             return self
 
         async def ainvoke(self, _messages):
@@ -941,7 +941,7 @@ async def test_native_planning_and_answer_share_persisted_user_topic(
     descriptions = {"market_overview": "行业多空矩阵和板块分析",
                     "market_scanner": "个股筛选"}
     harness.skills = SimpleNamespace(get=lambda name: SimpleNamespace(
-        metadata=SimpleNamespace(description=descriptions[name]), input_schema=SectorParams,
+        metadata=SkillMetadata(id=name, name=name, description=descriptions[name], version="1"), input_schema=SectorParams,
     ) if name in descriptions else None)
     conversation = store.create_conversation("板块观察", None)
     prior = store.create_task(conversation["id"], "推荐近期可以关注的板块")
@@ -974,12 +974,19 @@ async def test_native_planning_and_answer_share_persisted_user_topic(
             assert followup in text
             if self.planning:
                 seen["planning"] += 1
-                assert "focus_industries" in text  # Actual parameter contract.
+                if seen["planning"] > 1:
+                    assert "focus_industries" in text  # Contract is loaded on demand.
+                else:
+                    assert "focus_industries" not in text
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "load_skill", "id": "load-selected",
+                        "args": {"skill_id": expected_skill}, "type": "tool_call",
+                    }])
                 assert "行业多空矩阵和板块分析" in text
                 assert "个股筛选" in text
                 assert "历史操作授权不能沿用" in text
                 assert "助手上一轮的错误回答" in text
-                if seen["planning"] == 1:
+                if seen["planning"] == 2:
                     return AIMessage(content="", tool_calls=[{
                         "name": "run_analysis_skill", "id": "sector-call",
                         "args": {"skill_id": expected_skill, "args": {}}, "type": "tool_call",
@@ -1001,7 +1008,7 @@ async def test_native_planning_and_answer_share_persisted_user_topic(
     current = harness.submit(conversation["id"], followup)
     await harness._active[current["id"]]
     harness._run_skill.assert_awaited_once_with(current["id"], expected_skill, {})
-    assert seen == {"planning": 2, "answer": 1}
+    assert seen == {"planning": 3, "answer": 1}
     assert store.get_task(current["id"])["result"]["content"].startswith("本次只推荐一个")
     assert store.get_task(current["id"])["goal"] == followup
     assert not any(step["tool"] == "chat_agent" for event in store.list_events(current["id"])
@@ -1216,7 +1223,7 @@ async def test_paper_task_persists_events_and_evidence_across_store_reopen(tmp_p
     detail = reopened.conversation_detail(conversation["id"])
     assert calls == ["paper-1"]
     assert detail["tasks"][0]["status"] == "completed"
-    assert [item["event_type"] for item in detail["tasks"][0]["events"] if item["event_type"] != "agent_runtime"] == [
+    assert [item["event_type"] for item in detail["tasks"][0]["events"] if item["event_type"] not in {"agent_runtime", "task_context_updated"}] == [
         "task_created", "plan_created", "step_started", "evidence_added",
         "step_completed", "review_started", "task_completed",
     ]
@@ -1616,7 +1623,7 @@ async def test_same_skill_in_two_conversations_has_independent_cancel_and_final_
     progress = [event for event in store.list_events(tasks[1]["id"])
                 if event["event_type"] == "skill_progress"]
     assert [event["payload"]["event_type"] for event in progress] == [
-        "agent_status", "tool_call", "tool_call", "skill_progress",
+        "skill_progress", "agent_status", "tool_call", "tool_call", "skill_progress",
     ]
     assert store.list_evidence(tasks[1]["id"])[0]["result"]["run_id"] == run_ids[1]
 
@@ -3714,3 +3721,84 @@ async def test_exhausted_stock_analysis_is_failed_and_not_misreported_as_source_
     assert "请检查数据源" not in detail["result"]["content"]
     assert any(e["event_type"] == "task_failed" for e in detail["events"])
     assert not any(e["event_type"] == "task_completed" for e in detail["events"])
+
+
+def test_full_evidence_is_preserved_and_readable_without_cross_task_access(tmp_path):
+    store = AgentStore(Database(tmp_path / 'agent.db'))
+    conversation = store.create_conversation('证据', None)
+    task = store.create_task(conversation['id'], '研究')
+    payload = {'source': 'fixture', 'as_of_date': '2026-10-02',
+               'result': {'rows': [{'value': i, 'details': 'x' * 2000} for i in range(100)]}}
+    item = store.add_evidence(task['id'], 'unknown_tool', payload)
+    assert item['result']['storage']['full_result_saved']
+    assert not item['result'].get('truncated')
+    page = store.read_evidence(task['id'], item['id'], path=['result', 'rows'], offset=98, limit=1)
+    assert page['total'] == 100 and page['items'][0]['value'] == 98
+    assert store.read_evidence(task['id'], item['id'], path=['result', 'rows', '98', 'value'])['value'] == 98
+    with store.db._conn() as conn:
+        raw = json.loads(conn.execute('SELECT result_json FROM agent_evidence WHERE id=?', (item['id'],)).fetchone()[0])
+    assert raw == payload
+    with pytest.raises(ValueError, match='当前任务'):
+        store.read_evidence('other-task', item['id'])
+    with pytest.raises(ValueError):
+        store.read_evidence(task['id'], item['id'], path=['absent'])
+    assert store.read_evidence(task['id'], item['id'], path=['result'])['kind'] == 'index'
+
+
+def test_task_context_survives_restart_and_isolated_by_conversation(tmp_path):
+    store = AgentStore(Database(tmp_path / 'agent.db'))
+    conversation = store.create_conversation('研究', None)
+    prior = store.create_task(conversation['id'], '分析 600487.SH')
+    store.event(prior['id'], 'task_context_updated', {'context': {'target': 'stock', 'symbols': ['600487.SH']}})
+    store.set_status(prior['id'], 'completed')
+    current = store.create_task(conversation['id'], '它的营收呢')
+    other = store.create_conversation('另一会话', None)
+    stranger = store.create_task(other['id'], 'other')
+    reopened = AgentStore(store.db)
+    assert reopened.previous_context(conversation['id'], current['id'])[0] == prior['id']
+    assert reopened.previous_context(other['id'], stranger['id']) == (None, {})
+    assert reopened.get_task(prior['id'])['task_context']['symbols'] == ['600487.SH']
+
+
+def test_checkpoint_retry_reuses_only_matching_scoped_recent_read(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from tradingagents.core.task_recovery import checkpoint_key
+
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.tools.register(LightweightTool(name='get_mcp_factor_snapshot', description='factor',
+        parameters={}, handler=AsyncMock(), scope='symbol'))
+    conversation = store.create_conversation('研究', None)
+    source = store.create_task(conversation['id'], '分析 600487.SH')
+    result = {'source': 'fixture', 'as_of_date': '2026-10-02', 'snapshot': {'pe': 12}}
+    item = store.add_evidence(source['id'], 'get_mcp_factor_snapshot', result)
+    step = {'tool': 'get_mcp_factor_snapshot', 'args': {'ts_code': '600487.SH', 'trade_date': '2026-10-02'}}
+    key = checkpoint_key(step['tool'], step['args'], harness.config)
+    store.event(source['id'], 'read_checkpoint_saved', {'key': key, 'evidence_id': item['id'], 'retrieved_at': item['retrieved_at']})
+    store.set_status(source['id'], 'failed')
+    task = store.create_task(conversation['id'], source['goal'])
+    harness.config['retry_task_id'] = source['id']
+    restored = harness._restore_read_checkpoint(task['id'], step, ['600487.SH'], None)
+    assert restored['snapshot']['pe'] == 12
+    assert restored['reused_checkpoint']['evidence_id'] == item['id']
+    assert harness._restore_read_checkpoint(task['id'], step, ['600519.SH'], None) is None
+    assert harness._restore_read_checkpoint(task['id'], step, ['600487.SH'], 'paper') is None
+    changed = {**step, 'args': {**step['args'], 'trade_date': '2026-10-03'}}
+    assert harness._restore_read_checkpoint(task['id'], changed, ['600487.SH'], None) is None
+    expired = (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat()
+    with store.db._conn() as conn:
+        conn.execute("UPDATE agent_events SET payload_json=? WHERE task_id=? AND event_type='read_checkpoint_saved'",
+                     (json.dumps({'key': key, 'evidence_id': item['id'], 'retrieved_at': expired}), source['id']))
+    assert harness._restore_read_checkpoint(task['id'], step, ['600487.SH'], None) is None
+
+
+@pytest.mark.asyncio
+async def test_retry_scope_does_not_create_task_for_another_conversation(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    one = store.create_conversation('one', None)
+    two = store.create_conversation('two', None)
+    old = store.create_task(one['id'], '查询')
+    store.set_status(old['id'], 'interrupted')
+    with pytest.raises(ValueError, match='同一对话'):
+        harness.submit(two['id'], '查询', retry_task_id=old['id'])
+    assert store.list_tasks(two['id']) == []

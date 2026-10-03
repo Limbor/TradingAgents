@@ -35,6 +35,7 @@ def research_policy_key(config: dict, asset_type: str = "stock", memory_prompt: 
               "style": config.get("investment_style", "medium_term"), "asset_type": asset_type,
               "language": config.get("output_language"), "thinking": config.get("qianwen_thinking", False)}
     policy["memory"] = hashlib.sha256(memory_prompt.encode()).hexdigest()
+    policy["skill_document"] = config.get("skill_document_hash")
     return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
 
 

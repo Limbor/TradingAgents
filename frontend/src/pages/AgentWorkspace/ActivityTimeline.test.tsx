@@ -96,3 +96,15 @@ it('distinguishes reused research from new model work and preserves compaction p
   expect(screen.getByLabelText('执行记录')).toHaveTextContent('本轮获取基本面数据');
   expect(screen.getByLabelText('执行记录')).toHaveTextContent('完整报告仍可查看');
 });
+it('shows durable skill loading, context and evidence recovery in plain language', () => {
+  const events: AgentEvent[] = ['task_context_updated', 'skill_loaded', 'evidence_read', 'checkpoint_reused'].map((event_type, index) => ({
+    task_id: 't', seq: index + 1, event_type, created_at: '', payload: { name: event_type === 'skill_loaded' ? '个股研究' : undefined },
+  }));
+  const activities = taskActivities(task(events, 'completed'));
+  expect(activities.map(item => item.status)).toEqual(['completed', 'completed', 'completed', 'completed']);
+  expect(activities.map(item => item.label)).toEqual(['整理研究对象与条件', '读取技能流程', '核对完整证据', '恢复已完成的查询']);
+  render(<ActivityTimeline activities={activities} />);
+  expect(screen.getByText(/读取技能流程/)).toBeInTheDocument();
+  expect(screen.getByText(/个股研究/)).toBeInTheDocument();
+  expect(screen.getByText(/核对完整证据/)).toBeInTheDocument();
+});
