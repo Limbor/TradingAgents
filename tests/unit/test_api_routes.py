@@ -736,8 +736,10 @@ def test_skill_instructions_share_schema_and_document_version(client):
     assert response.status_code == 200
     contract = response.json()
     assert contract['document']['skill_id'] == 'stock_analysis'
-    assert contract['document']['version'] == '1.0.0'
+    assert contract['document']['version'] == '1.0.1'
     assert 'fundamentals' in contract['instructions']
+    assert '持仓读取和诊断暂时停用' in contract['instructions']
+    assert 'Temporarily disabled' in contract['parameters']['properties']['include_portfolio_context']['description']
     assert contract['parameters'] == client.get('/api/v1/skills/stock_analysis/schema').json()
     assert client.get('/api/v1/skills/missing/instructions').status_code == 404
 
