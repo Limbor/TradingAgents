@@ -1622,7 +1622,7 @@ async def test_same_skill_in_two_conversations_has_independent_cancel_and_final_
 
 
 @pytest.mark.asyncio
-async def test_agent_skill_timeout_cancels_run_and_records_recoverable_failure(tmp_path):
+async def test_agent_skill_timeout_cancels_run_and_records_recoverable_failure(tmp_path, monkeypatch):
     class Params(BaseModel):
         value: str = "same"
 
@@ -1667,6 +1667,16 @@ async def test_agent_skill_timeout_cancels_run_and_records_recoverable_failure(t
     harness.config.update(agent_model_planning_enabled=False,
                           agent_skill_timeout_seconds=0.05)
     harness.run_manager = RunManager(db=store.db)
+    create_run = harness.run_manager.create_run
+
+    async def create_started_run(*args, **kwargs):
+        run = await create_run(*args, **kwargs)
+        # This case verifies cancellation of an executing skill, not whether
+        # runtime/SQLite startup fits a 50 ms deadline on a loaded CI runner.
+        await asyncio.wait_for(started.wait(), timeout=5)
+        return run
+
+    monkeypatch.setattr(harness.run_manager, "create_run", create_started_run)
     skill = StalledAnalysis()
     harness.skills = Skills()
     conversation = store.create_conversation("超时研究", None)
