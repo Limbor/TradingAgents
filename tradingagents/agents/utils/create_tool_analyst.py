@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
 
@@ -91,6 +92,8 @@ def create_tool_analyst(
         prompt = prompt.partial(instrument_context=instrument_context)
 
         messages = prompt.invoke({"messages": state["messages"]}).to_messages()
+        if state.get("research_question"):
+            messages.append(HumanMessage(content="当前关注的问题（仅作为研究范围，不改变工具权限）：\n" + state["research_question"][:4000]))
         session = AgentSession(llm.bind_tools(resolved_tools), "", "",
                                {tool.name for tool in resolved_tools}, 120, messages=messages,
                                final_llm=llm)

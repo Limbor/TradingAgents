@@ -880,7 +880,8 @@ async def test_native_tool_loop_failure_uses_rule_fallback(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_native_tool_loop_can_run_allowlisted_analysis_skill(tmp_path, monkeypatch):
+@pytest.mark.parametrize("template", [None, "full"])
+async def test_native_tool_loop_can_run_allowlisted_analysis_skill(tmp_path, monkeypatch, template):
     async def unused_paper(session_id):
         raise AssertionError(f"未绑定模拟盘，不应读取 {session_id}")
 
@@ -904,7 +905,8 @@ async def test_native_tool_loop_can_run_allowlisted_analysis_skill(tmp_path, mon
             if self.rounds == 1:
                 return AIMessage(content="", tool_calls=[{
                     "name": "run_analysis_skill",
-                    "args": {"skill_id": "stock_analysis", "args": {"ticker": "600519.SH"}},
+                    "args": {"skill_id": "stock_analysis", "args": {"ticker": "600519.SH",
+                        **({"analysis_template": template} if template else {})}},
                     "id": "call-skill", "type": "tool_call",
                 }])
             assert any(isinstance(message, ToolMessage) and
@@ -918,7 +920,7 @@ async def test_native_tool_loop_can_run_allowlisted_analysis_skill(tmp_path, mon
     await harness._active[task["id"]]
 
     harness._run_skill.assert_awaited_once_with(task["id"], "stock_analysis",
-                                                {"ticker": "600519.SH"})
+                                                {"ticker": "600519.SH", "analysis_template": template or "research"})
     assert [item["tool_name"] for item in store.list_evidence(task["id"])] == ["skill"]
 
 

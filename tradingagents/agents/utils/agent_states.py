@@ -46,6 +46,9 @@ class RiskDebateState(TypedDict):
 
 
 class AgentState(MessagesState):
+    research_reuse: dict[str, Any]
+    investment_style: str
+    research_question: str
     specialist_results: Annotated[list[dict[str, Any]], add]
     agent_evidence_refs: Annotated[list[str], add]
     company_of_interest: Annotated[str, "Company that we are interested in trading"]

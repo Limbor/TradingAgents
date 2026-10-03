@@ -445,9 +445,11 @@ class TradingAgentsGraph:
             instrument_context=instrument_context,
             market=market,
             investment_style=str(self.config.get("investment_style") or ""),
+            research_question=str(self.config.get("research_question") or ""),
         )
         args = self.propagator.get_graph_args()
 
+        init_agent_state["research_reuse"] = self.config.get("research_reuse") or {}
         # Inject thread_id so same ticker+date resumes, different date starts fresh.
         if self.config.get("checkpoint_enabled"):
             checkpoint_run_id = str(
@@ -611,8 +613,10 @@ class TradingAgentsGraph:
             instrument_context=instrument_context,
             market=market,
             investment_style=str(self.config.get("investment_style") or ""),
+            research_question=str(self.config.get("research_question") or ""),
         )
 
+        init_agent_state["research_reuse"] = self.config.get("research_reuse") or {}
         workflow = self.graph_setup.setup_graph(selected_analysts, template=self.config.get("analysis_template", "full"))
         args = self.propagator.get_graph_args()
 
@@ -671,6 +675,10 @@ class TradingAgentsGraph:
                     # Extract report sections from the node's output
                     output = data.get("output")
                     if isinstance(output, dict):
+                        for receipt in output.get("specialist_results", []):
+                            stats = receipt.get("context_stats") or {}
+                            if stats.get("saved_tokens_estimate", 0) > 0:
+                                yield {"type": "context_compacted", "data": {"agent": name, "context_stats": stats}}
                         specialist_results.extend(output.get("specialist_results", []))
                         raw_decision = output.get("structured_portfolio_decision")
                         if isinstance(raw_decision, dict):

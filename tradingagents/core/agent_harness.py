@@ -671,10 +671,21 @@ def _answer_evidence_result(item: dict) -> dict:
                        for key, value in (row.get("output") or {}).items()
                        if key.endswith("_report") and isinstance(value, str)}
             if reports:
-                specialist["report_excerpts"] = reports
+                if row.get("report_digest"):
+                    from tradingagents.core.research_context import report_digest
+                    specialist["report_digests"] = {key: report_digest(value,
+                        as_of_date=result.get("as_of_date"), budget=600,
+                        source={"run_id": (row.get("reused_from") or {}).get("run_id") or row.get("run_id"), "field": key},
+                        observations=row.get("tool_observations", []))
+                        for key, value in (row.get("output") or {}).items()
+                        if key.endswith("_report") and isinstance(value, str)}
+                else:
+                    specialist["report_excerpts"] = reports
                 specialist["reports_partial"] = any(len(value) > report_limit for key, value in
                                                      (row.get("output") or {}).items()
                                                      if key.endswith("_report") and isinstance(value, str))
+            if row.get("reused_from"):
+                specialist["reused_from"] = row["reused_from"]
             observations = {}
             for observation in row.get("tool_observations") or []:
                 name = observation.get("tool")
@@ -697,7 +708,7 @@ def _answer_evidence_result(item: dict) -> dict:
         return {"run_id": result.get("run_id"), "source": result.get("source"),
                 "as_of_date": result.get("as_of_date"), "compacted": True,
                 "result": {"ticker": payload.get("ticker"), "structured_conclusion": conclusion,
-                           "specialist_results": specialists},
+                           "specialist_results": specialists, "research_reuse": payload.get("research_reuse")},
                 "full_result_ref": {"type": "run", "id": result.get("run_id")}}
     if item["tool_name"] == "get_paper_session":
         snapshot = result.get("snapshot") if isinstance(result.get("snapshot"), dict) else {}
@@ -1516,6 +1527,8 @@ class TradingAgentHarness:
             "专业研究返回的 tool_observations 是实际工具执行记录；结合返回摘要核对哪些数据已取得，"
             "不能仅凭报告开头的数据缺口声明，把财报或公告等已返回的内容说成未获取。"
             "report_excerpts 只是报告片段，省略部分不代表没有相关信息。"
+            "report_digests 是保留原文数值、风险与缺口的摘取摘要，partial 表示有省略。"
+            "reused_from 明确标注复用来源，不可说成本轮重新查询的数据。"
             "工具结果返回后可继续选择工具或停止。账户、标的和日期由服务端校验，"
             "不得尝试修改账户、下单或绕过审批。模拟盘推进只可调用 prepare_paper_advance 生成待确认提案；"
             "用户只是询问方法、否定推进或引用操作文字时不要调用它。"
@@ -1529,6 +1542,12 @@ class TradingAgentHarness:
             "属于 fundamentals，不能添加 industry 等不存在的角色。参数校验拒绝后按返回契约修正再调用，"
             "这种拒绝发生在查询数据之前，不代表数据源故障。"
             "需要完整交易评估时使用 full 模板，保留研究裁决和风控。"
+            "工具参数未指定 analysis_template 时，服务端按 research 执行；完整评估须明确选择 full。"
+            "连续追问缺少的研究维度时，使用 research 模板只选择该维度；"
+            "例如已谈技术面后追问行业、营收，只选 fundamentals，不重跑整个交易工作流。"
+            "同一对话中有效的同标的研究由服务端核验后复用；失败、有缺口或过期的研究重新获取。"
+            "用户明确要求最新数据、刷新或重新分析时设置 force_refresh=true。"
+            "要求深入补充同一维度的新细节时也设置 force_refresh=true；复用既有研究不能冒充新研究。"
             f"\n可用分析能力及参数契约：{_json(skill_catalog)}"
         )
         try:
@@ -1586,6 +1605,10 @@ class TradingAgentHarness:
                     reason = "skill_not_allowed"
                 else:
                     key = f"skill:{skill_id}"
+                    if skill_id == "stock_analysis":
+                        # Model tools default to research. Full decision/risk
+                        # workflows remain an explicit, validated selection.
+                        params = {"analysis_template": "research", **params}
                     schema = getattr(available_skill, "input_schema", None)
                     try:
                         if schema:
@@ -2871,6 +2894,8 @@ class TradingAgentHarness:
             "不要把单日强势说成未来必涨；低覆盖率要说清哪些数据缺失，不把部分缺失说成全部无数据。"
             "compacted=true 表示已保留关键数据，完整结果在对应运行中，不能据此声称工具结果为空。"
             "专业研究的 tool_observations 包含实际工具状态与返回片段；优先据此核对数据可得性。"
+            "report_digests 是原文摘取，partial 表示存在省略；不能据此推断未出现的风险不存在。"
+            "reused_from 标记本轮经过时效核对的复用研究，说明原始基准日，不把它说成刚重新查询的数据。"
             "行情失败不能抹去已取到的财报、新闻或公告；报告片段没写到某信息也不能推断未取到。"
             "completed 只说明工具执行结束，仍需核对返回内容是否为空或有错误、以及数据日期。"
             "get_announcements 若返回标题列表，可引用标题与日期，但不能声称已读到公告正文。"
@@ -3136,7 +3161,15 @@ class TradingAgentHarness:
                 bind_scope(symbols=[ticker])
         # This task owns its cancellation and evidence. Reusing another task's
         # active Skill run would let one conversation cancel the other's work.
-        run = await self.run_manager.create_run(skill, params, self.config,
+        skill_config = dict(self.config)
+        if skill_id == "stock_analysis":
+            task = self.store.get_task(task_id)
+            skill_config["research_conversation_id"] = task["conversation_id"]
+            skill_config["research_task_id"] = task_id
+            skill_config["research_question"] = task["goal"]
+            skill_config["research_force_refresh"] = bool(re.search(
+                r"重新(?:分析|查询|获取|研究)|重跑|刷新|最新(?:行情|数据)|refresh|rerun", task["goal"], re.I))
+        run = await self.run_manager.create_run(skill, params, skill_config,
                                                 deduplicate=False)
         self.store.event(task_id, "skill_started", {"run_id": run.id, "skill_id": skill_id})
         seen = 0

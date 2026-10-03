@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -58,6 +58,11 @@ class AgentResult(BaseModel):
     tool_observations: list[dict[str, Any]] = Field(default_factory=list)
     usage: dict[str, Any] | None = None
     request_started: bool | None = None
+    reused_from: dict[str, Any] | None = None
+    research_policy_key: str | None = None
+    context_stats: dict[str, Any] | None = None
+    report_digest: dict[str, Any] | None = None
+    completed_at: str | None = None
 
 
 @dataclass
@@ -133,6 +138,7 @@ class AgentContext:
     evidence_refs: tuple[str, ...] = ()
     memory_refs: tuple[str, ...] = ()
     memory_prompt: str = ""
+    research_reuse_allowed: bool = True
     db: Any = None
     emit: Callable[[dict], None] | None = None
 
@@ -186,7 +192,8 @@ def use_context(context: AgentContext):
         _current.reset(token)
 
 
-def bind_scope(*, symbols=None, as_of_date=None, info_cutoff=None, memory_refs=None, memory_prompt=None, evidence_refs=None):
+def bind_scope(*, symbols=None, as_of_date=None, info_cutoff=None, memory_refs=None, memory_prompt=None, evidence_refs=None,
+               research_reuse_allowed=None):
     """Narrow a running workflow's context and attach server-verified references."""
     context = current_context()
     if context is None:
@@ -202,13 +209,36 @@ def bind_scope(*, symbols=None, as_of_date=None, info_cutoff=None, memory_refs=N
                          info_cutoff=info_cutoff or context.info_cutoff,
                          memory_refs=tuple(memory_refs) if memory_refs is not None else context.memory_refs,
                          memory_prompt=memory_prompt if memory_prompt is not None else context.memory_prompt,
+                         research_reuse_allowed=context.research_reuse_allowed and research_reuse_allowed is not False,
                          evidence_refs=tuple(evidence_refs) if evidence_refs is not None else context.evidence_refs))
 
 
 def role_node(node, spec):
-    def record(run, output):
+    from tradingagents.core.research_context import (
+        REPORT_ROLES,
+        compact_research_state,
+        report_digest,
+        research_policy_key,
+        research_still_valid,
+        restore_debate_history,
+    )
+
+    def prepare(run, state):
+        view, run.context_stats = compact_research_state(state)
+        cached = (state.get("research_reuse") or {}).get(spec.report_key)
+        if cached and not research_still_valid(cached, current_context(), state):
+            cached = None
+            run.warnings.append("已有研究的有效期或范围已变化，本轮重新获取数据")
+        if cached and spec.report_key in REPORT_ROLES:
+            run.reused_from = cached["source"]
+        _save(current_context(), run)
+        return view, cached
+
+    def record(run, output, state, cached=None):
         run.output = {key: value for key, value in output.items() if key != "messages"}
         context = current_context()
+        run.research_policy_key = (research_policy_key(context.config, state.get("asset_type", "stock"), context.memory_prompt)
+                                   if context.research_reuse_allowed else None)
         run.evidence_refs = list(context.evidence_refs)
         run.memory_refs = list(context.memory_refs)
         if context.db is not None:
@@ -231,20 +261,37 @@ def role_node(node, spec):
                 if child["status"] == "completed":
                     run.evidence_refs.append(child["run_id"])
             run.evidence_refs = list(dict.fromkeys(run.evidence_refs))
+        if run.reused_from and cached:
+            run.evidence_refs = list(cached["evidence_refs"])
+            run.tool_observations = list(cached["tool_observations"])
+        if spec.report_key and isinstance(output.get(spec.report_key), str):
+            run.report_digest = report_digest(output[spec.report_key], as_of_date=context.as_of_date,
+                source={"run_id": (run.reused_from or {}).get("run_id") or run.run_id, "field": spec.report_key},
+                observations=run.tool_observations)
         return {**output, "specialist_results": [{**run.model_dump(), "status": "completed"}],
                 "agent_evidence_refs": list(run.evidence_refs)}
 
     def execute(state):
         with agent_run(spec) as run:
             bind_scope(evidence_refs=tuple(dict.fromkeys((*current_context().evidence_refs, *state.get("agent_evidence_refs", [])))))
-            output = node.invoke(state) if hasattr(node, "invoke") else node(state)
-            return record(run, output)
+            view, cached = prepare(run, state)
+            if run.reused_from:
+                output = {spec.report_key: cached["report"]}
+            else:
+                output = node.invoke(view) if hasattr(node, "invoke") else node(view)
+            output = restore_debate_history(output, state, view)
+            return record(run, output, state, cached)
 
     async def aexecute(state):
         with agent_run(spec) as run:
             bind_scope(evidence_refs=tuple(dict.fromkeys((*current_context().evidence_refs, *state.get("agent_evidence_refs", [])))))
-            output = await invoke_node(node, state)
-            return record(run, output)
+            view, cached = prepare(run, state)
+            if run.reused_from:
+                output = {spec.report_key: cached["report"]}
+            else:
+                output = await invoke_node(node, view)
+            output = restore_debate_history(output, state, view)
+            return record(run, output, state, cached)
 
     return RunnableLambda(execute, afunc=aexecute)
 
@@ -254,6 +301,8 @@ def _json(value):
 
 
 def _save(context, result: AgentResult):
+    if result.status != "running" and result.completed_at is None:
+        result.completed_at = datetime.now(timezone.utc).isoformat()
     record = result.model_dump()
     record.update(root_id=context.root_id, parent_id=context.parent_id, host_run_id=context.host_run_id,
                   account_id=context.account_id, symbols=sorted(context.symbols),

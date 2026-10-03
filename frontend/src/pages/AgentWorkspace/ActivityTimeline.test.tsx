@@ -79,3 +79,20 @@ it('replays runtime parent and role state with model labels without duplicating 
   expect(screen.getByLabelText('执行记录')).toHaveTextContent('行情分析师 · flash');
   expect(screen.getByRole('status')).toHaveTextContent('正在分析个股');
 });
+
+it('distinguishes reused research from new model work and preserves compaction progress', () => {
+  const events: AgentEvent[] = [
+    { task_id: 't', seq: 1, event_type: 'agent_runtime', created_at: '', payload: {
+      run_id: 'market', role: 'Market Analyst', kind: 'agent', status: 'completed', model: 'qwen3.8-max',
+      reused_from: { run_id: 'original', as_of_date: '2026-09-30' } } },
+    event(2, 'skill_progress', { stage_id: 'research_scope', stage_label: '核对已有研究', status: 'completed',
+      detail: '复用有效的技术面研究；本轮获取基本面数据，仅执行所选研究维度' }),
+    event(3, 'skill_progress', { stage_id: 'handoff_research', stage_label: '整理研究摘要', status: 'completed',
+      detail: '保留事实、判断、风险、数据缺口和来源，完整报告仍可查看' }),
+  ];
+  render(<ActivityTimeline activities={taskActivities(task(events, 'completed'))} />);
+  expect(screen.getByLabelText('执行记录')).toHaveTextContent('复用技术面研究 · 已完成');
+  expect(screen.getByLabelText('执行记录')).toHaveTextContent('基准日 2026-09-30');
+  expect(screen.getByLabelText('执行记录')).toHaveTextContent('本轮获取基本面数据');
+  expect(screen.getByLabelText('执行记录')).toHaveTextContent('完整报告仍可查看');
+});

@@ -22,6 +22,11 @@ from tradingagents.core.activity_labels import (
 from tradingagents.core.agent_runtime import AgentSpec, bind_scope, managed_stream
 from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
 from tradingagents.core.reflection_enroll import enroll_reflection_case
+from tradingagents.core.research_context import (
+    REPORT_ROLES,
+    load_reusable_research,
+    research_policy_key,
+)
 from tradingagents.core.strategy_memory import (
     lesson_prompt_section,
     load_strategy_lessons,
@@ -70,6 +75,7 @@ class StockAnalysisInput(BaseModel):
                      "there is no separate industry analyst."),
     )
     analysis_template: str = Field(default="full", pattern="^(full|research)$", description="full includes debate and risk; research only runs selected analysts")
+    force_refresh: bool = Field(default=False, description="Fetch and analyze again instead of reusing valid research in this conversation. Set true when the user explicitly requests refreshed data or a fresh analysis.")
     debate_rounds: int = Field(
         default=1,
         ge=1,
@@ -186,6 +192,9 @@ class StockAnalysisSkill(BaseSkill):
                 holding=holding_context,
             )
 
+        bind_scope(research_reuse_allowed=not bool(
+            holding_context or input_params.include_portfolio_context or input_params.selection_context or input_params.reflection_context))
+
         selected_memory = []
         memory_error = None
         try:
@@ -222,6 +231,21 @@ class StockAnalysisSkill(BaseSkill):
             "info_cutoff": temporal_context.info_cutoff,
         }
 
+        reusable = {}
+        if not (input_params.force_refresh or config.get("research_force_refresh") or
+                holding_context or input_params.include_portfolio_context or input_params.selection_context or input_params.reflection_context):
+            try:
+                reusable = load_reusable_research(
+                    db, config.get("research_conversation_id"), config.get("research_task_id"),
+                    symbol=input_params.ticker.upper().replace(".SS", ".SH"),
+                    as_of_date=temporal_context.market_asof_date, info_cutoff=temporal_context.info_cutoff,
+                    policy_key=research_policy_key(config, input_params.asset_type, lesson_prompt_section(selected_memory)),
+                )
+            except Exception:
+                logger.warning("Research reuse unavailable; running fresh analysis", exc_info=True)
+        reusable = {key: value for key, value in reusable.items() if REPORT_ROLES[key][0] in input_params.analysts}
+        run_config["research_reuse"] = reusable
+
         yield SkillEvent(
             event_type="skill_start",
             data={
@@ -253,6 +277,17 @@ class StockAnalysisSkill(BaseSkill):
             progress_pct=5,
             data={"holding_context": holding_context} if holding_context else None,
         )
+        reused_labels = [REPORT_ROLES[key][2] for key in reusable]
+        fresh_labels = [label for key, (analyst, _, label) in REPORT_ROLES.items()
+                        if analyst in input_params.analysts and key not in reusable]
+        yield skill_progress(
+            stage_id="research_scope", stage_label="核对已有研究", status="completed",
+            detail=(("复用有效的" + "、".join(reused_labels) + "研究；") if reused_labels else "没有可复用的有效研究；")
+                   + (("本轮获取" + "、".join(fresh_labels) + "数据") if fresh_labels else "所选研究已覆盖")
+                   + ("，继续研究裁决与风控" if input_params.analysis_template == "full" else "，仅执行所选研究维度"),
+            data={"reused": reused_labels, "fresh": fresh_labels,
+                  "sources": [value["source"] for value in reusable.values()]},
+        )
 
         ta = TradingAgentsGraph(
             selected_analysts=input_params.analysts,
@@ -272,6 +307,14 @@ class StockAnalysisSkill(BaseSkill):
         ):
             event_type = event["type"]
             event_data = event["data"]
+            if event_type == "context_compacted":
+                yield skill_progress(
+                    stage_id="handoff_" + str(event_data.get("agent", "research")).lower().replace(" ", "_"),
+                    stage_label="整理研究摘要", status="completed",
+                    detail="保留事实、判断、风险、数据缺口和来源，完整报告仍可查看",
+                    data={"context_stats": event_data.get("context_stats")},
+                )
+                continue
             if event_type == "agent_status":
                 agent = str(event_data.get("agent") or "")
                 status = str(event_data.get("status") or "running")
@@ -334,6 +377,14 @@ class StockAnalysisSkill(BaseSkill):
                 )
 
             yield SkillEvent(event_type=event_type, data=event_data)
+
+        # Record actual reuse, including a possible expiry while earlier roles
+        # were running, rather than presenting the initial plan as execution.
+        actual_reuse = {key: row["reused_from"] for row in specialist_results for key, (_, role, _) in REPORT_ROLES.items()
+                        if row.get("role") == role and row.get("reused_from")}
+        reused_labels = [REPORT_ROLES[key][2] for key in actual_reuse]
+        fresh_labels = [label for key, (analyst, _, label) in REPORT_ROLES.items()
+                        if analyst in input_params.analysts and key not in actual_reuse]
 
         # Save to database
         if report_path and report_sections:
@@ -420,6 +471,8 @@ class StockAnalysisSkill(BaseSkill):
                 "selection_context": input_params.selection_context,
                 "structured_conclusion": structured_conclusion,
                 "specialist_results": specialist_results,
+                "research_reuse": {"reused": reused_labels, "fresh": fresh_labels,
+                                   "sources": list(actual_reuse.values())},
             },
         )
 

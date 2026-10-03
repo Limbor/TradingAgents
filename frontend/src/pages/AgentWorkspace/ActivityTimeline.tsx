@@ -16,6 +16,8 @@ export interface Activity {
 }
 const active = new Set(['queued', 'planning', 'running', 'reviewing', 'executing_action']);
 const knownStates = new Set(['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted']);
+const reuseLabels: Record<string, string> = { 'Market Analyst': '复用技术面研究', 'Fundamentals Analyst': '复用基本面研究',
+  'News Analyst': '复用新闻研究', 'Sentiment Analyst': '复用情绪研究' };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
 
@@ -36,10 +38,14 @@ export function taskActivities(task: AgentTask): Activity[] {
       const role = text(record.role);
       if (!id || !role || record.kind === 'tool' || (record.kind === 'model' && roleRuns.has(String(record.parent_id)))) continue;
       const status = text(record.status) ?? 'running';
-      const label = AGENT_ACTIONS[role] ?? SKILL_ACTIONS[role] ?? agentRole(role) ?? '分析任务';
+      const reused = object(record.reused_from);
+      const warning = Array.isArray(record.warnings) ? record.warnings.find(value => typeof value === 'string') : undefined;
+      const label = text(reused.run_id) ? reuseLabels[role] ?? '复用已有研究' : AGENT_ACTIONS[role] ?? SKILL_ACTIONS[role] ?? agentRole(role) ?? '分析任务';
       activities.set(`runtime:${id}`, { id: `runtime:${id}`, label, status, message: activityMessage(label, status),
         parentId: text(record.parent_id) ? `runtime:${String(record.parent_id)}` : undefined,
-        model: text(record.model), agent: agentRole(role), runId: id });
+        model: text(record.model), agent: agentRole(role), runId: id,
+        detail: text(warning) ?? (text(reused.run_id) ? `沿用已核验研究 · 基准日 ${String(reused.as_of_date ?? '未知')} · 保留原始来源`
+          : Number(object(record.context_stats).saved_tokens_estimate ?? 0) > 0 ? '已精简研究摘要，完整报告保留' : undefined) });
       continue;
     }
     const runId = text(event.payload.run_id) ?? '';
