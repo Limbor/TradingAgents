@@ -101,8 +101,9 @@ test("Agent keeps a trade question when the user supplies a missing symbol", asy
   await expect.poll(async () => {
     const detail = await (await request.get(`/api/v1/agent/conversations/${conversation.id}`)).json();
     return detail.tasks[1]?.status;
-  }).toBe("completed");
+  }).toBe("failed");
   const detail = await (await request.get(`/api/v1/agent/conversations/${conversation.id}`)).json();
+  expect(detail.tasks[1].events.some((event: { event_type: string }) => event.event_type === "task_failed")).toBe(true);
   expect(detail.tasks[1].evidence.map((item: { tool_name: string }) => item.tool_name))
     .toContain("get_mcp_factor_snapshot");
   expect(detail.tasks[1].evidence[0].result.error).toContain("MCP");
