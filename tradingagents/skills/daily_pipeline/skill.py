@@ -51,7 +51,13 @@ from tradingagents.skills._shared import (
     resolve_board_filter,
     resolve_temporal_context,
 )
-from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
+from tradingagents.skills.base import (
+    BaseSkill,
+    SkillEvent,
+    SkillMetadata,
+    skill_progress,
+    skill_stream,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1828,7 +1834,7 @@ async def _run_deep_analysis_once(
         selection_context=selection_context,
     )
     conclusion: dict[str, Any] = {}
-    async for event in analysis_skill.managed_execute(params, config):
+    async for event in skill_stream(analysis_skill, params, config):
         if event.event_type == "skill_progress" and config.get("_activity_progress"):
             payload = {**event.data}
             payload["activity_id"] = f"deep:{symbol}:{payload.get('activity_id') or payload['stage_id']}"

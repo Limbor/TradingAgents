@@ -84,6 +84,6 @@ def test_nested_workflows_use_managed_execution_and_docs_are_packaged():
     for name in ('daily_pipeline', 'daily_review'):
         source = (root / 'tradingagents/skills' / name / 'skill.py').read_text()
         assert 'skill.execute(' not in source
-        assert 'skill.managed_execute(' in source
+        assert 'skill_stream(' in source
     assert '"tradingagents.skills" = ["*/SKILL.md"]' in (root / 'pyproject.toml').read_text()
     assert 'collect_data_files("tradingagents.skills"' in (root / 'packaging/tradingagents-backend.spec').read_text()

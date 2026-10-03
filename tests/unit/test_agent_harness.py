@@ -3802,3 +3802,63 @@ async def test_retry_scope_does_not_create_task_for_another_conversation(tmp_pat
     with pytest.raises(ValueError, match='同一对话'):
         harness.submit(two['id'], '查询', retry_task_id=old['id'])
     assert store.list_tasks(two['id']) == []
+
+
+@pytest.mark.asyncio
+async def test_evidence_pages_reach_final_answer_with_original_provenance(tmp_path, monkeypatch):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == 'market_overview' else None)
+    payload = {'source': 'TradingAgents Skill: market_overview', 'as_of_date': '2026-09-30', 'result': {
+        'market_asof_date': '2026-09-30', 'industry_stances': [
+            {'industry': f'板块{i}', 'score': 100 - i, 'extra_detail': '只有完整数据才有的细节',
+             'padding': 'x' * 2000} for i in range(77)]}}
+    harness._run_skill = AsyncMock(return_value=payload)
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-only')
+    conversation = store.create_conversation('补读', None)
+
+    class Model:
+        rounds = 0
+
+        def bind_tools(self, _schemas):
+            return self
+
+        async def ainvoke(self, _messages):
+            self.rounds += 1
+            if self.rounds == 1:
+                return AIMessage(content='', tool_calls=[{'name': 'run_analysis_skill', 'id': 'overview',
+                    'args': {'skill_id': 'market_overview', 'args': {}}, 'type': 'tool_call'}])
+            if self.rounds == 2:
+                original = store.list_evidence(task['id'])[0]
+                return AIMessage(content='', tool_calls=[{'name': 'read_task_evidence', 'id': 'details',
+                    'args': {'evidence_id': original['id'], 'path': ['result', 'industry_stances'],
+                             'offset': 76, 'limit': 1}, 'type': 'tool_call'}])
+            return AIMessage(content='证据足够')
+
+    model = Model()
+    monkeypatch.setattr('tradingagents.llm_clients.create_llm_client',
+                        lambda **_kwargs: SimpleNamespace(get_llm=lambda: model))
+
+    async def synthesize(_goal, _conversation_id, evidence, **_kwargs):
+        fragment = next(item for item in evidence if item['tool_name'] == 'read_task_evidence')
+        assert fragment['as_of_date'] == '2026-09-30'
+        assert fragment['source'] == payload['source']
+        assert fragment['result']['items'][0]['extra_detail'] == '只有完整数据才有的细节'
+        assert fragment['result']['origin_evidence_id'] == evidence[0]['id']
+        return '板块76的详细数据已核对。'
+
+    harness._synthesize = synthesize
+    task = harness.submit(conversation['id'], '查看板块76的详细数据')
+    await harness._active[task['id']]
+    assert store.get_task(task['id'])['status'] == 'completed'
+    assert len(store.list_evidence(task['id'])) == 2
+    assert model.rounds == 3
+
+
+def test_reading_failed_evidence_never_erases_error_or_warnings(tmp_path):
+    store = AgentStore(Database(tmp_path / 'agent.db'))
+    conversation = store.create_conversation('test', None)
+    task = store.create_task(conversation['id'], 'test')
+    item = store.add_evidence(task['id'], 'test', {'error': 'partial failure',
+        'warnings': ['数据不完整'], 'rows': [1]})
+    page = store.read_evidence(task['id'], item['id'], path=['rows'])
+    assert page['error'] == 'partial failure' and page['warnings'] == ['数据不完整']

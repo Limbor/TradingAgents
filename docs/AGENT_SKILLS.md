@@ -59,7 +59,7 @@ flowchart TD
 
 原始工具 JSON 完整存入 SQLite。超过展示阈值的结果只对模型和任务列表生成精简投影，附保存状态、长度、hash；省略不再意味着丢弃原始结果。
 
-`read_task_evidence(evidence_id, path, offset, limit)` 只访问当前任务证据；嵌套字段最多 6 层、每页最多 20 项、每轮最多补读两次。大对象返回字段索引提示进一步缩小路径，不重跑市场查询、不额外调用模型压缩。
+`read_task_evidence(evidence_id, path, offset, limit)` 只访问当前任务证据；嵌套字段最多 6 层、每页最多 20 项、每轮最多补读两次。大对象返回字段索引提示进一步缩小路径，不重跑市场查询、不额外调用模型压缩。补读片段携带原证据 ID、来源、基准日与原始获取时间，持久化后送入最终回答；原证据中的错误和警告继续保留。
 
 调试 API：`GET /api/v1/agent/tasks/{task_id}/evidence/{evidence_id}?path=result&path=industry_stances&offset=0&limit=5`。旧版本已经丢弃的原始 JSON 无法凭新接口恢复，需要重新取证。
 

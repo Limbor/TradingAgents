@@ -102,6 +102,12 @@ def skill_progress(
     return SkillEvent(event_type="skill_progress", data=payload)
 
 
+def skill_stream(skill, params: BaseModel, config: dict[str, Any]) -> AsyncIterator[SkillEvent]:
+    """Use document execution when supported; preserve external workflow plugins."""
+    execute = getattr(skill, "managed_execute", None)
+    return (execute if callable(execute) else skill.execute)(params, config)
+
+
 class BaseSkill(ABC):
     """Abstract base class for all Skills."""
 

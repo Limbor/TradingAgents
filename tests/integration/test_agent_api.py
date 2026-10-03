@@ -58,7 +58,8 @@ def test_agent_task_api_persists_evidence_and_scope(tmp_path, monkeypatch):
         assert detail["tasks"][0]["evidence"][0]["source"] == "StockManager ledger"
         assert detail["messages"][-1]["role"] == "assistant"
         events = client.get(f"/api/v1/agent/tasks/{task_id}/events?after_seq=1").json()
-        assert events[0]["event_type"] == "plan_created"
+        assert events[0]["event_type"] == "task_context_updated"
+        assert any(event["event_type"] == "plan_created" for event in events)
         stream = client.get(f"/api/v1/agent/tasks/{task_id}/stream?after_seq=1")
         assert stream.status_code == 200
         assert stream.headers["content-type"].startswith("text/event-stream")

@@ -15,7 +15,13 @@ from tradingagents.core.persistence import Database
 from tradingagents.core.portfolio_prices import latest_close
 from tradingagents.core.reflection import ReflectionEngine
 from tradingagents.skills._shared import resolve_board_filter, resolve_temporal_context
-from tradingagents.skills.base import BaseSkill, SkillEvent, SkillMetadata, skill_progress
+from tradingagents.skills.base import (
+    BaseSkill,
+    SkillEvent,
+    SkillMetadata,
+    skill_progress,
+    skill_stream,
+)
 from tradingagents.skills.daily_pipeline.skill import (
     DailyPipelineInput,
     skill as daily_pipeline_skill,
@@ -103,7 +109,8 @@ class DailyReviewSkill(BaseSkill):
             progress_pct=30,
         )
         risk_result: dict[str, Any] = {}
-        async for event in risk_monitor_skill.managed_execute(
+        async for event in skill_stream(
+            risk_monitor_skill,
             RiskMonitorInput(lookback_days=input_params.risk_lookback_days),
             config,
         ):
@@ -148,7 +155,8 @@ class DailyReviewSkill(BaseSkill):
             progress_pct=75,
         )
         daily_result: dict[str, Any] = {}
-        async for event in daily_pipeline_skill.managed_execute(
+        async for event in skill_stream(
+            daily_pipeline_skill,
             DailyPipelineInput(
                 trade_date=input_params.trade_date,
                 limit=input_params.daily_limit,

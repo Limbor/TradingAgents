@@ -499,12 +499,16 @@ class AgentStore:
 
     def read_evidence(self, task_id: str, evidence_id: str, *, path=(), offset=0, limit=10) -> dict:
         with self.db._conn() as conn:
-            row = conn.execute("SELECT result_json, source, as_of_date FROM agent_evidence "
+            row = conn.execute("SELECT result_json, source, as_of_date, warnings_json, retrieved_at FROM agent_evidence "
                                "WHERE task_id=? AND id=?", (task_id, evidence_id)).fetchone()
         if row is None:
             raise ValueError("当前任务不存在该证据")
+        result = json.loads(row["result_json"])
         return {"evidence_id": evidence_id, "source": row["source"], "as_of_date": row["as_of_date"],
-                **evidence_slice(json.loads(row["result_json"]), list(path), offset, limit)}
+                "origin_retrieved_at": row["retrieved_at"],
+                "warnings": json.loads(row["warnings_json"]),
+                **({"error": result["error"]} if result.get("error") else {}),
+                **evidence_slice(result, list(path), offset, limit)}
 
     def create_proposal(self, task_id: str, session_id: str, target_date: str,
                         baseline: dict) -> dict:
@@ -641,6 +645,8 @@ def _evidence_summary(tool_name: str, result: dict) -> str:
         return f"关联产物 {result.get('total', 0)} 项"
     if tool_name == "get_strategy_lessons":
         return f"历史经验参考 · {len(result.get('lessons') or [])} 条适用经验 · 截止 {result.get('memory_cutoff') or '未知'}"
+    if tool_name == "read_task_evidence":
+        return f"完整证据补读 · 基准日 {result.get('as_of_date') or '未知'} · 保留原始来源"
     return str(result.get("message") or tool_name)[:250]
 
 
@@ -1669,10 +1675,20 @@ class TradingAgentHarness:
                         reason = "evidence_read_invalid"
                     else:
                         used.add(f"evidence-page:{call_id}")
+                        fragment = self.store.add_evidence(task_id, "read_task_evidence", {
+                            **observation, "origin_evidence_id": args["evidence_id"],
+                        })
+                        observation["fragment_evidence_id"] = fragment["id"]
                         session.tool_result(call_id, name, observation)
                         self.store.event(task_id, "evidence_read", {
                             "evidence_id": args["evidence_id"], "path": args.get("path", []),
+                            "fragment_evidence_id": fragment["id"],
                             "message": "正在核对完整证据中的具体数据",
+                        })
+                        self.store.event(task_id, "evidence_added", {
+                            "evidence_id": fragment["id"], "source": fragment["source"],
+                            "as_of_date": fragment["as_of_date"], "summary": fragment["summary"],
+                            "warnings": fragment["warnings"],
                         })
                         continue
             elif name == "load_skill":
@@ -1977,6 +1993,10 @@ class TradingAgentHarness:
                                     task_id, native, calls, paper_session_id, tickers,
                                     used, _MAX_PLAN_STEPS - len(plan)
                                 )
+                                known_evidence = {item["id"] for item in evidence}
+                                evidence.extend(item for item in self.store.list_evidence(task_id)
+                                                if item["tool_name"] == "read_task_evidence"
+                                                and item["id"] not in known_evidence)
                                 if selected_action is not None:
                                     native_action = selected_action
                                     native_finished = True
