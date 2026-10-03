@@ -47,6 +47,74 @@ def test_shared_budget_is_atomic_across_parallel_children():
     assert budget.snapshot()["model_calls"] == 7
 
 
+def test_token_budget_reservations_are_shared_and_block_before_request():
+    context = AgentContext.root({}, symbols=["600487.SH"])
+    child = context.child()
+    context.budget.reserve_tokens(490000)
+    with pytest.raises(RuntimeLimitError, match="token 预算"):
+        child.budget.reserve_tokens(20000)
+    context.budget.settle_tokens(490000, 10000)
+    assert child.budget.consumed_tokens == 10000 and child.budget.reserved_tokens == 0
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_structured_output_usage_survives_parsing_and_preserves_typed_return(tmp_path, invalid, asynchronous):
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    from langchain_core.runnables import RunnableLambda
+    from pydantic import BaseModel
+
+    class Decision(BaseModel):
+        action: str
+
+    class Fixture(BaseChatModel):
+        @property
+        def _llm_type(self):
+            return "local-fixture"
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                content="not json" if invalid else '{"action":"hold"}',
+                usage_metadata={"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
+                                "input_token_details": {"cache_read": 80}},
+            ))])
+
+        def with_structured_output(self, schema, **kwargs):
+            return self | RunnableLambda(lambda message: schema.model_validate_json(message.content))
+
+    db = Database(tmp_path / "usage.db")
+    context = AgentContext.root({"model_policy": {"default_model": "qwen3.8-max"}}, db=db)
+    with use_context(context):
+        llm = runtime_model(Fixture(), "Research Manager").with_structured_output(Decision)
+        def call():
+            return asyncio.run(llm.ainvoke("Research")) if asynchronous else llm.invoke("Research")
+        if invalid:
+            with pytest.raises(ValueError):
+                call()
+        else:
+            assert call().action == "hold"
+    record = db.list_agent_runtime(context.root_id)[0]
+    assert record["usage"]["total_tokens"] == 110
+    assert record["usage"]["cache_read_tokens"] == 80
+    assert context.budget.consumed_tokens == 110
+    assert record["status"] == ("failed" if invalid else "completed")
+
+
+def test_budget_rejection_is_not_counted_as_an_api_call(tmp_path):
+    from tradingagents.core.llm_usage import summarize_usage
+
+    class Forbidden:
+        def invoke(self, _prompt):
+            raise AssertionError("预算不足时不得发请求")
+
+    context = AgentContext.root({"agent_max_tokens_per_task": 4096}, db=Database(tmp_path / "budget.db"))
+    with use_context(context), pytest.raises(RuntimeLimitError, match="token 预算"):
+        runtime_model(Forbidden(), "Analyst").invoke("Prompt")
+    assert summarize_usage(context.db.list_agent_runtime(context.root_id))["model_calls"] == 0
+    assert context.budget.reserved_tokens == context.budget.consumed_tokens == 0
+
+
 def test_child_cannot_expand_account_symbol_date_and_shares_cancellation():
     context = AgentContext.root({}, account_id="paper:a", symbols=["600519.SH"], as_of_date="2026-09-29")
     child = context.child(symbols=["600519.SS"])

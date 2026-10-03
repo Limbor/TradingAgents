@@ -33,6 +33,7 @@ from tradingagents.core.agent_runtime import (
     use_context,
 )
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
+from tradingagents.core.llm_usage import summarize_usage
 from tradingagents.core.model_policy import (
     TaskModelSelection,
     provider_kwargs,
@@ -378,7 +379,12 @@ class AgentStore:
                 "SELECT id FROM agent_tasks WHERE conversation_id = ? ORDER BY created_at, rowid",
                 (conversation_id,),
             ).fetchall()
-        return [{**self.get_task(row["id"]), "agent_runs": self.db.list_agent_runtime(row["id"])} for row in rows]
+        tasks = []
+        for row in rows:
+            records = self.db.list_agent_runtime(row["id"])
+            tasks.append({**self.get_task(row["id"]), "agent_runs": records,
+                          "usage_stats": summarize_usage(records)})
+        return tasks
 
     def set_status(self, task_id: str, status: str, *, result: dict | None = None,
                    error: str | None = None) -> None:
@@ -557,7 +563,8 @@ class AgentStore:
             task["events"] = self.list_events(task["id"])
             task["evidence"] = self.list_evidence(task["id"])
             task["proposal"] = self.proposal_for_task(task["id"])
-        return {**conversation, "messages": self.list_messages(conversation_id),
+        return {**conversation, "usage_stats": summarize_usage([run for task in tasks for run in task["agent_runs"]]),
+                "messages": self.list_messages(conversation_id),
                 "tasks": tasks}
 
 

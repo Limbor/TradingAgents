@@ -18,10 +18,13 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.runnables.config import merge_configs
 from pydantic import BaseModel, Field
 
+from tradingagents.core.llm_usage import estimate_tokens, normalize_usage
 from tradingagents.core.model_policy import freeze_model_config, resolve_model
 
 
@@ -53,6 +56,8 @@ class AgentResult(BaseModel):
     memory_refs: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     tool_observations: list[dict[str, Any]] = Field(default_factory=list)
+    usage: dict[str, Any] | None = None
+    request_started: bool | None = None
 
 
 @dataclass
@@ -64,6 +69,9 @@ class TaskBudget:
     model_calls: int = 0
     tool_calls: int = 0
     children: int = 0
+    max_tokens: int = 500_000
+    consumed_tokens: int = 0
+    reserved_tokens: int = 0
     cancelled: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -72,6 +80,8 @@ class TaskBudget:
             raise RuntimeLimitError("任务已取消")
         if time.monotonic() >= self.deadline:
             raise RuntimeLimitError("任务执行时间已用尽")
+        if self.consumed_tokens > self.max_tokens:
+            raise RuntimeLimitError("本轮 token 预算已用尽，已停止继续调用模型")
 
     def consume(self, kind: str):
         with self._lock:
@@ -87,7 +97,22 @@ class TaskBudget:
 
     def snapshot(self):
         with self._lock:
-            return {key: getattr(self, key) for key in ("model_calls", "tool_calls", "children")}
+            return {key: getattr(self, key) for key in ("model_calls", "tool_calls", "children",
+                    "consumed_tokens", "reserved_tokens", "max_tokens")}
+
+    def reserve_tokens(self, estimated: int):
+        with self._lock:
+            self.check()
+            if self.consumed_tokens + self.reserved_tokens + estimated > self.max_tokens:
+                raise RuntimeLimitError("本轮 token 预算不足，已停止继续调用模型；已取得的数据保留在任务档案中")
+            self.reserved_tokens += estimated
+
+    def settle_tokens(self, reserved: int, actual: int | None):
+        with self._lock:
+            self.reserved_tokens -= reserved
+            # Missing usage is charged conservatively against the guard, but
+            # never fabricated as provider-reported usage or a cash debit.
+            self.consumed_tokens += reserved if actual is None else actual
 
 
 @dataclass(frozen=True)
@@ -116,7 +141,8 @@ class AgentContext:
              db=None, emit=None, timeout=2100):
         root_id = root_id or str(uuid.uuid4())
         return cls(root_id, root_id, freeze_model_config(config),
-                   TaskBudget(deadline=time.monotonic() + timeout), account_id=account_id,
+                   TaskBudget(deadline=time.monotonic() + timeout,
+                              max_tokens=max(4096, int(config.get("agent_max_tokens_per_task", 500_000)))), account_id=account_id,
                    symbols=frozenset(_symbol(s) for s in symbols), as_of_date=as_of_date,
                    db=db, emit=emit)
 
@@ -322,9 +348,18 @@ class RuntimeModel(Runnable):
     def invoke(self, input, config=None, **kwargs):
         context = self._context()
         with agent_run(self.spec, context, kind="model") as run:
-            context.budget.consume("model")
+            run.request_started = False
             input = self._inject_context(input, context)
-            result = self.native.invoke(input, config=config, **kwargs) if config is not None else self.native.invoke(input, **kwargs)
+            reserved = estimate_tokens(input) + 4096
+            context.budget.reserve_tokens(reserved)
+            try:
+                config = self._usage_config(config, run)
+                context.budget.consume("model")
+                run.request_started = True
+                result = self.native.invoke(input, config=config, **kwargs) if config is not None else self.native.invoke(input, **kwargs)
+                run.usage = run.usage or normalize_usage(result)
+            finally:
+                context.budget.settle_tokens(reserved, (run.usage or {}).get("total_tokens") if run.request_started else 0)
             context.check()
             run.output = self._validated_output(result, context)
             return result
@@ -332,13 +367,41 @@ class RuntimeModel(Runnable):
     async def ainvoke(self, input, config=None, **kwargs):
         context = self._context()
         with agent_run(self.spec, context, kind="model") as run:
-            context.budget.consume("model")
+            run.request_started = False
             input = self._inject_context(input, context)
-            call = self.native.ainvoke(input, config=config, **kwargs) if config is not None else self.native.ainvoke(input, **kwargs)
-            result = await asyncio.wait_for(call, max(0.001, context.budget.deadline - time.monotonic()))
+            reserved = estimate_tokens(input) + 4096
+            context.budget.reserve_tokens(reserved)
+            try:
+                config = self._usage_config(config, run)
+                context.budget.consume("model")
+                run.request_started = True
+                call = self.native.ainvoke(input, config=config, **kwargs) if config is not None else self.native.ainvoke(input, **kwargs)
+                result = await asyncio.wait_for(call, max(0.001, context.budget.deadline - time.monotonic()))
+                run.usage = run.usage or normalize_usage(result)
+            finally:
+                context.budget.settle_tokens(reserved, (run.usage or {}).get("total_tokens") if run.request_started else 0)
             context.check()
             run.output = self._validated_output(result, context)
             return result
+
+    def _usage_config(self, config, run):
+        if not isinstance(self.native, Runnable):
+            return config
+
+        class Receipt(BaseCallbackHandler):
+            def on_llm_end(self, response, **_kwargs):
+                # This runs before structured-output parsing. A parsing error
+                # must not erase usage from a successful API response.
+                for generations in response.generations:
+                    for generation in generations:
+                        usage = normalize_usage(getattr(generation, "message", None))
+                        if usage:
+                            run.usage = usage
+                            return
+                raw = response.llm_output or {}
+                run.usage = normalize_usage({"token_usage": raw.get("token_usage", raw)})
+
+        return merge_configs(config, {"callbacks": [Receipt()]})
 
 
 def runtime_model(native, role, config=None, purpose="default"):

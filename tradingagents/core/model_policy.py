@@ -114,6 +114,7 @@ def provider_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     kwargs = {}
     if config.get("llm_provider") == "qianwen":
         kwargs["extra_body"] = {"enable_thinking": bool(config.get("qianwen_thinking", False))}
+        kwargs["max_tokens"] = 4096
     field_map = {"google": ("google_thinking_level", "thinking_level"),
                  "openai": ("openai_reasoning_effort", "reasoning_effort"),
                  "anthropic": ("anthropic_effort", "effort")}

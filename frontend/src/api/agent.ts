@@ -70,6 +70,7 @@ export interface SpecialistRun {
 }
 
 export interface AgentTask {
+  usage_stats?: UsageStats;
   agent_runs?: SpecialistRun[];
   id: string;
   conversation_id: string;
@@ -95,8 +96,39 @@ export interface AgentTask {
 }
 
 export interface AgentConversationDetail extends AgentConversation {
+  usage_stats?: UsageStats;
   messages: AgentMessage[];
   tasks: AgentTask[];
+}
+
+export interface UsageGroup {
+  role: string;
+  provider: string;
+  model: string;
+  model_calls: number;
+  reported_calls: number;
+  missing_calls: number;
+  pending_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  reasoning_tokens: number;
+  cache_unknown_calls: number;
+  reasoning_unknown_calls: number;
+  unpriced_calls: number;
+  cost_cny: number | null;
+}
+
+export interface UsageStats extends Omit<UsageGroup, "role" | "provider" | "model"> {
+  groups: UsageGroup[];
+  currency: string;
+  price_date: string;
+  price_source: string;
+  incomplete: boolean;
+  cost_complete: boolean;
+  cache_hit_rate: number | null;
 }
 
 export interface LegacyArchiveMessage {

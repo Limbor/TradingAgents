@@ -9,7 +9,7 @@ import {
   approveAgentProposal, cancelAgentTask, closeAgentProposalReview, createAgentConversation, getAgentConversation,
   importLegacyAgentConversation, listAgentConversations, submitAgentTask,
   readAgentTaskStream, reconcileAgentProposal, rejectAgentProposal,
-  type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask,
+  type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask, type UsageStats,
 } from "@/api/agent";
 import { getPaperStatus } from "@/api/paper";
 import { getConfig } from "@/api/client";
@@ -21,6 +21,7 @@ import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyCh
 import { ActivityTimeline, taskActivities } from "./ActivityTimeline";
 import { MemoryDetails, MemoryProgress, RoleMemory, taskMemory } from "./MemoryPanel";
 import { ModelPicker } from "./ModelPicker";
+import { UsageSummary } from "./UsageSummary";
 
 interface Props {
   paperSessionId?: string;
@@ -110,6 +111,7 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
       </div>)}</div> : <p className="text-ui-muted">{activeStatuses.has(task.status) ? "正在解析任务目标…" : "本任务没有可展示的执行步骤。"}</p>}
       <ActivityTimeline activities={taskActivities(task)} />
       <MemoryProgress task={task} />
+      {!task.result.content && <UsageSummary usage={task.usage_stats} />}
       {task.status === "reviewing" && <p className="pl-6 text-xs text-ui-muted">正在核对证据并形成回答…</p>}
       {textOnly && <p className="text-xs text-ui-muted">本轮未运行分析工具，也没有可引用的结果数据。</p>}
       {task.status === "failed" && <p role="alert" className="text-xs text-ui-danger">{task.error || "任务执行失败"}</p>}
@@ -243,12 +245,13 @@ function EvidenceCard({ item }: { item: AgentEvidence }) {
   </article>;
 }
 
-function Inspector({ task, paperId, paperName, overlay, onClose }: { task?: AgentTask; paperId?: string | null; paperName: string; overlay?: boolean; onClose: () => void }) {
+function Inspector({ task, paperId, paperName, overlay, onClose, conversationUsage }: { task?: AgentTask; paperId?: string | null; paperName: string; overlay?: boolean; onClose: () => void; conversationUsage?: UsageStats }) {
   return <aside aria-label="任务证据与方案" className={`fixed inset-y-0 right-0 flex w-[min(100vw,360px)] min-h-0 flex-col overflow-hidden border-l border-ui-line bg-ui-panel shadow-xl ${overlay ? "z-[90]" : "z-50 xl:static xl:w-[252px] xl:shrink-0 xl:shadow-none"}`}>
     <div className="flex h-[58px] shrink-0 items-center justify-between border-b border-ui-line px-4"><div className="flex min-w-0 items-center gap-2"><strong className="whitespace-nowrap text-sm font-medium">任务档案</strong><span className="truncate text-xs text-ui-muted">{task ? isTextOnlyAnswer(task) ? "仅文字回答" : statusText[task.status] ?? task.status : "待命"}</span></div><button aria-label="收起任务档案" onClick={onClose} className="rounded p-1 text-ui-muted hover:bg-ui-hover"><PanelRightClose className="h-4 w-4" /></button></div>
     <div className="min-h-0 min-w-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-5 text-sm">
       {paperId && <section><h3 className="agent-section-title">账户范围</h3><strong className="mt-2 block truncate text-sm font-medium" title={paperId}>{paperName}</strong><div className="mt-1 flex min-w-0 items-center gap-2"><code className="min-w-0 flex-1 truncate text-xs text-ui-muted" title={paperId}>{paperId}</code><button type="button" aria-label="复制账户 ID" title="复制账户 ID" onClick={() => { void navigator.clipboard?.writeText(paperId); }} className="shrink-0 text-ui-muted hover:text-ui-accent"><Copy className="h-3.5 w-3.5" /></button></div><Link to={`/paper?session=${encodeURIComponent(paperId)}`} className="mt-2 inline-flex items-center gap-1 whitespace-nowrap text-xs text-ui-accent">查看完整账本 <ArrowRight className="h-3 w-3" /></Link></section>}
       <section className={paperId ? "border-t border-ui-line pt-4" : ""}><h3 className="agent-section-title">当前目标</h3><p className="mt-2 break-words text-sm leading-6 text-ui-body">{task?.goal || "输入交易问题后，这里显示目标、证据和结果。"}</p></section>
+      <UsageSummary usage={conversationUsage} conversation />
       {task && <div className="space-y-4 border-t border-ui-line pt-4">{taskMemory(task) && <MemoryDetails trace={taskMemory(task)} />}<RoleMemory task={task} /></div>}
       <section className="border-t border-ui-line pt-4"><h3 className="agent-section-title">证据快照 <span className="font-normal text-ui-faint">{task?.evidence.length ?? 0} 项</span></h3>
         {task?.evidence.length ? <div className="mt-3">{task.evidence.map((item) => <EvidenceCard key={item.id} item={item} />)}</div> : <p className="mt-2 text-xs leading-5 text-ui-faint">等待工具返回可核对的数据来源。</p>}
@@ -526,6 +529,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
               <div className={message.role === "user" ? "max-w-[85%] rounded-lg border border-ui-line bg-ui-accentSoft px-3.5 py-2.5 text-sm leading-7 [text-wrap:pretty]" : "w-full max-w-[690px] text-sm leading-7"}>
                 {message.role === "user" ? <div className="whitespace-pre-wrap">{message.content}</div> : <div className="agent-prose prose prose-sm max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}
                 {message.role === "assistant" && task?.result.citations?.length ? <button onClick={() => inspectTask(task.id)} className="mt-2 flex items-center gap-1 text-xs text-ui-muted hover:text-ui-accent"><Check className="h-3.5 w-3.5 text-ui-accent" />已关联 {task.evidence.length} 项证据 · 查看任务档案</button> : null}
+                {message.role === "assistant" && task && <UsageSummary usage={task.usage_stats} />}
               </div>
             </div>
             {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} paperName={paperName} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} onCloseReview={() => void decideProposal("close_review", task)} /></div>}
@@ -534,6 +538,6 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
       </div></div>
       {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[720px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 whitespace-nowrap rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[720px]"><div className="flex items-end gap-2 rounded-lg border border-ui-line bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} disabled={loadingRequested} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] min-w-0 flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint disabled:opacity-50" /><button type="submit" disabled={!input.trim() || running || busy || loadingRequested || modelSaving} aria-label="发送" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1"><ModelPicker config={modelConfig.data} onSavingChange={setModelSaving} disabled={busy || loadingRequested} /><span className="truncate text-xs text-ui-faint">{latestTask?.proposal ? "账户变更需单独确认" : "不会直接修改账本"}</span></div></div></form>}
     </section>
-    {showInspector && (embedded ? createPortal(<><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-[80] bg-black/40" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} overlay onClose={() => setShowInspector(false)} /></>, document.body) : <><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-40 bg-black/40 xl:hidden" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} onClose={() => setShowInspector(false)} /></>)}
+    {showInspector && (embedded ? createPortal(<><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-[80] bg-black/40" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} conversationUsage={detail.data?.usage_stats} overlay onClose={() => setShowInspector(false)} /></>, document.body) : <><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-40 bg-black/40 xl:hidden" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} conversationUsage={detail.data?.usage_stats} onClose={() => setShowInspector(false)} /></>)}
   </div>;
 }
