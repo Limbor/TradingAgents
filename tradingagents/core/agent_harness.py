@@ -33,7 +33,12 @@ from tradingagents.core.agent_runtime import (
     use_context,
 )
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
-from tradingagents.core.model_policy import freeze_model_config, provider_kwargs, resolve_model
+from tradingagents.core.model_policy import (
+    TaskModelSelection,
+    provider_kwargs,
+    resolve_model,
+    task_model_config,
+)
 from tradingagents.core.persistence import Database
 from tradingagents.core.strategy_memory import (
     lesson_prompt_section,
@@ -911,13 +916,15 @@ class TradingAgentHarness:
         return None
 
     def submit(self, conversation_id: str, goal: str,
-               intent_hint: dict | None = None) -> dict:
+               intent_hint: dict | None = None,
+               model_selection: TaskModelSelection | dict | None = None) -> dict:
         conversation = self.store.get_conversation(conversation_id)
         if not conversation:
             raise KeyError(conversation_id)
         goal = goal.strip()
         if not goal or len(goal) > 4000:
             raise ValueError("请输入 1–4000 字的交易问题")
+        snapshot = task_model_config(self.config, model_selection)
         user_input = goal
         clarified_from = None
         skill_clarified_from = None
@@ -954,7 +961,7 @@ class TradingAgentHarness:
                     f"标的代码以用户本轮提供的 {goal.upper()} 为准。")
         task = self.store.create_task(conversation_id, goal)
         self.store.add_message(conversation_id, "user", user_input, task["id"])
-        selected_model = self._agent_model()
+        selected_model = resolve_model(snapshot)
         timeout_seconds = self._task_timeout_seconds()
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         self.store.event(task["id"], "task_created", {
@@ -962,6 +969,8 @@ class TradingAgentHarness:
                                      "max_tool_steps": _MAX_PLAN_STEPS,
                                      "max_harness_model_calls": _MAX_PLAN_STEPS + 2},
             "model": selected_model,
+            "provider": snapshot.get("llm_provider"),
+            "model_source": "chat_selection" if model_selection else "default",
         })
         if clarified_from:
             self.store.event(task["id"], "scope_resolved", {
@@ -980,7 +989,7 @@ class TradingAgentHarness:
             })
         running = asyncio.create_task(
             self._execute(task["id"], conversation, intent_hint, timeout_seconds,
-                          deadline, selected_model, freeze_model_config(self.config))
+                          deadline, selected_model, snapshot)
         )
         self._active[task["id"]] = running
         running.add_done_callback(lambda done: self._on_task_done(task["id"], done))

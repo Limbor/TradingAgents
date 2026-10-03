@@ -298,6 +298,14 @@ export default function Settings() {
             )}
           </span>
         </div>
+        {config.llm_provider === "qianwen" && <div className="mt-4 rounded-lg border border-ui-line bg-ui-panel p-3 text-xs leading-5 text-ui-muted">
+          <p>千问AI平台使用独立密钥。请在后端 .env 中设置 <code>QIANWEN_API_KEY</code>，然后重启后端。聊天输入框下方也可切换模型，不会改动这里的默认设置。</p>
+          <label className="mt-3 flex items-center gap-2 text-ui-body">
+            <input type="checkbox" checked={config.qianwen_thinking ?? false} onChange={(event) => void save({ qianwen_thinking: event.target.checked })} />
+            启用千问深度思考
+          </label>
+          <p className="mt-1">对新任务生效；思考会增加耗时和输出 Token 费用。</p>
+        </div>}
       </section>
 
       {/* StockManager MCP */}

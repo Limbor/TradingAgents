@@ -38,6 +38,7 @@ def test_every_select_llm_provider_choice_has_an_entry():
         ("deepseek",   "DEEPSEEK_API_KEY"),
         ("qwen",       "DASHSCOPE_API_KEY"),
         ("qwen-cn",    "DASHSCOPE_CN_API_KEY"),
+        ("qianwen",    "QIANWEN_API_KEY"),
         ("glm",        "ZHIPU_API_KEY"),
         ("glm-cn",     "ZHIPU_CN_API_KEY"),
         ("minimax",    "MINIMAX_API_KEY"),

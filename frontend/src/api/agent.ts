@@ -12,6 +12,11 @@ export interface AgentConversation {
   legacy_archive?: number | boolean;
 }
 
+export interface TaskModelSelection {
+  provider: string;
+  model: string;
+}
+
 export interface AgentMessage {
   id: string;
   conversation_id: string;
@@ -176,11 +181,11 @@ export async function readAgentTaskStream(
   return { lastSeq, done };
 }
 
-export const submitAgentTask = (id: string, message: string, intentHint?: IntentHint) =>
+export const submitAgentTask = (id: string, message: string, intentHint?: IntentHint, modelSelection?: TaskModelSelection) =>
   fetchJson<AgentTask>(`${agentApiBase}/conversations/${encodeURIComponent(id)}/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, intent_hint: intentHint }),
+    body: JSON.stringify({ message, intent_hint: intentHint, model_selection: modelSelection }),
   });
 
 export const cancelAgentTask = (id: string) =>

@@ -30,6 +30,30 @@ def test_health(client):
     assert payload["stockmanager_mcp"]["connected"] is False
 
 
+def test_qianwen_catalog_and_task_selection_contract(client, monkeypatch):
+    monkeypatch.setenv("QIANWEN_API_KEY", "test-only")
+    providers = client.get("/api/v1/config/providers").json()
+    provider = next(p for p in providers if p["id"] == "qianwen")
+    assert "qwen3.8-flash" in {m["value"] for m in provider["quick_models"]}
+    assert client.get("/api/v1/config").json()["api_keys"]["qianwen"] is True
+    received = []
+
+    def submit(cid, message, hint, selection):
+        received.append((cid, message, hint, selection.model_dump()))
+        return {"id": "test-task"}
+
+    monkeypatch.setattr(client.app.state.agent_harness, "submit", submit)
+    response = client.post("/api/v1/agent/conversations/test/tasks", json={
+        "message": "查询股票价格", "model_selection": {"provider": "qianwen", "model": "qwen3.8-flash"}})
+    assert response.status_code == 202
+    assert received == [("test", "查询股票价格", None, {"provider": "qianwen", "model": "qwen3.8-flash"})]
+    response = client.post("/api/v1/agent/conversations/test/tasks", json={
+        "message": "test", "model_selection": {"provider": "qianwen", "model": "qwen3.8-flash",
+                                                   "api_key": "must-not-be-accepted"}})
+    assert response.status_code == 422
+    assert len(received) == 1
+
+
 def test_list_skills(client):
     res = client.get("/api/v1/skills")
     assert res.status_code == 200

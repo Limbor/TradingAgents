@@ -9,7 +9,7 @@ import {
   approveAgentProposal, cancelAgentTask, closeAgentProposalReview, createAgentConversation, getAgentConversation,
   importLegacyAgentConversation, listAgentConversations, submitAgentTask,
   readAgentTaskStream, reconcileAgentProposal, rejectAgentProposal,
-  type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask,
+  type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask, type TaskModelSelection,
 } from "@/api/agent";
 import { getPaperStatus } from "@/api/paper";
 import { getConfig } from "@/api/client";
@@ -20,6 +20,7 @@ import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyCh
 
 import { ActivityTimeline, taskActivities } from "./ActivityTimeline";
 import { MemoryDetails, MemoryProgress, RoleMemory, taskMemory } from "./MemoryPanel";
+import { ModelPicker, savedChatModel } from "./ModelPicker";
 
 interface Props {
   paperSessionId?: string;
@@ -265,6 +266,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [pendingHint, setPendingHint] = useState<IntentHint | undefined>();
+  const [selectedModel, setSelectedModel] = useState<TaskModelSelection | undefined>(savedChatModel);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showInspector, setShowInspector] = useState(false);
@@ -421,7 +423,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
         selectCreatedConversation(created);
         await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
       }
-      await submitAgentTask(id, message, intentHint);
+      await submitAgentTask(id, message, intentHint, selectedModel);
       setInput("");
       setPendingHint(undefined);
       await queryClient.invalidateQueries({ queryKey: ["agent-conversation", id] });
@@ -432,7 +434,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     } finally {
       setBusy(false);
     }
-  }, [busy, running, loadingRequested, legacyArchive, currentId, paperId, queryClient, selectCreatedConversation]);
+  }, [busy, running, loadingRequested, legacyArchive, currentId, paperId, queryClient, selectCreatedConversation, selectedModel]);
 
   useEffect(() => {
     if (!promptRequest || !conversations.isSuccess || (currentId && !detail.isSuccess) || consumedPrompt.current === promptRequest.nonce) return;
@@ -531,7 +533,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
           </div>;
         })}
       </div></div>
-      {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[720px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 whitespace-nowrap rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[720px]"><div className="flex items-end gap-2 rounded-lg border border-ui-line bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} disabled={loadingRequested} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] min-w-0 flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint disabled:opacity-50" /><button type="submit" disabled={!input.trim() || running || busy || loadingRequested} aria-label="发送" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><p className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-ui-faint"><span className="min-w-0 truncate">{paperId ? `${paperName} · 模拟盘` : "交易分析"}</span><span>{latestTask?.proposal ? "账户变更需单独确认" : "不会直接修改账本"}</span></p></div></form>}
+      {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[720px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 whitespace-nowrap rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[720px]"><div className="flex items-end gap-2 rounded-lg border border-ui-line bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} disabled={loadingRequested} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] min-w-0 flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint disabled:opacity-50" /><button type="submit" disabled={!input.trim() || running || busy || loadingRequested} aria-label="发送" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1"><ModelPicker config={modelConfig.data} value={selectedModel} onChange={setSelectedModel} disabled={busy || loadingRequested} /><span className="truncate text-xs text-ui-faint">{latestTask?.proposal ? "账户变更需单独确认" : "不会直接修改账本"}</span></div></div></form>}
     </section>
     {showInspector && (embedded ? createPortal(<><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-[80] bg-black/40" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} overlay onClose={() => setShowInspector(false)} /></>, document.body) : <><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-40 bg-black/40 xl:hidden" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} onClose={() => setShowInspector(false)} /></>)}
   </div>;

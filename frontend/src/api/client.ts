@@ -315,6 +315,7 @@ export interface DailyPipelineFilters {
 }
 
 export interface ConfigResponse {
+  qianwen_thinking?: boolean;
   model_policy?: { default_model: string; deep_model: string | null };
   llm_provider: string;
   deep_think_llm: string;

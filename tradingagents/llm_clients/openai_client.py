@@ -129,6 +129,23 @@ class DeepSeekChatOpenAI(NormalizedChatOpenAI):
         return chat_result
 
 
+class QianwenChatOpenAI(DeepSeekChatOpenAI):
+    """Qianwen gateway: preserve reasoning receipts across native tool turns."""
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # Explicitly control thinking rather than relying on model defaults.
+        payload.setdefault("extra_body", {}).setdefault("enable_thinking", False)
+        return payload
+
+    def with_structured_output(self, schema, *, method=None, **kwargs):
+        # Thinking mode accepts auto/none, not a forced function. Binding the
+        # schema without tool_choice keeps both thinking modes compatible.
+        if (method or get_capabilities(self.model_name).preferred_structured_method) == "function_calling":
+            kwargs.setdefault("tool_choice", None)
+        return super().with_structured_output(schema, method=method, **kwargs)
+
+
 class MinimaxChatOpenAI(NormalizedChatOpenAI):
     """MiniMax-specific overrides on top of the OpenAI-compatible client.
 
@@ -165,7 +182,7 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "reasoning_effort", "temperature",
-    "api_key", "callbacks", "http_client", "http_async_client",
+    "api_key", "callbacks", "http_client", "http_async_client", "extra_body",
 )
 
 # OpenAI's ``reasoning_effort`` is only accepted by reasoning models — the GPT-5
@@ -215,6 +232,8 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "deepseek":   ProviderSpec(base_url="https://api.deepseek.com", chat_class=DeepSeekChatOpenAI),
     "qwen":       ProviderSpec(base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
     "qwen-cn":    ProviderSpec(base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    "qianwen":    ProviderSpec(base_url="https://maas.qianwenaiapi.com/compatible-mode/v1",
+                              chat_class=QianwenChatOpenAI),
     "glm":        ProviderSpec(base_url="https://api.z.ai/api/paas/v4/"),
     "glm-cn":     ProviderSpec(base_url="https://open.bigmodel.cn/api/paas/v4/"),
     "minimax":    ProviderSpec(base_url="https://api.minimax.io/v1", chat_class=MinimaxChatOpenAI),

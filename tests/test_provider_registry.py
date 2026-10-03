@@ -9,6 +9,7 @@ from tradingagents.llm_clients.openai_client import (
     DeepSeekChatOpenAI,
     MinimaxChatOpenAI,
     NormalizedChatOpenAI,
+    QianwenChatOpenAI,
     is_openai_compatible,
 )
 
@@ -30,6 +31,7 @@ def test_registry_membership():
     ("deepseek", "https://api.deepseek.com", DeepSeekChatOpenAI, False),
     ("qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", NormalizedChatOpenAI, False),
     ("qwen-cn", "https://dashscope.aliyuncs.com/compatible-mode/v1", NormalizedChatOpenAI, False),
+    ("qianwen", "https://maas.qianwenaiapi.com/compatible-mode/v1", QianwenChatOpenAI, False),
     ("glm", "https://api.z.ai/api/paas/v4/", NormalizedChatOpenAI, False),
     ("glm-cn", "https://open.bigmodel.cn/api/paas/v4/", NormalizedChatOpenAI, False),
     ("minimax", "https://api.minimax.io/v1", MinimaxChatOpenAI, False),

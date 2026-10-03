@@ -34,6 +34,7 @@ class ConfigResponse(BaseModel):
     scheduler_enabled: bool = True
     adaptive_alpha_enabled: bool = False
     api_keys: dict[str, bool] = {}
+    qianwen_thinking: bool = False
 
 
 class ConfigUpdate(BaseModel):
@@ -56,6 +57,7 @@ class ConfigUpdate(BaseModel):
     daily_pipeline_deep_analysis_limit: int | None = Field(default=None, ge=0, le=20)
     scheduler_enabled: bool | None = None
     adaptive_alpha_enabled: bool | None = None
+    qianwen_thinking: bool | None = None
 
     @model_validator(mode="after")
     def require_valid_policy(self):
@@ -84,6 +86,7 @@ _PROVIDER_DISPLAY_NAMES = {
     "deepseek": "DeepSeek",
     "qwen": "Qwen (International)",
     "qwen-cn": "Qwen (China)",
+    "qianwen": "千问AI平台",
     "glm": "GLM (Z.AI)",
     "glm-cn": "GLM (BigModel CN)",
     "minimax": "MiniMax (International)",
@@ -135,6 +138,7 @@ def _build_config_response(config: dict) -> ConfigResponse:
         scheduler_enabled=config.get("scheduler_enabled", True),
         adaptive_alpha_enabled=config.get("adaptive_alpha_enabled", False),
         api_keys=_get_api_key_status(),
+        qianwen_thinking=bool(config.get("qianwen_thinking", False)),
     )
 
 
@@ -165,7 +169,7 @@ async def update_config(request: Request, body: ConfigUpdate):
         request.app.state.mcp_status_checked_at = time.monotonic()
 
     llm_fields = {"model_policy", "agent_model", "llm_provider", "quick_think_llm", "deep_think_llm", "backend_url",
-                  "temperature", "openai_reasoning_effort", "google_thinking_level", "anthropic_effort"}
+                  "temperature", "openai_reasoning_effort", "google_thinking_level", "anthropic_effort", "qianwen_thinking"}
     if llm_fields.intersection(updates):
         chat_agent = getattr(request.app.state, "chat_agent", None)
         if chat_agent is not None:

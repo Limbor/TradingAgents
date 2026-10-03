@@ -41,6 +41,82 @@ class _Skills:
 
 
 @pytest.mark.asyncio
+async def test_chat_selected_channel_is_frozen_for_native_loop_and_children(tmp_path, monkeypatch):
+    from tradingagents.core.agent_runtime import current_context
+    from tradingagents.core.model_policy import resolve_model
+
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.config.update(llm_provider="deepseek", backend_url="https://api.deepseek.com",
+                          model_policy={"default_model": "deepseek-flash", "deep_model": "deepseek-v4-pro"})
+    harness.tools.register(LightweightTool(name="get_portfolio_summary", description="portfolio",
+        parameters={"type": "object"}, handler=lambda: asyncio.sleep(0, result={"holdings": [], "total_symbols": 0})))
+
+    async def recent_runs(**_kwargs):
+        context = current_context()
+        assert context.config["llm_provider"] == "qianwen"
+        assert resolve_model(context.config, "deep") == "qwen3.8-flash"
+        return {"runs": [{"id": "run-1"}]}
+
+    harness.tools.register(LightweightTool(name="get_recent_runs", description="runs",
+        parameters={"type": "object"}, handler=recent_runs))
+    monkeypatch.setenv("QIANWEN_API_KEY", "test-only")
+    calls = []
+
+    class Model:
+        rounds = 0
+
+        def bind_tools(self, _schemas):
+            return self
+
+        async def ainvoke(self, messages):
+            self.rounds += 1
+            if self.rounds == 1:
+                return AIMessage(content="", tool_calls=[{"name": "get_recent_runs", "args": {},
+                    "id": "runs", "type": "tool_call"}])
+            assert any(isinstance(m, ToolMessage) and "run-1" in m.content for m in messages)
+            return AIMessage(content="已取得运行记录")
+
+    model = Model()
+
+    def create_client(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(get_llm=lambda: model)
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client", create_client)
+
+    async def synthesize(*_args, **_kwargs):
+        assert harness.config["llm_provider"] == "qianwen"
+        return "已核对运行记录。"
+
+    harness._synthesize = synthesize
+    conversation = store.create_conversation("工作台", None)
+    task = harness.submit(conversation["id"], "查看当前持仓和最近运行", model_selection={
+        "provider": "qianwen", "model": "qwen3.8-flash"})
+    # A subsequent settings change must not affect this queued task.
+    harness._config["agent_model"] = "changed-global-model"
+    await harness._active[task["id"]]
+    assert model.rounds == 2
+    assert all(call["provider"] == "qianwen" and call["model"] == "qwen3.8-flash" and
+               call["base_url"] is None for call in calls)
+    assert store.get_task(task["id"])["status"] == "completed"
+    receipt = store.list_events(task["id"])[0]["payload"]
+    assert receipt["provider"] == "qianwen" and receipt["model_source"] == "chat_selection"
+    assert harness._config["llm_provider"] == "deepseek"
+
+
+@pytest.mark.asyncio
+async def test_missing_selected_key_does_not_create_task_or_message(tmp_path, monkeypatch):
+    monkeypatch.delenv("QIANWEN_API_KEY", raising=False)
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    conversation = store.create_conversation("工作台", None)
+    with pytest.raises(ValueError, match="QIANWEN_API_KEY"):
+        harness.submit(conversation["id"], "分析太极实业", model_selection={
+            "provider": "qianwen", "model": "qwen3.8-flash"})
+    assert store.list_tasks(conversation["id"]) == []
+    assert store.conversation_detail(conversation["id"])["messages"] == []
+
+
+@pytest.mark.asyncio
 async def test_agent_automatically_retrieves_dated_memory_and_audits_actual_injection(tmp_path, monkeypatch):
     from tradingagents.core.lightweight_tools import build_all_tools
 

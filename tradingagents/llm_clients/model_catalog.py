@@ -147,6 +147,21 @@ MODEL_OPTIONS: ProviderModeOptions = {
     # (dashscope) endpoints, so the two provider keys share one model list.
     "qwen": _QWEN_MODELS,
     "qwen-cn": _QWEN_MODELS,
+    "qianwen": {
+        "quick": [
+            ("Qwen3.8 Flash · 快速", "qwen3.8-flash"),
+            ("Qwen3.7 Plus · 均衡", "qwen3.7-plus"),
+            ("Qwen3.8 Max · 深度", "qwen3.8-max"),
+            ("Qwen3.7 Flash · 轻量", "qwen3.7-flash"),
+            ("Custom model ID", "custom"),
+        ],
+        "deep": [
+            ("Qwen3.8 Max · 深度", "qwen3.8-max"),
+            ("Qwen3.7 Plus · 均衡", "qwen3.7-plus"),
+            ("Qwen3.8 Flash · 快速", "qwen3.8-flash"),
+            ("Custom model ID", "custom"),
+        ],
+    },
     # GLM: Z.AI (international) and BigModel (China) host the same model
     # IDs; the two provider keys share one model list.
     "glm": _GLM_MODELS,

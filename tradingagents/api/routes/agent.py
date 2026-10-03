@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
+from tradingagents.core.model_policy import TaskModelSelection
 from tradingagents.core.stockmanager_paper import PaperServiceError, paper_request
 
 router = APIRouter(prefix="/agent")
@@ -26,6 +27,7 @@ class NewConversation(BaseModel):
 class NewTask(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     intent_hint: dict | None = None
+    model_selection: TaskModelSelection | None = None
 
 
 class LegacyMessage(BaseModel):
@@ -111,7 +113,7 @@ async def create_task(request: Request, conversation_id: str, body: NewTask):
         if body.intent_hint and len(json.dumps(body.intent_hint, ensure_ascii=False)) > 4096:
             raise ValueError("指定技能参数过大")
         return request.app.state.agent_harness.submit(conversation_id, body.message,
-                                                      body.intent_hint)
+                                                      body.intent_hint, body.model_selection)
     except KeyError as exc:
         raise HTTPException(404, "对话不存在") from exc
     except ValueError as exc:
