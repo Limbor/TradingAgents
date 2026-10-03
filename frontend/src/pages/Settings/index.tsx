@@ -11,6 +11,7 @@ import {
 } from "../../api/client";
 import { getAuthToken, setAuthToken } from "../../api/auth";
 import { queryKeys } from "@/api/queryKeys";
+import { ModelPicker } from "../AgentWorkspace/ModelPicker";
 
 const LANGUAGES = [
   { label: "English", value: "English" },
@@ -48,13 +49,13 @@ export default function Settings() {
   }, []);
 
   useEffect(() => {
-    if (configQuery.data && !config) {
+    if (configQuery.data) {
       setConfig(configQuery.data);
       setCustomUrl(configQuery.data.backend_url ?? "");
       setCustomAgent(configQuery.data.model_policy?.default_model || configQuery.data.agent_model || configQuery.data.quick_think_llm);
       setCustomDeep(configQuery.data.model_policy?.deep_model || "");
     }
-  }, [configQuery.data, providersQuery.data, config]);
+  }, [configQuery.data]);
 
   useEffect(() => {
     if (profileQuery.data && !profile) {
@@ -112,9 +113,8 @@ export default function Settings() {
       if (!pd) return;
 
       // Auto-select first model for each tier
-      const quick = pd.quick_models[0];
-      const deep = pd.deep_models[0];
-      if (quick && deep) {
+      const quick = pd.quick_models.find((model) => model.value !== "custom");
+      if (quick) {
         setCustomDeep("");
         setCustomAgent("");
         setEditingAgentModel(false);
@@ -133,7 +133,7 @@ export default function Settings() {
   if (!config || configQuery.isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <p className="text-ui-muted">Loading configuration...</p>
+        <p className="text-ui-muted">加载配置中…</p>
       </div>
     );
   }
@@ -149,7 +149,7 @@ export default function Settings() {
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">设置</h2>
         {saving && (
-          <span className="text-sm text-ui-muted">Saving...</span>
+          <span className="text-sm text-ui-muted">保存中…</span>
         )}
       </div>
       {saveError && <p role="alert" className="rounded border border-ui-danger/40 bg-ui-danger/10 px-3 py-2 text-sm text-ui-danger">{saveError}</p>}
@@ -158,7 +158,19 @@ export default function Settings() {
       <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
         <h3 className="mb-2 text-lg font-semibold">模型配置</h3>
         <p className="mb-4 text-sm leading-6 text-ui-muted">对话、股票分析、板块研究和复盘共用同一模型配置。设置对新任务生效，运行中的任务继续使用启动时的配置。</p>
-        <div className="space-y-4">
+        <div className="rounded-lg border border-ui-line bg-ui-panel p-4">
+          <p className="mb-2 text-sm font-medium">当前模型</p>
+          <ModelPicker config={configQuery.data} onSavingChange={setSaving} />
+          <p className="mt-2 text-xs leading-5 text-ui-muted">与聊天输入框下方同步。切换会让所有角色使用所选模型。</p>
+        </div>
+        {config.llm_provider === "qianwen" && <label className="mt-4 flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={config.qianwen_thinking ?? false} onChange={(event) => void save({ qianwen_thinking: event.target.checked })} />
+          启用千问深度思考<span className="text-xs text-ui-muted">增加耗时与 Token 用量</span>
+        </label>}
+        <details className="mt-4 rounded-lg border border-ui-line bg-ui-panel p-4">
+          <summary className="cursor-pointer text-sm font-medium">高级模型设置</summary>
+          <p className="mb-4 mt-3 text-xs leading-5 text-ui-muted">自定义模型与服务地址，以及可选的研究裁决模型覆盖。普通切换请使用上方菜单。</p>
+          <div className="space-y-4">
           <div>
             <label className="mb-1 block text-sm text-ui-body">模型服务商</label>
             <select
@@ -166,9 +178,12 @@ export default function Settings() {
               onChange={(e) => handleProviderChange(e.target.value)}
               className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
             >
-              {providersQuery.data?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
+              {providersQuery.data?.filter((p) =>
+                ["qianwen", "deepseek", config.llm_provider].includes(p.id) ||
+                (config.api_keys[p.id] && !["ollama", "bedrock", "openai_compatible"].includes(p.id))
+              ).map((p) => (
+                <option key={p.id} value={p.id} disabled={!config.api_keys[p.id] && p.id !== config.llm_provider}>
+                  {p.name}{!config.api_keys[p.id] ? "（未配置密钥）" : ""}
                 </option>
               ))}
             </select>
@@ -226,8 +241,7 @@ export default function Settings() {
             />
           </div>
 
-          <details className="rounded-lg border border-ui-line bg-ui-panel p-4">
-            <summary className="cursor-pointer text-sm font-medium text-ui-body">高级模型设置</summary>
+          <div className="rounded-lg border border-ui-line bg-ui-panel p-4">
             <label htmlFor="deep-model" className="mb-1 mt-4 block text-sm text-ui-body">深度模型（可选）</label>
             <p className="mb-3 text-xs leading-5 text-ui-muted">用于研究经理裁决与组合决策。留空时，所有角色使用默认模型。</p>
             <select id="deep-model"
@@ -249,7 +263,165 @@ export default function Settings() {
                   onClick={async () => { if (await save({ model_policy: { default_model: defaultModel, deep_model: customDeep.trim() } })) setEditingDeepModel(false); }}
                   className="rounded-lg bg-ui-accent px-3 py-2 text-sm text-ui-onAccent disabled:opacity-50">保存深度模型</button>
               </div>}
-          </details>
+          </div>
+        </div>
+        </details>
+      </section>
+
+      {/* API Key Status */}
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
+        <h3 className="mb-4 text-lg font-semibold">模型密钥状态</h3>
+        <div className="flex items-center gap-3">
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${apiKeyConfigured ? "bg-ui-accent" : "bg-ui-danger"}`}
+          />
+          <span className="text-sm">
+            {currentProvider?.name ?? config.llm_provider}:{" "}
+            {apiKeyConfigured ? (
+              <span className="text-ui-accent">API 密钥已配置</span>
+            ) : (
+              <span className="text-ui-danger">
+                缺少 API 密钥，请设置对应环境变量
+              </span>
+            )}
+          </span>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-ui-muted">密钥在后端 .env 中配置，修改后重启后端。千问使用 QIANWEN_API_KEY，DeepSeek 使用 DEEPSEEK_API_KEY。</p>
+      </section>
+
+      {profile && (
+        <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
+          <h3 className="mb-4 text-lg font-semibold">分析偏好</h3>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm text-ui-body">投资周期</label>
+              <select
+                value={profile.investment_style}
+                onChange={(e) =>
+                  saveProfile({
+                    investment_style: e.target.value as UserProfile["investment_style"],
+                  })
+                }
+                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+              >
+                <option value="short_term">短线</option>
+                <option value="medium_term">中期</option>
+                <option value="long_term">长期</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-ui-body">风险偏好</label>
+              <select
+                value={profile.risk_tolerance}
+                onChange={(e) =>
+                  saveProfile({
+                    risk_tolerance: e.target.value as UserProfile["risk_tolerance"],
+                  })
+                }
+                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+              >
+                <option value="low">保守</option>
+                <option value="moderate">均衡</option>
+                <option value="high">积极</option>
+              </select>
+            </div>
+          </div>
+          <div className="mt-4">
+            <label className="mb-1 block text-sm text-ui-body">关注行业</label>
+            <input
+              type="text"
+              value={profile.sector_prefs.join(", ")}
+              onChange={(e) =>
+                setProfile({
+                  ...profile,
+                  sector_prefs: e.target.value
+                    .split(/[,，、]/)
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                })
+              }
+              onBlur={() => saveProfile({ sector_prefs: profile.sector_prefs })}
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+            />
+          </div>
+        </section>
+      )}
+
+      {/* Output */}
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
+        <h3 className="mb-4 text-lg font-semibold">输出设置</h3>
+        <div>
+          <label className="mb-1 block text-sm text-ui-body">输出语言</label>
+          <select
+            value={config.output_language}
+            onChange={(e) => save({ output_language: e.target.value })}
+            className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.value} value={l.value}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
+
+      <details className="rounded-lg border border-ui-line bg-ui-panel p-5">
+        <summary className="cursor-pointer font-medium">高级系统设置</summary>
+        <p className="mb-4 mt-3 text-xs text-ui-muted">连接、访问认证与分析工作流参数。</p>
+        <div className="space-y-4">
+      {/* StockManager MCP */}
+      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
+        <h3 className="mb-4 text-lg font-semibold">StockManager MCP</h3>
+        <div className="space-y-4">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={config.stockmanager_mcp_enabled}
+              onChange={(e) =>
+                save({ stockmanager_mcp_enabled: e.target.checked })
+              }
+              className="h-4 w-4 rounded border-ui-strong bg-ui-panel"
+            />
+            <span className="text-sm text-ui-body">
+              启用本地 StockManager MCP 服务
+            </span>
+          </label>
+          <div>
+            <label className="mb-1 block text-sm text-ui-body">MCP URL</label>
+            <input
+              type="text"
+              value={config.stockmanager_mcp_url ?? ""}
+              onChange={(e) =>
+                setConfig({ ...config, stockmanager_mcp_url: e.target.value })
+              }
+              onBlur={() =>
+                save({ stockmanager_mcp_url: config.stockmanager_mcp_url })
+              }
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-ui-body">
+              工具超时
+              <span className="ml-1 text-ui-faint">（秒）</span>
+            </label>
+            <input
+              type="number"
+              min={1}
+              value={config.stockmanager_mcp_timeout}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  stockmanager_mcp_timeout: Number(e.target.value),
+                })
+              }
+              onBlur={() =>
+                save({ stockmanager_mcp_timeout: config.stockmanager_mcp_timeout })
+              }
+              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
+            />
+          </div>
         </div>
       </section>
 
@@ -280,173 +452,13 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* API Key Status */}
+      {/* 分析工作流 */}
       <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">模型密钥状态</h3>
-        <div className="flex items-center gap-3">
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${apiKeyConfigured ? "bg-ui-accent" : "bg-ui-danger"}`}
-          />
-          <span className="text-sm">
-            {currentProvider?.name ?? config.llm_provider}:{" "}
-            {apiKeyConfigured ? (
-              <span className="text-ui-accent">API 密钥已配置</span>
-            ) : (
-              <span className="text-ui-danger">
-                缺少 API 密钥，请设置对应环境变量
-              </span>
-            )}
-          </span>
-        </div>
-        {config.llm_provider === "qianwen" && <div className="mt-4 rounded-lg border border-ui-line bg-ui-panel p-3 text-xs leading-5 text-ui-muted">
-          <p>千问AI平台使用独立密钥。请在后端 .env 中设置 <code>QIANWEN_API_KEY</code>，然后重启后端。聊天输入框下方也可切换模型，不会改动这里的默认设置。</p>
-          <label className="mt-3 flex items-center gap-2 text-ui-body">
-            <input type="checkbox" checked={config.qianwen_thinking ?? false} onChange={(event) => void save({ qianwen_thinking: event.target.checked })} />
-            启用千问深度思考
-          </label>
-          <p className="mt-1">对新任务生效；思考会增加耗时和输出 Token 费用。</p>
-        </div>}
-      </section>
-
-      {/* StockManager MCP */}
-      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">StockManager MCP</h3>
-        <div className="space-y-4">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config.stockmanager_mcp_enabled}
-              onChange={(e) =>
-                save({ stockmanager_mcp_enabled: e.target.checked })
-              }
-              className="h-4 w-4 rounded border-ui-strong bg-ui-panel"
-            />
-            <span className="text-sm text-ui-body">
-              Enable local StockManager MCP service
-            </span>
-          </label>
-          <div>
-            <label className="mb-1 block text-sm text-ui-body">MCP URL</label>
-            <input
-              type="text"
-              value={config.stockmanager_mcp_url ?? ""}
-              onChange={(e) =>
-                setConfig({ ...config, stockmanager_mcp_url: e.target.value })
-              }
-              onBlur={() =>
-                save({ stockmanager_mcp_url: config.stockmanager_mcp_url })
-              }
-              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm text-ui-body">
-              Tool Timeout
-              <span className="ml-1 text-ui-faint">(seconds)</span>
-            </label>
-            <input
-              type="number"
-              min={1}
-              value={config.stockmanager_mcp_timeout}
-              onChange={(e) =>
-                setConfig({
-                  ...config,
-                  stockmanager_mcp_timeout: Number(e.target.value),
-                })
-              }
-              onBlur={() =>
-                save({ stockmanager_mcp_timeout: config.stockmanager_mcp_timeout })
-              }
-              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-            />
-          </div>
-        </div>
-      </section>
-
-      {profile && (
-        <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-          <h3 className="mb-4 text-lg font-semibold">Investment Profile</h3>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm text-ui-body">Style</label>
-              <select
-                value={profile.investment_style}
-                onChange={(e) =>
-                  saveProfile({
-                    investment_style: e.target.value as UserProfile["investment_style"],
-                  })
-                }
-                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-              >
-                <option value="short_term">Short term</option>
-                <option value="medium_term">Medium term</option>
-                <option value="long_term">Long term</option>
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-ui-body">Risk Tolerance</label>
-              <select
-                value={profile.risk_tolerance}
-                onChange={(e) =>
-                  saveProfile({
-                    risk_tolerance: e.target.value as UserProfile["risk_tolerance"],
-                  })
-                }
-                className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-              >
-                <option value="low">Low</option>
-                <option value="moderate">Moderate</option>
-                <option value="high">High</option>
-              </select>
-            </div>
-          </div>
-          <div className="mt-4">
-            <label className="mb-1 block text-sm text-ui-body">Sector Preferences</label>
-            <input
-              type="text"
-              value={profile.sector_prefs.join(", ")}
-              onChange={(e) =>
-                setProfile({
-                  ...profile,
-                  sector_prefs: e.target.value
-                    .split(/[,，、]/)
-                    .map((item) => item.trim())
-                    .filter(Boolean),
-                })
-              }
-              onBlur={() => saveProfile({ sector_prefs: profile.sector_prefs })}
-              className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-            />
-          </div>
-        </section>
-      )}
-
-      {/* Output */}
-      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">Output Settings</h3>
-        <div>
-          <label className="mb-1 block text-sm text-ui-body">Output Language</label>
-          <select
-            value={config.output_language}
-            onChange={(e) => save({ output_language: e.target.value })}
-            className="w-full rounded-lg border border-ui-strong bg-ui-panel px-3 py-2 text-sm focus:border-ui-accent focus:outline-none"
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l.value} value={l.value}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </section>
-
-      {/* Analysis Settings */}
-      <section className="rounded-lg border border-ui-strong bg-ui-hover/50 p-5">
-        <h3 className="mb-4 text-lg font-semibold">Analysis Settings</h3>
+        <h3 className="mb-4 text-lg font-semibold">分析工作流</h3>
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="mb-1 block text-sm text-ui-body">
-              Debate Rounds
+              多空讨论轮次
               <span className="ml-1 text-ui-faint">(bull vs bear)</span>
             </label>
             <select
@@ -465,7 +477,7 @@ export default function Settings() {
           </div>
           <div>
             <label className="mb-1 block text-sm text-ui-body">
-              Risk Rounds
+              风险讨论轮次
               <span className="ml-1 text-ui-faint">(risk debate)</span>
             </label>
             <select
@@ -494,9 +506,9 @@ export default function Settings() {
               className="h-4 w-4 rounded border-ui-strong bg-ui-panel"
             />
             <span className="text-sm text-ui-body">
-              Enable checkpoint/resume{" "}
+              启用断点恢复{" "}
               <span className="text-ui-faint">
-                (recover from crashes on next run)
+                （异常后继续运行）
               </span>
             </span>
           </label>
@@ -520,6 +532,8 @@ export default function Settings() {
           </label>
         </div>
       </section>
+        </div>
+      </details>
     </div>
   );
 }

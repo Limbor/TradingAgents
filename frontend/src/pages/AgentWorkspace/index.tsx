@@ -4,12 +4,12 @@ import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowRight, Check, CircleAlert, CircleCheck, Clock3, Copy, Database, LoaderCircle, LockKeyhole, MessageSquarePlus, PanelRightClose, PanelRightOpen, Send, Settings2, Square, X } from "lucide-react";
+import { ArrowRight, Check, CircleAlert, CircleCheck, Clock3, Copy, Database, LoaderCircle, LockKeyhole, MessageSquarePlus, PanelRightClose, PanelRightOpen, Send, Square, X } from "lucide-react";
 import {
   approveAgentProposal, cancelAgentTask, closeAgentProposalReview, createAgentConversation, getAgentConversation,
   importLegacyAgentConversation, listAgentConversations, submitAgentTask,
   readAgentTaskStream, reconcileAgentProposal, rejectAgentProposal,
-  type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask, type TaskModelSelection,
+  type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask,
 } from "@/api/agent";
 import { getPaperStatus } from "@/api/paper";
 import { getConfig } from "@/api/client";
@@ -20,7 +20,7 @@ import { LEGACY_CHAT_IMPORT_MARKER, readLegacyChatBatches } from "@/lib/legacyCh
 
 import { ActivityTimeline, taskActivities } from "./ActivityTimeline";
 import { MemoryDetails, MemoryProgress, RoleMemory, taskMemory } from "./MemoryPanel";
-import { ModelPicker, savedChatModel } from "./ModelPicker";
+import { ModelPicker } from "./ModelPicker";
 
 interface Props {
   paperSessionId?: string;
@@ -266,7 +266,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [pendingHint, setPendingHint] = useState<IntentHint | undefined>();
-  const [selectedModel, setSelectedModel] = useState<TaskModelSelection | undefined>(savedChatModel);
+  const [modelSaving, setModelSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showInspector, setShowInspector] = useState(false);
@@ -312,7 +312,6 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
   const detail = useQuery({ queryKey: ["agent-conversation", currentId], queryFn: () => getAgentConversation(currentId!), enabled: Boolean(currentId), refetchInterval: 4000 });
   const paperStatus = useQuery({ queryKey: ["agent-paper-status", paperId], queryFn: () => getPaperStatus(paperId!), enabled: Boolean(paperId), retry: false, staleTime: 30_000 });
   const modelConfig = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig, retry: false, staleTime: 30_000 });
-  const activeModel = modelConfig.data?.model_policy?.default_model || modelConfig.data?.agent_model || modelConfig.data?.quick_think_llm;
   const paperName = paperStatus.data?.session?.session_id === paperId
     ? paperDisplayName(paperStatus.data.session.config_name, paperStatus.data.session.strategy, paperStatus.data.kind === "composite")
     : "模拟盘账户";
@@ -412,7 +411,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
 
   const send = useCallback(async (raw: string, intentHint?: IntentHint) => {
     const message = raw.trim();
-    if (!message || busy || running || loadingRequested) return;
+    if (!message || busy || running || loadingRequested || modelSaving) return;
     setBusy(true);
     setError("");
     try {
@@ -423,7 +422,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
         selectCreatedConversation(created);
         await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
       }
-      await submitAgentTask(id, message, intentHint, selectedModel);
+      await submitAgentTask(id, message, intentHint);
       setInput("");
       setPendingHint(undefined);
       await queryClient.invalidateQueries({ queryKey: ["agent-conversation", id] });
@@ -434,7 +433,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     } finally {
       setBusy(false);
     }
-  }, [busy, running, loadingRequested, legacyArchive, currentId, paperId, queryClient, selectCreatedConversation, selectedModel]);
+  }, [busy, running, loadingRequested, legacyArchive, currentId, paperId, queryClient, selectCreatedConversation, modelSaving]);
 
   useEffect(() => {
     if (!promptRequest || !conversations.isSuccess || (currentId && !detail.isSuccess) || consumedPrompt.current === promptRequest.nonce) return;
@@ -515,7 +514,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     </aside>}
 
     <section aria-label="交易 Agent 对话" className="flex min-w-0 flex-1 flex-col bg-ui-canvas">
-      <header className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-ui-line bg-ui-panel px-4 sm:px-5"><div className="min-w-0"><p className="truncate text-[15px] font-medium" title={detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperName}>{detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperId ? paperName : "交易 Agent"}</p><p className="truncate text-xs text-ui-muted">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? `${paperName} · 已绑定模拟盘` : "分析 · 取证 · 风险核对"}</p></div><div className="flex shrink-0 items-center gap-2">{embedded && paperId && <Link to={`/chat?paper_session=${encodeURIComponent(paperId)}${currentId ? `&conversation=${encodeURIComponent(currentId)}` : ""}`} className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-ui-line px-2 py-1 text-xs text-ui-accent hover:bg-ui-accentSoft">在工作台继续 <ArrowRight className="h-3.5 w-3.5" /></Link>}{running && <span className="hidden items-center gap-1 whitespace-nowrap text-xs text-ui-accent sm:flex">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!showInspector && <button onClick={() => { setInspectedTaskId(null); setShowInspector(true); }} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}{!embedded && <Link to="/settings" aria-label="配置默认模型" title={`当前模型：${activeModel || "未配置"}`} className="inline-flex min-w-0 items-center gap-1 rounded p-1 text-ui-muted hover:bg-ui-hover hover:text-ui-accent"><Settings2 className="h-4 w-4 shrink-0" /><span className="hidden max-w-[110px] truncate text-xs lg:inline">{activeModel || "模型配置"}</span></Link>}{!embedded && <ThemeToggle />}</div></header>
+      <header className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-ui-line bg-ui-panel px-4 sm:px-5"><div className="min-w-0"><p className="truncate text-[15px] font-medium" title={detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperName}>{detail.data?.title ? conversationTitle(detail.data.title, paperId, paperName) : paperId ? paperName : "交易 Agent"}</p><p className="truncate text-xs text-ui-muted">{legacyArchive ? "历史聊天存档 · 数据未重新核对" : paperId ? `${paperName} · 已绑定模拟盘` : "分析 · 取证 · 风险核对"}</p></div><div className="flex shrink-0 items-center gap-2">{embedded && paperId && <Link to={`/chat?paper_session=${encodeURIComponent(paperId)}${currentId ? `&conversation=${encodeURIComponent(currentId)}` : ""}`} className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-ui-line px-2 py-1 text-xs text-ui-accent hover:bg-ui-accentSoft">在工作台继续 <ArrowRight className="h-3.5 w-3.5" /></Link>}{running && <span className="hidden items-center gap-1 whitespace-nowrap text-xs text-ui-accent sm:flex">{latestTask?.status !== "awaiting_approval" && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}{statusText[latestTask!.status]}</span>}{latestTask && ["queued", "planning", "running", "reviewing"].includes(latestTask.status) && <button onClick={() => void stop()} aria-label="取消任务" className="rounded border border-ui-line p-1.5 text-ui-muted hover:bg-ui-subtle"><Square className="h-3.5 w-3.5" /></button>}{!showInspector && <button onClick={() => { setInspectedTaskId(null); setShowInspector(true); }} aria-label="展开任务档案" className="rounded p-1 text-ui-muted"><PanelRightOpen className="h-4 w-4" /></button>}{!embedded && <ThemeToggle />}</div></header>
       {(embedded || scoped.length > 0) && <div className={`flex items-center gap-2 border-b border-ui-line bg-ui-panel px-3 py-2 ${embedded ? "" : "md:hidden"}`}><select aria-label="选择 Agent 对话" value={currentId ?? ""} onChange={(event) => { if (event.target.value) selectConversation(event.target.value); else void newConversation(); }} className="min-w-0 flex-1 rounded border border-ui-line bg-ui-panel px-2 py-1.5 text-xs"><option value="">新对话</option>{scoped.map((item) => <option key={item.id} value={item.id}>{conversationTitle(item.title, paperId, paperName)}</option>)}</select>{conversations.hasNextPage && <button disabled={conversations.isFetchingNextPage} onClick={() => void conversations.fetchNextPage()} aria-label="加载更多对话" className="shrink-0 text-xs text-ui-accent disabled:opacity-50">更多</button>}<button disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" className="rounded border border-ui-line p-1.5 text-ui-accent disabled:opacity-50"><MessageSquarePlus className="h-4 w-4" /></button></div>}
       {error && <div role="alert" className="flex items-center justify-between border-b border-ui-danger bg-ui-danger/10 px-4 py-2 text-xs text-ui-danger">{error}<button onClick={() => setError("")} aria-label="关闭错误"><X className="h-3.5 w-3.5" /></button></div>}
       <div ref={scrollRef} className="agent-thread min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8"><div className="relative mx-auto max-w-[720px] space-y-6">
@@ -533,7 +532,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
           </div>;
         })}
       </div></div>
-      {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[720px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 whitespace-nowrap rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[720px]"><div className="flex items-end gap-2 rounded-lg border border-ui-line bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} disabled={loadingRequested} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] min-w-0 flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint disabled:opacity-50" /><button type="submit" disabled={!input.trim() || running || busy || loadingRequested} aria-label="发送" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1"><ModelPicker config={modelConfig.data} value={selectedModel} onChange={setSelectedModel} disabled={busy || loadingRequested} /><span className="truncate text-xs text-ui-faint">{latestTask?.proposal ? "账户变更需单独确认" : "不会直接修改账本"}</span></div></div></form>}
+      {legacyArchive ? <div className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto flex max-w-[720px] items-center justify-between gap-3"><p className="text-xs text-ui-muted">旧版聊天记录仅供回看，历史数据未重新核对。</p><button onClick={() => void newConversation()} className="shrink-0 whitespace-nowrap rounded-md bg-ui-accent px-3 py-2 text-xs text-ui-onAccent">新建对话继续</button></div></div> : <form onSubmit={submit} className="shrink-0 border-t border-ui-line bg-ui-panel px-4 py-3 sm:px-8"><div className="mx-auto max-w-[720px]"><div className="flex items-end gap-2 rounded-lg border border-ui-line bg-ui-subtle p-2 focus-within:border-ui-accent"><textarea aria-label="交易问题" value={input} disabled={loadingRequested} onChange={(event) => { setInput(event.target.value); setPendingHint(undefined); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input, pendingHint); } }} placeholder={paperId ? "询问这个模拟盘的决策、风险或计划…" : "给 Agent 一个交易分析目标…"} className="min-h-[48px] max-h-[150px] min-w-0 flex-1 resize-y bg-transparent p-1.5 text-sm leading-6 outline-none placeholder:text-ui-faint disabled:opacity-50" /><button type="submit" disabled={!input.trim() || running || busy || loadingRequested || modelSaving} aria-label="发送" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ui-accent text-ui-onAccent disabled:bg-ui-strong"><Send className="h-4 w-4" /></button></div><div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1"><ModelPicker config={modelConfig.data} onSavingChange={setModelSaving} disabled={busy || loadingRequested} /><span className="truncate text-xs text-ui-faint">{latestTask?.proposal ? "账户变更需单独确认" : "不会直接修改账本"}</span></div></div></form>}
     </section>
     {showInspector && (embedded ? createPortal(<><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-[80] bg-black/40" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} overlay onClose={() => setShowInspector(false)} /></>, document.body) : <><button type="button" aria-label="关闭任务档案遮罩" onClick={() => setShowInspector(false)} className="fixed inset-0 z-40 bg-black/40 xl:hidden" /><Inspector task={inspectedTask} paperId={paperId} paperName={paperName} onClose={() => setShowInspector(false)} /></>)}
   </div>;

@@ -331,3 +331,60 @@ def test_role_handoff_preserves_tool_receipts_across_async_contexts(tmp_path):
         assert next(row for row in db.list_agent_runtime('handoff') if row['kind'] == 'agent')['tool_observations'] == specialist['tool_observations']
 
     asyncio.run(run())
+
+
+def test_sequential_tool_rounds_reserve_report_with_existing_evidence():
+    """Qwen may collect each indicator in a separate model turn."""
+    class Collector:
+        n = 0
+        async def ainvoke(self, messages):
+            self.n += 1
+            return AIMessage(content="", tool_calls=[{
+                "id": f"p-{self.n}", "name": "price",
+                "args": {"symbol": "600487.SH", "end_date": "2026-09-30"},
+            }])
+    class Reporter:
+        async def ainvoke(self, messages):
+            observations = [m for m in messages if m.type == "tool"]
+            assert len(observations) == 11
+            assert all('"price": 10' in m.content for m in observations)
+            assert "停止调用工具" in messages[-1].content
+            return AIMessage(content="截至9月30日，价格10；辅助数据缺失，不能判断题材热度。")
+    async def run():
+        context = AgentContext.root({}, symbols=["600487.SH"])
+        collector = Collector()
+        with use_context(context):
+            session = AgentSession(runtime_model(collector, "Market Analyst"), "goal", "system",
+                                   {"price"}, 1, final_llm=runtime_model(Reporter(), "Market Analyst"))
+            result = await session.run(ToolExecutor([price]))
+            assert "价格10" in result.content
+            assert collector.n == 11
+            assert context.budget.model_calls == 12
+            assert context.budget.tool_calls == 11
+    asyncio.run(run())
+
+
+def test_report_closing_turn_respects_shared_cancellation():
+    class Collector:
+        async def ainvoke(self, messages):
+            return AIMessage(content="", tool_calls=[{
+                "id": "p", "name": "price", "args": {"symbol": "600487.SH", "end_date": "2026-09-30"},
+            }])
+    class Reporter:
+        async def ainvoke(self, messages):
+            raise AssertionError("cancelled task must not call model")
+    async def run():
+        context = AgentContext.root({})
+        class CancellingExecutor(ToolExecutor):
+            async def execute(self, name, args):
+                result = await super().execute(name, args)
+                context.budget.cancelled.set()
+                return result
+        with use_context(context):
+            session = AgentSession(runtime_model(Collector(), "Market Analyst"), "goal", "system",
+                                   {"price"}, 1, max_rounds=2,
+                                   final_llm=runtime_model(Reporter(), "Market Analyst"))
+            with pytest.raises(RuntimeLimitError, match="任务已取消"):
+                await session.run(CancellingExecutor([price]))
+            assert context.budget.model_calls == 1
+    asyncio.run(run())

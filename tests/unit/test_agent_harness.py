@@ -1547,7 +1547,8 @@ async def test_agent_skill_timeout_cancels_run_and_records_recoverable_failure(t
     assert stopped.is_set()
     assert harness.run_manager.get_run(run_id).status == RunStatus.CANCELLED
     assert store.db.get_run(run_id)["status"] == "cancelled"
-    assert detail["status"] == "completed"
+    assert detail["status"] == "failed"
+    assert any(event["event_type"] == "task_failed" for event in detail["events"])
     assert "超过 0.05 秒" in detail["evidence"][0]["result"]["error"]
     assert "没有生成交易判断" in detail["result"]["content"]
     assert any(event["event_type"] == "skill_timed_out" and
@@ -2521,7 +2522,8 @@ async def test_failed_required_portfolio_source_does_not_search_unrequested_arch
     await harness._active[task["id"]]
 
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
-    assert detail["status"] == "completed"
+    assert detail["status"] == "failed"
+    assert any(event["event_type"] == "task_failed" for event in detail["events"])
     assert [item["tool_name"] for item in detail["evidence"]] == ["get_portfolio_summary"]
     assert not any(event["event_type"] == "plan_revised" for event in detail["events"])
     assert "没有生成交易判断" in detail["result"]["content"]
@@ -3545,3 +3547,25 @@ async def test_large_memory_keeps_structured_snapshots_and_receipts_match_prompt
     assert len(result["memory_trace"]["retrieved_ids"]) == 5
     receipt = next(e for e in store.list_events(task["id"]) if e["event_type"] == "memory_injected")
     assert receipt["payload"]["lesson_ids"] == seen
+
+
+@pytest.mark.asyncio
+async def test_exhausted_stock_analysis_is_failed_and_not_misreported_as_source_outage(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.config["agent_model_planning_enabled"] = False
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "stock_analysis" else None)
+    async def failed_skill(*_args, **_kwargs):
+        return {"error": "RuntimeLimitError: Agent 工具调用轮次已用尽",
+                "source": "TradingAgents Skill: stock_analysis"}
+    harness._run_skill = failed_skill
+    conversation = store.create_conversation("个股研究", None)
+    task = harness.submit(conversation["id"], "分析一下亨通光电呢", {
+        "skill_id": "stock_analysis", "params": {"ticker": "600487.SS"},
+    })
+    await harness._active[task["id"]]
+    detail = store.conversation_detail(conversation["id"])["tasks"][0]
+    assert detail["status"] == "failed"
+    assert "执行上限" in detail["result"]["content"]
+    assert "请检查数据源" not in detail["result"]["content"]
+    assert any(e["event_type"] == "task_failed" for e in detail["events"])
+    assert not any(e["event_type"] == "task_completed" for e in detail["events"])

@@ -438,7 +438,7 @@ class AgentSession:
     workflow steps. run executes the same loop for autonomous read-only roles.
     """
     def __init__(self, llm, goal, system_prompt, allowed, timeout, history=None, *,
-                 messages=None, max_rounds=12, encode=None):
+                 messages=None, max_rounds=12, encode=None, final_llm=None):
         self.llm = llm
         self.messages = list(messages) if messages is not None else [SystemMessage(content=system_prompt)]
         if history:
@@ -450,6 +450,7 @@ class AgentSession:
         self.max_rounds = max_rounds
         self.rounds = 0
         self.encode = encode or _json
+        self.final_llm = final_llm
 
     def tool_result(self, call_id, name, result):
         self.messages.append(ToolMessage(content=self.encode(result), tool_call_id=call_id, name=name))
@@ -470,6 +471,24 @@ class AgentSession:
 
     async def run(self, executor: ToolExecutor):
         while True:
+            # Reserve one model call for a report. The unbound model has no
+            # tools, so sequential collection cannot consume the closing turn.
+            # Shared cancellation/deadline/model budgets still apply.
+            if self.final_llm is not None and self.rounds >= self.max_rounds - 1:
+                self.rounds += 1
+                self.messages.append(HumanMessage(content=(
+                    "取证轮次已接近上限，停止调用工具，现在完成你的分析报告。"
+                    "仅引用本次已经取得的数据，标注数据日期；明确列出无法取得的字段与影响，"
+                    "不要补造数值，也不要把辅助数据缺失描述成所有行情都不可用。"
+                    "若已有证据不足以支持某项判断，请具体说明该项限制。"
+                )))
+                response = await asyncio.wait_for(self.final_llm.ainvoke(self.messages), self.timeout)
+                if getattr(response, "tool_calls", None):
+                    raise RuntimeLimitError("分析收尾阶段仍请求工具，未能生成报告")
+                if not getattr(response, "content", None):
+                    raise RuntimeLimitError("分析收尾阶段未返回报告")
+                self.messages.append(response)
+                return response
             calls = await self.choose()
             if not calls:
                 return self.messages[-1]

@@ -92,7 +92,8 @@ def create_tool_analyst(
 
         messages = prompt.invoke({"messages": state["messages"]}).to_messages()
         session = AgentSession(llm.bind_tools(resolved_tools), "", "",
-                               {tool.name for tool in resolved_tools}, 120, messages=messages)
+                               {tool.name for tool in resolved_tools}, 120, messages=messages,
+                               final_llm=llm)
         result = await session.run(ToolExecutor(resolved_tools, timeout=60))
         report = result.content
 

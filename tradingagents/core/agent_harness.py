@@ -2196,8 +2196,14 @@ class TradingAgentHarness:
                         self.store.event(task_id, "memory_reviewed", result["memory_trace"])
                 enforce_budget()
                 self.store.add_message(conversation["id"], "assistant", content, task_id)
-                self.store.set_status(task_id, "completed", result=result)
-                self.store.event(task_id, "task_completed", result)
+                failed_evidence = [item for item in evidence if item["result"].get("error")]
+                if evidence and len(failed_evidence) == len(evidence):
+                    error = failed_evidence[0]["summary"]
+                    self.store.set_status(task_id, "failed", result=result, error=error)
+                    self.store.event(task_id, "task_failed", {**result, "message": error})
+                else:
+                    self.store.set_status(task_id, "completed", result=result)
+                    self.store.event(task_id, "task_completed", result)
         except asyncio.CancelledError:
             if active_step_id:
                 self.store.event(task_id, "step_completed", {
@@ -2686,6 +2692,9 @@ class TradingAgentHarness:
         usable = next((item for item in evidence if not item["result"].get("error")), None)
         if missing or not usable:
             reason = missing or evidence[0]
+            if "RuntimeLimitError" in reason["summary"]:
+                return ("分析子任务达到执行上限，报告未完成。"
+                        "这不表示行情数据都不可用；请重新发起分析，系统将预留报告收尾轮次。")
             if "因子快照基准日与模拟盘账本不一致" in reason["summary"]:
                 return ("模拟盘账本与标的因子快照的基准日无法对齐，不能把不同日期的数据合并"
                         "为同一时点的交易判断。请核对数据源后重试。")
