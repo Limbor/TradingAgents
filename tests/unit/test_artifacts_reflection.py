@@ -265,7 +265,7 @@ def test_stock_analysis_input_keeps_holding_context():
         "holding_context": {"symbol": "600519.SH", "quantity": 10, "avg_cost": 1500},
     })
     assert parsed.holding_context["quantity"] == 10
-    assert parsed.include_portfolio_context is True
+    assert parsed.include_portfolio_context is False
 
 
 def test_stock_analysis_loads_and_formats_holding_context(tmp_path):
@@ -286,7 +286,10 @@ def test_stock_analysis_loads_and_formats_holding_context(tmp_path):
         assert context["position_weight"] > 0
 
         rendered = _format_holding_context(context)
-        assert "already held by the user" in rendered
+        assert "Do not assume they still match" in rendered
+        assert "reference price (unverified account cache)" in rendered
+        assert "never override it" in rendered
+        assert "latest/current price" not in rendered
         assert "unrealized P&L" in rendered
         assert "核心仓" in rendered
 
@@ -322,7 +325,10 @@ def test_load_holding_context_enriches_explicit_handoff(tmp_path):
         assert context["position_weight"] is not None
 
         rendered = _format_holding_context(context)
-        assert "already held by the user" in rendered
+        assert "Do not assume they still match" in rendered
+        assert "reference price (unverified account cache)" in rendered
+        assert "never override it" in rendered
+        assert "latest/current price" not in rendered
         assert "unrealized P&L" in rendered
         assert "贵州茅台" in rendered
 

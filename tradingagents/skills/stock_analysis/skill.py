@@ -86,8 +86,8 @@ class StockAnalysisInput(BaseModel):
         description="Recent reflection lessons injected by the orchestrator.",
     )
     include_portfolio_context: bool = Field(
-        default=True,
-        description="When true, inject local holding context if the ticker is in the tracked portfolio.",
+        default=False,
+        description="Opt in only when the user requests a review of locally tracked holdings. Ordinary stock research must not assume cached holdings are current.",
     )
     holding_context: dict[str, Any] | None = Field(
         default=None,
@@ -786,10 +786,9 @@ def _format_holding_context(context: dict[str, Any] | None) -> str:
     if not context:
         return ""
     lines = [
-        "User portfolio holding context:",
+        "User-provided/tracked portfolio holding context (not a verified live account):",
         (
-            "- This ticker is already held by the user. Analyze it as a position review, "
-            "not only as a standalone stock pitch."
+            "- These are supplied or locally tracked holdings. Do not assume they still match the user's actual account."
         ),
         f"- symbol/name: {context.get('symbol')} {context.get('name') or ''}".strip(),
         f"- quantity: {_format_number(context.get('quantity'))}",
@@ -800,7 +799,10 @@ def _format_holding_context(context: dict[str, Any] | None) -> str:
         price_suffix = ""
         if context.get("price_trade_date"):
             price_suffix = f" as of {context.get('price_trade_date')}"
-        lines.append(f"- latest/current price: {_format_number(current_price)}{price_suffix}")
+        lines.append(f"- reference price (unverified account cache): {_format_number(current_price)}{price_suffix}")
+        lines.append("- This reference price and derived P&L/weights are not current market evidence. "
+                     "Use this run's verified market snapshot for prices and price dates; "
+                     "never override it with this cached reference or describe a mismatch as a price rebound.")
     if context.get("market_value") is not None:
         lines.append(f"- market value: {_format_number(context.get('market_value'))}")
     if context.get("unrealized_pnl") is not None:

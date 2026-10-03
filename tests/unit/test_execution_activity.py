@@ -161,3 +161,34 @@ async def test_stock_skill_translates_tool_states_without_merging_agent_stage(mo
     assert progress[0]["step_label"] == "正在查询股票价格"
     assert progress[1]["stage_id"] == "tool_price"
     assert progress[0]["detail"] == "标的 600000.SH"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_stock_research_does_not_load_cached_holdings(monkeypatch, tmp_path):
+    import importlib
+    from tradingagents.core.persistence import Database
+    from tradingagents.graph import trading_graph
+    module = importlib.import_module("tradingagents.skills.stock_analysis.skill")
+    db = Database(tmp_path / "stock-context.db")
+    db.upsert_holding("600487.SH", quantity=100, avg_cost=50, current_price=69.49)
+
+    async def forbidden_cache(*args, **kwargs):
+        raise AssertionError("ordinary research must not inject cached holdings")
+    class FakeGraph:
+        def __init__(self, *, config, **kwargs):
+            assert config["holding_context"] is None
+            assert "69.49" not in config["memory_extra_context"]
+        async def astream_propagate(self, **kwargs):
+            yield {"type": "agent_status", "data": {"agent": "Market Analyst", "status": "running"}}
+    temporal = SimpleNamespace(market_asof_date="2026-09-30", info_cutoff="2026-09-30", to_dict=lambda: {})
+    monkeypatch.setattr(module, "resolve_temporal_context", lambda *args, **kwargs: (temporal, kwargs["params"]))
+    monkeypatch.setattr(module, "_load_holding_context", forbidden_cache)
+    monkeypatch.setattr(trading_graph, "TradingAgentsGraph", FakeGraph)
+    iterator = module.StockAnalysisSkill().execute(
+        module.StockAnalysisInput(ticker="600487.SH", analysis_date="2026-09-30"), {"db": db})
+    try:
+        async for event in iterator:
+            if event.event_type == "agent_status":
+                break
+    finally:
+        await iterator.aclose()
