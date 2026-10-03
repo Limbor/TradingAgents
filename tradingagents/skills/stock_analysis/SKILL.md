@@ -1,7 +1,7 @@
 ---
 name: stock_analysis
 description: 明确个股的技术、基本面、新闻与情绪研究；追问只补所需维度，完整评估保留交易与风控。
-version: 1.0.0
+version: 1.0.1
 execution: research
 ---
 
@@ -17,7 +17,7 @@ execution: research
 2. 根据问题选择 analysts：market 为价格和技术；fundamentals 为行业、业务、营收、利润、现金流及估值；news 为新闻公告；social 为情绪。没有 industry 角色。
 3. 普通研究使用 analysis_template=research；追问营收只补 fundamentals。完整交易评估使用 full，由程序保留多空裁决和风控约束。
 4. 区分技术信号与基本面判断；检查数据时点、财务报告期及工具失败。中线问题应说明业绩、估值与催化条件，不能只重复短线技术图形。
-5. include_portfolio_context 默认关闭。没有本轮提供或确认的持仓，不要读取缓存持仓并称其为用户当前账户。
+5. 持仓读取和诊断暂时停用。不要设置 include_portfolio_context 或 holding_context；旧客户端传入这两项也会被执行层忽略。不要求用户维护本地持仓；按标的和投资期限说明研究结论、进入/退出条件，不推断实际账户仓位或可卖股数。
 
 ## 输出
 

@@ -21,7 +21,8 @@ from tradingagents.skills.registry import SkillRegistry
     'daily_review', 'strategy_backtest', 'decision_audit'])
 def test_all_builtin_documents_fit_progressive_contract(skill_id):
     doc = load_skill_document(skill_id)
-    assert doc.skill_id == skill_id and doc.version == '1.0.0'
+    expected_version = '1.0.1' if skill_id == 'stock_analysis' else '1.0.0'
+    assert doc.skill_id == skill_id and doc.version == expected_version
     assert len(doc.instructions) < MAX_DOCUMENT_CHARS
     assert len(doc.digest) == 64
     registry = SkillRegistry()

@@ -584,7 +584,7 @@ async def test_code_reply_continues_previous_trade_decision_with_fresh_evidence(
 
 
 @pytest.mark.asyncio
-async def test_manual_holdings_cannot_support_current_trade_decision(tmp_path, monkeypatch):
+async def test_trade_research_skips_manual_holdings_and_the_old_account_blocker(tmp_path, monkeypatch):
     monkeypatch.setattr("tradingagents.core.trading_time.get_temporal_context",
                         lambda *_args, **_kwargs: SimpleNamespace(market_asof_date="2026-09-25"))
     async def unused_paper(session_id):
@@ -594,10 +594,7 @@ async def test_manual_holdings_cannot_support_current_trade_decision(tmp_path, m
     harness.config["agent_model_planning_enabled"] = False
 
     async def portfolio():
-        return {"source": "TradingAgents local holdings", "holdings": [
-            {"symbol": "600519.SH", "quantity": 40, "current_price": 1500,
-             "record_updated_at": "2026-09-20"}],
-            "warnings": ["持仓价格为本地保存值，未核对实时行情或价格时点"]}
+        raise AssertionError("暂停持仓功能后不得读取缓存")
 
     async def factor(ts_code):
         return {"source": "StockManager MCP", "ts_code": ts_code,
@@ -616,10 +613,9 @@ async def test_manual_holdings_cannot_support_current_trade_decision(tmp_path, m
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
     assert detail["status"] == "completed"
     assert [item["tool_name"] for item in detail["evidence"]] == [
-        "get_portfolio_summary", "get_mcp_factor_snapshot",
+        "get_mcp_factor_snapshot",
     ]
-    assert "尚未与交易账户及当前行情核对" in detail["result"]["content"]
-    assert "没有生成交易判断" in detail["result"]["content"]
+    assert "尚未与交易账户及当前行情核对" not in detail["result"]["content"]
 
 
 def test_missing_factor_score_is_masked_only_in_model_input():
@@ -717,9 +713,9 @@ async def test_native_tool_loop_returns_tool_results_for_another_model_round(tmp
         async def ainvoke(self, messages):
             self.rounds += 1
             if self.rounds == 1:
-                assert any("server_verified_tool" in str(message.content) and
-                           "get_portfolio_summary" in str(message.content)
-                           for message in messages)
+                assert not any("server_verified_tool" in str(message.content) and
+                               "get_portfolio_summary" in str(message.content)
+                               for message in messages)
                 return AIMessage(content="", tool_calls=[{
                     "name": "get_recent_runs", "args": {"limit": 5},
                     "id": "call-runs", "type": "tool_call",
@@ -740,7 +736,7 @@ async def test_native_tool_loop_returns_tool_results_for_another_model_round(tmp
     assert fake.rounds == 2
     assert {schema["name"] for schema in fake.schemas} == {"get_recent_runs", "read_task_evidence"}
     assert [item["tool_name"] for item in store.list_evidence(task["id"])] == [
-        "get_portfolio_summary", "get_recent_runs",
+        "get_recent_runs",
     ]
     assert store.get_task(task["id"])["status"] == "completed"
     assert any(event["event_type"] == "plan_created" and
@@ -2648,7 +2644,7 @@ async def test_stock_followup_without_unique_prior_symbol_requests_code(
 
 
 @pytest.mark.asyncio
-async def test_failed_required_portfolio_source_does_not_search_unrequested_archives(tmp_path):
+async def test_disabled_portfolio_does_not_search_unrequested_archives(tmp_path):
     async def paper(session_id):
         raise AssertionError("不应读取模拟盘")
 
@@ -2674,12 +2670,52 @@ async def test_failed_required_portfolio_source_does_not_search_unrequested_arch
     await harness._active[task["id"]]
 
     detail = store.conversation_detail(conversation["id"])["tasks"][0]
-    assert detail["status"] == "failed"
-    assert any(event["event_type"] == "task_failed" for event in detail["events"])
-    assert [item["tool_name"] for item in detail["evidence"]] == ["get_portfolio_summary"]
+    assert detail["status"] == "completed"
+    assert store.list_evidence(task["id"]) == []
     assert not any(event["event_type"] == "plan_revised" for event in detail["events"])
-    assert "没有生成交易判断" in detail["result"]["content"]
     assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_manual_holdings_execution_guard_rejects_registered_tool(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    handler = AsyncMock(return_value={"holdings": []})
+    harness.tools.register(LightweightTool(
+        name="get_portfolio_summary", description="portfolio", parameters={}, handler=handler,
+    ))
+    result = await harness._call_read_tool("get_portfolio_summary", {}, None, [])
+    assert "已暂停" in result["error"]
+    handler.assert_not_awaited()
+    conversation = store.create_conversation("普通研究", None)
+    task = store.create_task(conversation["id"], "检查持仓")
+    replies = []
+    session = SimpleNamespace(allowed={"get_portfolio_summary"},
+                              tool_result=lambda *args: replies.append(args))
+    steps, target = harness._native_steps_from_calls(task["id"], session, [
+        {"name": "get_portfolio_summary", "args": {}, "id": "stale-model-call"},
+    ], None, [], set(), 4)
+    assert steps == [] and target is None
+    assert replies[0][2]["error"] == "manual_holdings_disabled"
+    handler.assert_not_awaited()
+
+
+@pytest.mark.parametrize("skill_id", ["position_advisor", "risk_monitor"])
+@pytest.mark.asyncio
+async def test_holding_skills_are_disabled_in_all_agent_planners(tmp_path, skill_id):
+    harness, _ = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.skills = SimpleNamespace(get=lambda _name: object())
+    goal = "分析 600519.SH 的仓位和风险"
+    hint = {"skill_id": skill_id, "params": {}}
+    rule_plan = harness._plan(goal, None, hint)
+    model_plan = harness._validate_model_steps([
+        {"tool": "get_portfolio_summary"},
+        {"tool": "skill", **hint, "args": {}},
+    ], goal, None)
+    for plan in (rule_plan, model_plan):
+        assert not any(step["tool"] == "get_portfolio_summary" for step in plan)
+        assert not any(step.get("skill_id") == skill_id for step in plan)
+    result = await harness._run_skill("unused-task", skill_id, {})
+    assert "不允许" in result["error"]
 
 
 @pytest.mark.asyncio

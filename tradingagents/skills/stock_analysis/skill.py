@@ -98,11 +98,11 @@ class StockAnalysisInput(BaseModel):
     )
     include_portfolio_context: bool = Field(
         default=False,
-        description="Opt in only when the user requests a review of locally tracked holdings. Ordinary stock research must not assume cached holdings are current.",
+        description="Temporarily disabled. Accepted for compatibility but ignored; stock research does not read tracked holdings.",
     )
     holding_context: dict[str, Any] | None = Field(
         default=None,
-        description="Optional explicit holding context for this ticker.",
+        description="Temporarily disabled. Accepted for compatibility but ignored by stock research.",
     )
     selection_context: dict[str, Any] | None = Field(
         default=None,
@@ -167,6 +167,11 @@ class StockAnalysisSkill(BaseSkill):
         from tradingagents.graph.trading_graph import TradingAgentsGraph
 
         input_params: StockAnalysisInput = params
+        # Retain the legacy request fields for clients, while disabling both
+        # cached and explicit account context at the actual execution boundary.
+        input_params = input_params.model_copy(update={
+            "include_portfolio_context": False, "holding_context": None,
+        })
         raw_analysis_date = input_params.analysis_date
         market = detect_market(input_params.ticker)
         temporal_context, input_params = resolve_temporal_context(
@@ -174,23 +179,7 @@ class StockAnalysisSkill(BaseSkill):
         )
 
         db = config.get("db")
-        holding_context = input_params.holding_context
-        if holding_context is None and input_params.include_portfolio_context:
-            holding_context = await _load_holding_context(
-                db,
-                input_params.ticker,
-                config,
-            )
-        elif holding_context is not None:
-            # Frontend handed off raw holding fields (e.g. from the portfolio
-            # UI); enrich them with derived metrics so the explicit path
-            # matches the auto-loaded one instead of only carrying raw fields.
-            holding_context = await _load_holding_context(
-                db,
-                input_params.ticker,
-                config,
-                holding=holding_context,
-            )
+        holding_context = None
 
         bind_scope(research_reuse_allowed=not bool(
             holding_context or input_params.include_portfolio_context or input_params.selection_context or input_params.reflection_context))
@@ -270,12 +259,8 @@ class StockAnalysisSkill(BaseSkill):
             stage_id="prepare",
             stage_label="准备分析",
             status="completed",
-            detail=(
-                f"{input_params.ticker} · {input_params.analysis_date}"
-                + (" · 已注入持仓上下文" if holding_context else "")
-            ),
+            detail=f"{input_params.ticker} · {input_params.analysis_date} · 本轮不读取账户持仓",
             progress_pct=5,
-            data={"holding_context": holding_context} if holding_context else None,
         )
         reused_labels = [REPORT_ROLES[key][2] for key in reusable]
         fresh_labels = [label for key, (analyst, _, label) in REPORT_ROLES.items()

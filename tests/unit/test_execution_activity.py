@@ -165,7 +165,12 @@ async def test_stock_skill_translates_tool_states_without_merging_agent_stage(mo
 
 
 @pytest.mark.asyncio
-async def test_ordinary_stock_research_does_not_load_cached_holdings(monkeypatch, tmp_path):
+@pytest.mark.parametrize("holding_params", [
+    {},
+    {"include_portfolio_context": True},
+    {"holding_context": {"symbol": "600487.SH", "quantity": 100, "current_price": 69.49}},
+])
+async def test_ordinary_stock_research_does_not_load_cached_holdings(monkeypatch, tmp_path, holding_params):
     import importlib
 
     from tradingagents.core.persistence import Database
@@ -187,7 +192,7 @@ async def test_ordinary_stock_research_does_not_load_cached_holdings(monkeypatch
     monkeypatch.setattr(module, "_load_holding_context", forbidden_cache)
     monkeypatch.setattr(trading_graph, "TradingAgentsGraph", FakeGraph)
     iterator = module.StockAnalysisSkill().execute(
-        module.StockAnalysisInput(ticker="600487.SH", analysis_date="2026-09-30"), {"db": db})
+        module.StockAnalysisInput(ticker="600487.SH", analysis_date="2026-09-30", **holding_params), {"db": db})
     try:
         async for event in iterator:
             if event.event_type == "agent_status":

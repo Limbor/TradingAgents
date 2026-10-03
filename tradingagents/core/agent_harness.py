@@ -70,7 +70,6 @@ _ARTIFACT_REFERENCES = (
 _ARTIFACT_REQUEST = re.compile(
     r"(?:查|找|看|读|打开|引用|检索|对比|比较).{0,8}(?:报告|产物|回测|复盘)"
 )
-_HOLDING_WORDS = ("持仓", "组合", "账户", "盈亏", "仓位", "我的股票", "我持有")
 _PLAN_WORDS = ("计划", "下一交易日", "策略切换", "调仓", "加仓", "减仓",
                "买入", "卖出", "买", "卖")
 _TRADE_ACTION_WORDS = ("买入", "卖出", "加仓", "减仓", "调仓", "止损", "止盈", "持有", "买", "卖")
@@ -100,7 +99,7 @@ _ADVANCE_NON_ACTION = re.compile(
 _PAPER_ADVANCE_HINT = re.compile(r"推进|(?:运行|跑|更新|同步)(?:模拟盘|账本)?(?:至|到)|往前走")
 _SAFE_ANALYSIS_SKILLS = {
     "stock_analysis", "strategy_backtest", "market_scanner", "market_overview",
-    "daily_pipeline", "position_advisor", "risk_monitor",
+    "daily_pipeline",
 }
 _DAILY_PIPELINE_RUN = re.compile(
     r"(?:运行|执行|启动|跑).{0,8}(?:daily_pipeline|每日选股|日常选股)|"
@@ -1467,6 +1466,8 @@ class TradingAgentHarness:
     async def _call_read_tool(self, name: str, args: dict, paper_session_id: str | None,
                               tickers: list[str]) -> dict:
         """Enforce the registered contract before admitting a tool result as evidence."""
+        if name == "get_portfolio_summary":
+            return {"error": "手工持仓读取与诊断已暂停；个股研究不使用缓存持仓"}
         tool = self.tools.get(name)
         if tool is None:
             return {"error": f"工具 {name} 未注册"}
@@ -1530,7 +1531,7 @@ class TradingAgentHarness:
             if tool.name == "search_artifacts" and not self._asks_artifacts(goal):
                 continue
             if tool.name == "get_portfolio_summary":
-                continue  # Required holding evidence is read before the model chooses.
+                continue  # Manual holding reads are temporarily disabled.
             if tool.name == "get_paper_session":
                 continue  # Account ledger is always read before the model chooses.
             schemas.append({"name": tool.name, "description": tool.description,
@@ -1598,6 +1599,8 @@ class TradingAgentHarness:
             "结合同一对话的历史用户请求理解省略和接续表达，如‘重新推荐一个’继承最近的推荐对象，"
             "并把数量调整为一个。用户本轮明确换话题时以本轮为准；不能从助手上一轮的错误回答改写用户意图。"
             "历史回复不是当前行情证据，历史操作授权不能沿用。"
+            "手工持仓读取与诊断已暂停。个股研究不读取缓存持仓，不推断用户当前账户；"
+            "买卖条件按标的研究说明，不能因没有账户持仓而拒绝一般研究。"
             "推荐/比较行业或板块应获取 market_overview 的行业多空矩阵；"
             "market_scanner 和 daily_pipeline 是个股筛选，只有用户要选股票时才使用，"
             "不能用选股名单里的行业分布代替板块排名。get_recent_runs 只有运行元数据，"
@@ -1661,7 +1664,9 @@ class TradingAgentHarness:
                 continue
             reason = None
             feedback = {}
-            if name not in session.allowed or not isinstance(args, dict):
+            if name == "get_portfolio_summary":
+                reason = "manual_holdings_disabled"
+            elif name not in session.allowed or not isinstance(args, dict):
                 reason = "tool_or_args_not_allowed"
             elif name == "read_task_evidence":
                 if sum(key.startswith("evidence-page:") for key in used) >= 2:
@@ -1789,8 +1794,6 @@ class TradingAgentHarness:
                     elif name == "get_strategy_lessons":
                         if "symbol" in allowed_args and len(tickers) == 1:
                             bound_args["symbol"] = tickers[0]
-                    elif name == "get_portfolio_summary":
-                        bound_args = {}
                     key = f"{name}:{bound_args.get('ts_code', '')}"
                     if not reason and key in used:
                         reason = "duplicate_call"
@@ -1907,8 +1910,7 @@ class TradingAgentHarness:
                 self.store.set_status(task_id, "needs_input", result={"content": content})
                 self.store.event(task_id, "task_needs_input", {"content": content})
                 return
-            required = (int(bool(conversation.get("paper_session_id")) or
-                            any(word in goal for word in _HOLDING_WORDS)) +
+            required = (int(bool(conversation.get("paper_session_id"))) +
                         len(tickers) * (int(self._needs_factor(goal)) +
                                         int(self._asks_announcements(goal))))
             if (intent_hint or {}).get("skill_id") in _SAFE_ANALYSIS_SKILLS:
@@ -1950,9 +1952,6 @@ class TradingAgentHarness:
                     if paper_session_id:
                         plan.append({"id": "paper", "label": "读取模拟盘账本与下一日计划",
                                      "tool": "get_paper_session", "args": {"session_id": paper_session_id}})
-                    elif any(word in goal for word in _HOLDING_WORDS):
-                        plan.append({"id": "portfolio", "label": "读取当前手工持仓",
-                                     "tool": "get_portfolio_summary", "args": {}})
                     skill_id = (intent_hint or {}).get("skill_id")
                     if skill_id in _SAFE_ANALYSIS_SKILLS and self.skills.get(skill_id) is not None:
                         params = (intent_hint or {}).get("params")
@@ -2530,11 +2529,6 @@ class TradingAgentHarness:
                 bool(_ARTIFACT_REQUEST.search(goal)))
 
     @staticmethod
-    def _may_read_portfolio(goal: str) -> bool:
-        return (any(word in goal for word in _HOLDING_WORDS) or
-                any(word in goal for word in ("买", "卖", "调仓", "加仓", "减仓")))
-
-    @staticmethod
     def _asks_trade_decision(goal: str) -> bool:
         if not any(word in goal for word in _TRADE_ACTION_WORDS):
             return False
@@ -2735,8 +2729,6 @@ class TradingAgentHarness:
         if paper_session_id:
             available.insert(0, "get_paper_session")
         else:
-            if self._may_read_portfolio(goal):
-                available.insert(0, "get_portfolio_summary")
             available.append("skill (仅分析/回测 Skill，最多一项)")
         selected_tickers = tickers if tickers is not None else self._goal_tickers(goal)
         if selected_tickers:
@@ -2802,8 +2794,6 @@ class TradingAgentHarness:
 
         if paper_session_id and "get_paper_session" not in seen:
             add("get_paper_session", "读取当前模拟盘账本与计划", {"session_id": paper_session_id})
-        elif not paper_session_id and any(word in goal for word in _HOLDING_WORDS):
-            add("get_portfolio_summary", "读取当前手工持仓", {})
         for ticker in goal_tickers:
             if self._needs_factor(goal):
                 add("get_mcp_factor_snapshot", f"读取 {ticker} 因子快照",
@@ -2818,9 +2808,6 @@ class TradingAgentHarness:
             if tool == "get_paper_session" and paper_session_id:
                 add("get_paper_session", "读取当前模拟盘账本与计划",
                     {"session_id": paper_session_id})
-            elif (tool == "get_portfolio_summary" and not paper_session_id and
-                  self._may_read_portfolio(goal)):
-                add("get_portfolio_summary", "读取当前手工持仓", {})
             elif tool in {"get_mcp_factor_snapshot", "get_mcp_risk_announcements"} and goal_tickers:
                 continue  # Explicit symbols were bound by the server above.
             elif tool == "search_artifacts" and self._asks_artifacts(goal):
@@ -2865,9 +2852,6 @@ class TradingAgentHarness:
         if paper_session_id:
             plan.append({"id": "paper", "label": "读取模拟盘账本与下一日计划",
                          "tool": "get_paper_session", "args": {"session_id": paper_session_id}})
-        elif any(word in goal for word in _HOLDING_WORDS):
-            plan.append({"id": "portfolio", "label": "读取当前手工持仓",
-                         "tool": "get_portfolio_summary", "args": {}})
         if not self._is_advance_request(goal, paper_session_id):
             for ticker in goal_tickers:
                 if self._needs_factor(goal):
@@ -2921,8 +2905,6 @@ class TradingAgentHarness:
         required_tools: list[tuple[str, str | None]] = []
         if conversation.get("paper_session_id"):
             required_tools.append(("get_paper_session", None))
-        elif any(word in goal for word in _HOLDING_WORDS):
-            required_tools.append(("get_portfolio_summary", None))
         if self._needs_factor(goal):
             required_tools.extend(("get_mcp_factor_snapshot", ticker)
                                   for ticker in selected_tickers)
@@ -2962,11 +2944,6 @@ class TradingAgentHarness:
             if "风险公告查询截止日与模拟盘账本不一致" in reason["summary"]:
                 return "风险公告查询截止日与模拟盘账本基准日不一致。本轮没有生成交易判断，请核对数据源后重试。"
             return f"当前无法核对所需数据：{reason['summary']}。本轮没有生成交易判断，请检查数据源后重试。"
-        if (not conversation.get("paper_session_id") and
-                self._asks_trade_decision(goal) and
-                any(item["tool_name"] == "get_portfolio_summary" for item in evidence)):
-            return ("手工持仓和本地保存价格尚未与交易账户及当前行情核对，不能据此判断是否买卖或加减仓。"
-                    "本轮没有生成交易判断；请先核对实际持仓、价格时点，或选择对应模拟盘账户。")
         if conversation.get("paper_session_id"):
             ledger = next((item for item in evidence if item["tool_name"] == "get_paper_session"), None)
             if ledger and not ledger["as_of_date"]:
@@ -3049,6 +3026,9 @@ class TradingAgentHarness:
             "只回答用户所问；金额最多保留两位小数，不抄写原始 JSON 或无关内部字段。"
             "面向普通投资者，用自然中文直接回答，通常250至500字。"
             "结合历史用户请求理解本轮省略的对象，用户本轮明确改题时以本轮为准。"
+            "手工持仓读取与诊断已暂停，不使用历史消息里的缓存持仓推断当前账户。"
+            "个股买卖问题可说明有证据支持的进入、退出和失效条件，不因缺少账户记录而拒绝一般研究；"
+            "不可给出针对实际账户的买卖股数或声称已核对用户持仓。"
             "‘重新推荐一个’接续最近的用户推荐主题，只给一个候选；不能把板块请求改成选股。"
             "用户要求换一个时，有充分数据就选择与上一轮不同的候选，并说明选择理由。"
             "历史助手回复不是工具证据，也不能覆盖用户原始请求。"
