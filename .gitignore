@@ -21,6 +21,7 @@ eggs/
 frontend/tsconfig.tsbuildinfo
 scripts/backtest_results_*.json
 vibe_images/
+.local-artifacts/
 parts/
 sdist/
 var/

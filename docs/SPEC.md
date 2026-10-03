@@ -1,5 +1,7 @@
 # TradingAgents v2 — 架构设计与开发指南
 
+> 本文保留原始设计和阶段规划，部分目录、路由与模型配置描述已被后续实现替代。当前开发分支的实际架构请先阅读 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)，变更顺序见 [PROGRESS.md](PROGRESS.md)。
+
 > 版本: 1.0.0-draft  
 > 日期: 2026-07-04  
 > 作者: TradingAgents Team

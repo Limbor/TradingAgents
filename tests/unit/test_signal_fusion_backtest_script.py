@@ -1,13 +1,35 @@
 """Regression tests for the historical signal-fusion replay."""
 
 import asyncio
+import json
+from argparse import Namespace
+
+import pytest
 
 from scripts.backtest_signal_fusion import (
     calculate_net_forward_return,
     compute_comparison_metrics,
     fuse_for_backtest,
+    save_results,
 )
 from tradingagents.core.llm_candidate_review import CandidateLLMReview
+
+
+@pytest.mark.parametrize("mode", ["quant_only", "fused", "compare"])
+def test_result_storage_uses_application_directory_and_distinct_modes(tmp_path, monkeypatch, mode):
+    from scripts import backtest_signal_fusion as script
+
+    monkeypatch.setitem(script.DEFAULT_CONFIG, "results_dir", str(tmp_path))
+    args = Namespace(start_date="2026-09-01", end_date="2026-09-30", mode=mode)
+    path = save_results([{"signal": "BUY"}], {"total": 1}, args)
+    assert path == tmp_path / "backtests" / f"backtest_results_2026-09-01_2026-09-30_{mode}.json"
+    assert json.loads(path.read_text())["signals"] == [{"signal": "BUY"}]
+
+
+def test_result_storage_honors_explicit_output(tmp_path):
+    explicit = tmp_path / "custom" / "result.json"
+    args = Namespace(start_date="2026-09-01", end_date="2026-09-30", mode="compare", output=str(explicit))
+    assert save_results([], {"paired_count": 0}, args) == explicit
 
 
 def _candidate():

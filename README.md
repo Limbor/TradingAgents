@@ -1,3 +1,24 @@
+# TradingAgents 交易 Agent 工作台
+
+本开发分支在原始 TradingAgents 研究框架上增加了持久化对话、模型工具循环、统一运行时、策略记忆和 StockManager 模拟盘集成。
+
+- [当前整体架构与目录说明](docs/PROJECT_OVERVIEW.md)
+- [文档索引](docs/README.md) · [脚本用途与运行边界](scripts/README.md)
+- [开发进度](docs/PROGRESS.md) · [本地验收](docs/AGENT_INITIAL_ACCEPTANCE.md)
+
+```bash
+uv sync --frozen --extra api --extra dev --extra mcp
+cd frontend && npm ci && cd ..
+if [ ! -f .env ]; then cp .env.example .env; fi
+./scripts/dev.sh start
+```
+
+浏览器打开 `http://localhost:5173`；API 默认 `127.0.0.1:8422`。StockManager 作为独立相邻项目提供 Web 模拟盘与 MCP 数据服务，启动方式见架构文档和 `scripts/dev.sh`。
+
+以下保留上游项目介绍、研究背景与引用信息；当前分支的工作台实现以以上文档和代码为准。
+
+---
+
 <p align="center">
   <img src="assets/TauricResearch.png" style="width: 60%; height: auto;">
 </p>

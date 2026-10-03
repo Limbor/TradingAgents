@@ -17,6 +17,9 @@ Usage:
 Requirements:
     - StockManager MCP running (for rank_factor_candidates and get_stock_daily)
     - Or AKShare fallback for forward-return data
+
+Results default to <results_dir>/backtests/ (normally ~/.tradingagents/logs/).
+Use --output PATH to save elsewhere; scripts/ contains source code only.
 """
 
 from __future__ import annotations
@@ -401,6 +404,18 @@ async def run_backtest(
     return results
 
 
+def save_results(results: list[dict[str, Any]], metrics: dict, args: argparse.Namespace) -> Path:
+    """Keep generated research data out of the source directory."""
+    explicit = getattr(args, "output", None)
+    output_path = (Path(explicit).expanduser() if explicit else
+                   Path(DEFAULT_CONFIG["results_dir"]) / "backtests" /
+                   f"backtest_results_{args.start_date}_{args.end_date}_{args.mode}.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps({"args": vars(args), "metrics": metrics, "signals": results},
+                                      ensure_ascii=False, indent=2), encoding="utf-8")
+    return output_path
+
+
 def print_results(results: list[dict[str, Any]], args: argparse.Namespace) -> None:
     """Pretty-print backtest results."""
     metrics = (
@@ -423,8 +438,7 @@ def print_results(results: list[dict[str, Any]], args: argparse.Namespace) -> No
         print(f" Fused accuracy delta: {metrics['paired_accuracy_delta_pp']:+.2f} pp")
         print(f" Improved / degraded: {metrics['fused_improved']} / {metrics['fused_degraded']}")
         print("═══════════════════════════════════════════\n")
-        output_path = Path(__file__).parent / f"backtest_results_{args.start_date}_{args.end_date}.json"
-        output_path.write_text(json.dumps({"args": vars(args), "metrics": metrics, "signals": results}, ensure_ascii=False, indent=2))
+        output_path = save_results(results, metrics, args)
         print(f" Results saved to: {output_path}")
         return
     print(f" Total signals: {metrics['total_signals']}")
@@ -448,13 +462,7 @@ def print_results(results: list[dict[str, Any]], args: argparse.Namespace) -> No
     print("═══════════════════════════════════════════\n")
 
     # Save detailed results to JSON
-    output_path = Path(__file__).parent / f"backtest_results_{args.start_date}_{args.end_date}.json"
-    output_data = {
-        "args": vars(args),
-        "metrics": metrics,
-        "signals": results,
-    }
-    output_path.write_text(json.dumps(output_data, ensure_ascii=False, indent=2))
+    output_path = save_results(results, metrics, args)
     print(f" Results saved to: {output_path}")
 
 
@@ -470,6 +478,7 @@ def main() -> None:
     parser.add_argument("--candidate-limit", type=int, default=80, help="MCP candidate pool size")
     parser.add_argument("--transaction-cost-bps", type=float, default=10.0)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
+    parser.add_argument("--output", help="Result JSON path; defaults to <results_dir>/backtests/")
     args = parser.parse_args()
 
     results = asyncio.run(run_backtest(

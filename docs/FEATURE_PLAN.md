@@ -1,5 +1,7 @@
 # 新增功能详尽计划：Free ChatAgent + 跨标的模式提取
 
+> 历史功能规划。当前 `/chat` 使用持久化 Agent Harness 和模型工具调用循环；本文中的早期规则优先路由与旧前端页面描述不代表当前入口。现状见 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)。
+
 基于最新代码（commit `5d7befa`，经 5 批修复后）。两个功能相互独立，可并行或分阶段实施。
 
 ---
