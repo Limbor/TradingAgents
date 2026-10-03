@@ -44,6 +44,7 @@ async def test_stream_emits_real_tool_lifecycle_and_repeated_agent_rounds():
     graph._merge_memory_context = Mock(return_value="")
     graph.memory_log = Mock()
     graph.propagator = Mock()
+    graph.propagator.create_initial_state.return_value = {}
     graph.propagator.get_graph_args.return_value = {}
     graph.graph_setup = Mock()
     graph.graph_setup.setup_graph.return_value.compile.return_value = SimpleNamespace(astream_events=stream)
