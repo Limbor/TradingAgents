@@ -233,6 +233,139 @@ def test_stock_reference_only_applies_to_stock_followups():
     assert TradingAgentHarness._is_stock_followup("那它的公告呢？")
     assert TradingAgentHarness._is_stock_followup("这只股票怎么样？")
     assert not TradingAgentHarness._is_stock_followup("解释计划为何没有执行它")
+    assert not TradingAgentHarness._is_stock_followup("那太极实业的走势呢")
+    assert TradingAgentHarness._is_stock_followup("怎么只有技术面分析有没有基本面分析，从行业、营收等等角度呢")
+
+
+def test_stock_analysis_contract_rejects_unknown_and_empty_analysts():
+    from pydantic import ValidationError
+
+    from tradingagents.skills.stock_analysis.skill import StockAnalysisInput
+
+    schema = StockAnalysisInput.model_json_schema()
+    assert schema["properties"]["analysts"]["items"]["enum"] == ["market", "social", "news", "fundamentals"]
+    for analysts in (["fundamentals", "industry"], []):
+        with pytest.raises(ValidationError):
+            StockAnalysisInput(ticker="600487.SS", analysts=analysts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repair", [True, False])
+async def test_native_invalid_analysis_args_can_be_repaired_before_spending_skill_budget(tmp_path, monkeypatch, repair):
+    from tradingagents.skills.stock_analysis.skill import StockAnalysisInput
+
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.skills = SimpleNamespace(get=lambda name: SimpleNamespace(
+        input_schema=StockAnalysisInput, metadata=SimpleNamespace(description="公司基本面研究"),
+    ) if name == "stock_analysis" else None)
+    harness._run_skill = AsyncMock(return_value={"source": "TradingAgents Skill: stock_analysis",
+        "as_of_date": "2026-09-30", "result": {"ticker": "600487.SS", "fundamentals_report": "已查询营收"}})
+    if repair:
+        harness._synthesize = AsyncMock(return_value="已分析基本面。")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    class Model:
+        rounds = 0
+
+        def bind_tools(self, _schemas):
+            return self
+
+        async def ainvoke(self, messages):
+            self.rounds += 1
+            if self.rounds == 2:
+                rejected = next(m for m in messages if isinstance(m, ToolMessage))
+                receipt = json.loads(rejected.content)
+                assert receipt["error"] == "skill_args_invalid"
+                assert receipt["parameters"]["properties"]["analysts"]["items"]["enum"][-1] == "fundamentals"
+            if self.rounds <= 2:
+                return AIMessage(content="", tool_calls=[{"id": f"call-{self.rounds}",
+                    "name": "run_analysis_skill", "type": "tool_call", "args": {
+                        "skill_id": "stock_analysis", "args": {"ticker": "600487.SS",
+                            "analysis_template": "research", "analysts": (
+                                ["fundamentals", "industry"] if self.rounds == 1 or not repair else ["fundamentals"])}}}])
+            return AIMessage(content="已完成")
+
+    monkeypatch.setattr("tradingagents.llm_clients.create_llm_client",
+                        lambda **_: SimpleNamespace(get_llm=Model))
+    conversation = store.create_conversation("亨通光电", None)
+    task = harness.submit(conversation["id"], "分析亨通光电的行业和营收")
+    await harness._active[task["id"]]
+    if repair:
+        harness._run_skill.assert_awaited_once_with(task["id"], "stock_analysis", {
+            "ticker": "600487.SS", "analysis_template": "research", "analysts": ["fundamentals"]})
+        assert store.get_task(task["id"])["status"] == "completed"
+    else:
+        harness._run_skill.assert_not_awaited()
+        detail = store.get_task(task["id"])
+        assert detail["status"] == "failed"
+        assert "参数配置错误" in detail["result"]["content"]
+    assert len(store.list_evidence(task["id"])) == 1
+    rejection = next(e for e in store.list_events(task["id"]) if e["event_type"] == "tool_call_rejected")
+    assert rejection["payload"]["reason"] == "skill_args_invalid"
+
+
+@pytest.mark.parametrize("boundary", [None, "推荐近期可以关注的板块", "分析另一家公司", "比较 600519.SH 和 000001.SZ"])
+def test_stock_scope_uses_audited_calls_across_failed_followups_and_respects_topic_boundaries(tmp_path, boundary):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    conversation = store.create_conversation("股票研究", None)
+    first = store.create_task(conversation["id"], "分析亨通光电")
+    store.event(first["id"], "step_started", {"tool": "skill", "skill_id": "stock_analysis",
+                "args": {"ticker": "600487.SS"}})
+    store.set_status(first["id"], "completed")
+    if boundary:
+        task = store.create_task(conversation["id"], boundary)
+        store.set_status(task["id"], "completed")
+    second = store.create_task(conversation["id"], "怎么只有技术面分析有没有基本面分析，从行业、营收等等角度呢")
+    store.set_status(second["id"], "failed")
+    third = store.create_task(conversation["id"], "如果想做中线的话，还能投资该股票吗")
+    symbols, error = harness._resolve_stock_reference(conversation["id"], third["id"])
+    if boundary:
+        assert symbols == [] and error
+    else:
+        assert symbols == ["600487.SH"] and error is None
+    other = store.create_conversation("独立对话", None)
+    current = store.create_task(other["id"], "该股票适合中线吗")
+    assert harness._resolve_stock_reference(other["id"], current["id"])[0] == []
+
+
+def test_stock_scope_does_not_use_assistant_claims_or_future_tasks(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    conversation = store.create_conversation("股票研究", None)
+    previous = store.create_task(conversation["id"], "分析公司基本面")
+    store.add_message(conversation["id"], "assistant", "600487.SH 很好", previous["id"])
+    store.set_status(previous["id"], "completed")
+    current = store.create_task(conversation["id"], "该股票适合中线吗")
+    store.set_status(current["id"], "completed")
+    store.create_task(conversation["id"], "分析 600519.SH")
+    assert harness._resolve_stock_reference(conversation["id"], current["id"])[0] == []
+
+
+@pytest.mark.asyncio
+async def test_failed_basic_research_with_successful_memory_is_failed_and_cannot_reuse_old_figures(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.config["agent_model_planning_enabled"] = False
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == "stock_analysis" else None)
+    harness._run_skill = AsyncMock(return_value={"error": "ValueError: unknown analyst key: industry",
+        "source": "TradingAgents Skill: stock_analysis"})
+
+    async def lessons():
+        return {"lessons": [{"id": "old", "finding": "历史经验"}]}
+
+    harness.tools.register(LightweightTool(name="get_strategy_lessons", description="经验",
+        parameters={"type": "object"}, handler=lessons))
+    conversation = store.create_conversation("公司研究", None)
+    harness._plan = lambda *_args, **_kwargs: [
+        {"id": "research", "tool": "skill", "skill_id": "stock_analysis", "args": {}},
+        {"id": "memory", "tool": "get_strategy_lessons", "args": {}},
+    ]
+    task = harness.submit(conversation["id"], "分析营收和行业基本面")
+    await harness._active[task["id"]]
+    detail = store.get_task(task["id"])
+    assert len(store.list_evidence(task["id"])) == 2
+    assert detail["status"] == "failed"
+    assert "参数配置错误" in detail["result"]["content"]
+    assert "查询财务数据" in detail["result"]["content"]
+    assert "请检查数据源" not in detail["result"]["content"]
 
 
 def test_daily_pipeline_run_request_does_not_turn_questions_into_jobs():
@@ -1587,7 +1720,7 @@ async def test_requested_skill_failure_cannot_be_replaced_by_paper_ledger_answer
     assert [item["tool_name"] for item in detail["evidence"]] == [
         "get_paper_session", "skill",
     ]
-    assert detail["status"] == "completed"
+    assert detail["status"] == "failed"
     assert "分析子任务超过时限" in detail["result"]["content"]
     assert "没有生成交易判断" in detail["result"]["content"]
 

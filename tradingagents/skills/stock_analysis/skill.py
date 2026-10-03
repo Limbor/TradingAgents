@@ -9,7 +9,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from datetime import date, datetime as _dt
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -60,9 +60,14 @@ class StockAnalysisInput(BaseModel):
         default_factory=lambda: date.today().isoformat(),
         description="Analysis date in YYYY-MM-DD format",
     )
-    analysts: list[str] = Field(
+    analysts: list[Literal["market", "social", "news", "fundamentals"]] = Field(
         default_factory=lambda: ["market", "social", "news", "fundamentals"],
-        description="Analysts to include in the pipeline",
+        min_length=1,
+        description=("Only these analyst keys are supported: market (price/technicals), "
+                     "social (sentiment), news (news/events), fundamentals "
+                     "(business/industry, revenue, profitability, financial statements, "
+                     "cash flow and valuation). Industry is covered by fundamentals; "
+                     "there is no separate industry analyst."),
     )
     analysis_template: str = Field(default="full", pattern="^(full|research)$", description="full includes debate and risk; research only runs selected analysts")
     debate_rounds: int = Field(

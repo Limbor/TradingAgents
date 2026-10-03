@@ -46,6 +46,7 @@ from tradingagents.core.strategy_memory import (
     select_strategy_lessons,
     validate_memory_usage,
 )
+from tradingagents.dataflows.symbol_utils import normalize_cn_display
 
 logger = logging.getLogger(__name__)
 _PAPER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
@@ -67,7 +68,7 @@ _TRADE_DECISION_WORDS = ("要不要", "该不该", "应不应该", "是否", "�
 _ANNOUNCEMENT_WORDS = ("公告", "问询", "立案", "违规", "处罚", "退市", "减持", "预亏")
 _FACTOR_WORDS = ("估值", "因子", "市盈率", "市净率", "资金流", "动量", "行情", "股价",
                  "价格", "走势", "基本面", "财报", "roe", "pe", "pb")
-_A_SHARE_TICKER = re.compile(r"(?<![A-Za-z0-9])\d{6}\.(?:SH|SZ|BJ)(?![A-Za-z0-9])", re.IGNORECASE)
+_A_SHARE_TICKER = re.compile(r"(?<![A-Za-z0-9])\d{6}\.(?:SH|SS|SZ|BJ)(?![A-Za-z0-9])", re.IGNORECASE)
 _STOCK_REFERENCE = re.compile(
     r"这只|那只|该股|这支股票|这家公司|那家公司|这个标的|那个标的"
 )
@@ -1517,6 +1518,9 @@ class TradingAgentHarness:
             f"北京时间今天：{_shanghai_today()}。"
             "仅当短日期在账本日之后、今天及之前唯一时才可用它生成推进提案。"
             "仅研究行情、新闻或基本面时，stock_analysis 使用 analysis_template=research 并选择所需 analysts；"
+            "analysts 只允许 market、social、news、fundamentals。行业、业务结构、营收、利润与现金流"
+            "属于 fundamentals，不能添加 industry 等不存在的角色。参数校验拒绝后按返回契约修正再调用，"
+            "这种拒绝发生在查询数据之前，不代表数据源故障。"
             "需要完整交易评估时使用 full 模板，保留研究裁决和风控。"
             f"\n可用分析能力及参数契约：{_json(skill_catalog)}"
         )
@@ -1548,6 +1552,7 @@ class TradingAgentHarness:
                 self.store.event(task_id, "tool_call_rejected", {"tool": name, "reason": "missing_id"})
                 continue
             reason = None
+            feedback = {}
             if name not in session.allowed or not isinstance(args, dict):
                 reason = "tool_or_args_not_allowed"
             elif name == "prepare_paper_advance":
@@ -1574,7 +1579,22 @@ class TradingAgentHarness:
                     reason = "skill_not_allowed"
                 else:
                     key = f"skill:{skill_id}"
-                    if any(item.startswith("skill:") for item in used):
+                    schema = getattr(available_skill, "input_schema", None)
+                    try:
+                        if schema:
+                            Draft202012Validator(schema.model_json_schema()).validate(params)
+                    except ValidationError as exc:
+                        reason = "skill_args_invalid"
+                        feedback = {"message": f"分析参数不符合契约，请修正后重新调用：{exc.message}",
+                                    "path": list(exc.absolute_path),
+                                    "parameters": schema.model_json_schema()}
+                    symbol = normalize_cn_display(str(params.get("ticker") or ""))
+                    if (not reason and skill_id == "stock_analysis" and tickers and
+                            symbol not in tickers):
+                        reason = "symbol_out_of_scope"
+                    if reason:
+                        pass
+                    elif any(item.startswith("skill:") for item in used):
                         reason = "analysis_skill_budget"
                     else:
                         used.add(key)
@@ -1617,9 +1637,10 @@ class TradingAgentHarness:
                                       "tool": name, "args": bound_args,
                                       "tool_call_id": call_id, "model_tool": name})
             if reason:
-                session.tool_result(call_id, str(name), {"error": reason})
+                session.tool_result(call_id, str(name), {"error": reason, **feedback})
                 self.store.event(task_id, "tool_call_rejected", {
                     "tool": name, "call_id": call_id, "reason": reason,
+                    **feedback,
                 })
         return steps, action_target
 
@@ -2030,6 +2051,24 @@ class TradingAgentHarness:
                             "steps": [retry], "reason": "证据日期与账户或当前市场基准日冲突，只读重试一次",
                         })
                 enforce_budget()
+                if not any(step["tool"] == "skill" for step in plan):
+                    invalid_call = next((event["payload"] for event in reversed(self.store.list_events(task_id))
+                                         if event["event_type"] == "tool_call_rejected" and
+                                         event["payload"].get("reason") == "skill_args_invalid"), None)
+                    if invalid_call:
+                        # Rejections are repairable within the native loop and do
+                        # not spend a workflow run. An unrepaired request still
+                        # must not become a completed research answer.
+                        item = self.store.add_evidence(task_id, "skill", {
+                            "error": invalid_call["message"], "error_type": "invalid_skill_args",
+                            "source": "TradingAgents analysis parameter validation",
+                        })
+                        evidence.append(item)
+                        self.store.event(task_id, "evidence_added", {
+                            "evidence_id": item["id"], "source": item["source"],
+                            "as_of_date": item["as_of_date"], "summary": item["summary"],
+                            "warnings": item["warnings"],
+                        })
                 self.store.set_status(task_id, "reviewing")
                 self.store.event(task_id, "review_started", {"evidence_count": len(evidence)})
                 advance_requested = False
@@ -2196,8 +2235,13 @@ class TradingAgentHarness:
                         self.store.event(task_id, "memory_reviewed", result["memory_trace"])
                 enforce_budget()
                 self.store.add_message(conversation["id"], "assistant", content, task_id)
-                failed_evidence = [item for item in evidence if item["result"].get("error")]
-                if evidence and len(failed_evidence) == len(evidence):
+                current_evidence = [item for item in _latest_evidence(evidence)
+                                    if item["tool_name"] not in {"get_strategy_lessons", "get_recent_runs"}]
+                failed_evidence = [item for item in current_evidence if item["result"].get("error")]
+                failed_analysis = self._failed_analysis(evidence)
+                all_failed = bool(evidence) and all(item["result"].get("error") for item in evidence)
+                if failed_analysis or all_failed or (current_evidence and len(failed_evidence) == len(current_evidence)):
+                    failed_evidence = failed_analysis or failed_evidence or evidence
                     error = failed_evidence[0]["summary"]
                     self.store.set_status(task_id, "failed", result=result, error=error)
                     self.store.event(task_id, "task_failed", {**result, "message": error})
@@ -2229,38 +2273,57 @@ class TradingAgentHarness:
 
     @staticmethod
     def _goal_tickers(goal: str) -> list[str]:
-        return list(dict.fromkeys(match.group(0).upper()
+        return list(dict.fromkeys(normalize_cn_display(match.group(0))
                                   for match in _A_SHARE_TICKER.finditer(goal)))
 
     @classmethod
     def _is_stock_followup(cls, goal: str) -> bool:
         if _STOCK_REFERENCE.search(goal):
             return True
-        has_reference = "它" in goal or "其" in goal or goal.startswith("那")
+        has_reference = "它" in goal or bool(re.search(r"其(?:公告|风险|估值|股价|走势|基本面|财报|业绩|营收)", goal))
         has_stock_topic = (cls._asks_announcements(goal) or
                            any(word in goal for word in ("风险", "买", "卖", "加仓", "减仓", "持有")) or
                            any(word in goal.lower() for word in _FACTOR_WORDS))
-        return has_reference and has_stock_topic
+        continuation = goal.startswith(("怎么只有", "有没有基本面", "还有基本面", "从营收", "从行业"))
+        return (has_reference or continuation) and has_stock_topic
 
     def _resolve_stock_reference(self, conversation_id: str,
                                  task_id: str) -> tuple[list[str], str | None]:
-        """Resolve a follow-up only from the immediately preceding task's scope."""
-        previous = next((task for task in reversed(self.store.list_tasks(conversation_id))
-                         if task["id"] != task_id), None)
-        if previous is None:
+        """Inherit audited stock scope across follow-ups, stopping at a topic change."""
+        tasks = self.store.list_tasks(conversation_id)
+        position = next((i for i, task in enumerate(tasks) if task["id"] == task_id), len(tasks))
+        previous_tasks = tasks[:position]
+        if not previous_tasks:
             return [], "请提供要查询的 A 股代码，例如 600519.SH。"
-        tickers = self._goal_tickers(previous["goal"])
-        if not tickers:
-            scope = next((event["payload"].get("ts_code")
-                          for event in reversed(self.store.list_events(previous["id"]))
-                          if event["event_type"] == "scope_resolved"), None)
-            if isinstance(scope, str) and _A_SHARE_TICKER.fullmatch(scope):
-                tickers = [scope]
-        if len(tickers) == 1:
-            return tickers, None
-        if len(tickers) > 1:
-            return [], "上一轮涉及多只股票，请明确本轮要查询的 A 股代码。"
+        for previous in reversed(previous_tasks):
+            tickers = self._goal_tickers(previous["goal"])
+            if not tickers:
+                # Legacy tasks already retain the actual accepted skill call;
+                # do not infer symbols from assistant prose or memory results.
+                for event in self.store.list_events(previous["id"]):
+                    payload = event["payload"]
+                    symbol = None
+                    if event["event_type"] == "scope_resolved":
+                        symbol = payload.get("ts_code")
+                    elif (event["event_type"] == "step_started" and
+                          payload.get("tool") == "skill" and payload.get("skill_id") == "stock_analysis"):
+                        symbol = (payload.get("args") or {}).get("ticker")
+                    if isinstance(symbol, str) and _A_SHARE_TICKER.fullmatch(symbol):
+                        tickers.append(normalize_cn_display(symbol))
+                tickers = list(dict.fromkeys(tickers))
+            if len(tickers) == 1:
+                return tickers, None
+            if len(tickers) > 1:
+                return [], "上一轮涉及多只股票，请明确本轮要查询的 A 股代码。"
+            if not self._is_stock_followup(previous["goal"]):
+                break
         return [], "上一轮没有明确的单只股票，请提供本轮要查询的 A 股代码。"
+
+    @staticmethod
+    def _failed_analysis(evidence: list[dict]) -> list[dict]:
+        return [item for item in _latest_evidence(evidence)
+                if (item["tool_name"] == "skill" or item["tool_name"].startswith("skill:"))
+                and item["result"].get("error")]
 
     @staticmethod
     def _asks_announcements(goal: str) -> bool:
@@ -2674,14 +2737,18 @@ class TradingAgentHarness:
                                   for ticker in selected_tickers)
         if required_skill_id in _SAFE_ANALYSIS_SKILLS:
             required_tools.append(("skill", None))
-        if self._asks_trade_decision(goal):
-            failed_skill = next((item for item in evidence
-                                 if (item["tool_name"] == "skill" or
-                                     item["tool_name"].startswith("skill:")) and
-                                 item["result"].get("error")), None)
-            if failed_skill:
-                return (f"分析子任务未完成：{failed_skill['summary']}。"
-                        "本轮没有生成交易判断，请检查该运行后重试。")
+        failed_skills = self._failed_analysis(evidence)
+        if failed_skills:
+            failed_skill = failed_skills[0]
+            if (failed_skill["result"].get("error_type") == "invalid_skill_args" or
+                    "unknown analyst key" in failed_skill["summary"]):
+                return ("分析参数配置错误，研究任务尚未开始查询财务数据。"
+                        "行业、营收和现金流应由基本面分析处理，请重新发起分析。")
+            if "RuntimeLimitError" in failed_skill["summary"]:
+                return ("分析子任务达到执行上限，报告未完成。"
+                        "这不表示行情数据都不可用；请重新发起分析，系统将预留报告收尾轮次。")
+            return (f"分析子任务未完成：{failed_skill['summary']}。"
+                    "本轮未取得研究结论，也没有生成交易判断；历史回复和复盘经验不能替代本次分析。请重试。")
         missing = None
         for tool_name, ticker in required_tools:
             item = next((e for e in evidence if e["tool_name"] == tool_name and
@@ -2800,6 +2867,8 @@ class TradingAgentHarness:
             "行情失败不能抹去已取到的财报、新闻或公告；报告片段没写到某信息也不能推断未取到。"
             "completed 只说明工具执行结束，仍需核对返回内容是否为空或有错误、以及数据日期。"
             "get_announcements 若返回标题列表，可引用标题与日期，但不能声称已读到公告正文。"
+            "含‘处罚或监管措施’的公告标题不能单独证明实际受到处罚，未读正文时只列为待核验事件。"
+            "缺少用户所问的业务拆分、行业对比等维度时，不称数据完整；历史回复里的数字须经本轮证据核验。"
             "评分只作相对筛选依据，不把内部评分直接当收益预测。历史复盘不能替代近期行情。"
             "若提供历史经验，在 memory_usage 数组中逐条说明 referenced 或 not_applicable，"
             "每条包含 lesson_id、status、reason，只引用本轮经验数据中的 id；"
@@ -3047,6 +3116,17 @@ class TradingAgentHarness:
         skill = self.skills.get(skill_id)
         if skill is None:
             return {"error": f"找不到分析能力：{skill_id}"}
+        schema = getattr(skill, "input_schema", None)
+        try:
+            if schema:
+                Draft202012Validator(schema.model_json_schema()).validate(params)
+        except ValidationError as exc:
+            return {"error": f"分析参数不符合契约：{exc.message}", "error_type": "invalid_skill_args"}
+        if skill_id == "stock_analysis":
+            ticker = normalize_cn_display(str(params.get("ticker") or ""))
+            if _A_SHARE_TICKER.fullmatch(ticker):
+                self.store.event(task_id, "scope_resolved", {"ts_code": ticker, "source": "analysis_skill"})
+                bind_scope(symbols=[ticker])
         # This task owns its cancellation and evidence. Reusing another task's
         # active Skill run would let one conversation cancel the other's work.
         run = await self.run_manager.create_run(skill, params, self.config,

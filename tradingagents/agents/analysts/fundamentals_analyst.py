@@ -30,6 +30,12 @@ def create_fundamentals_analyst(llm):
         style_instruction = get_investment_style_instruction(state.get("investment_style"))
         return (
             "You are a researcher analyzing the fundamental profile of a company. Cover: "
+            "First identify the business segments, industry position and main revenue drivers "
+            "from returned company/financial data. Distinguish company facts from sector hypotheses; "
+            "do not invent segment revenue shares or peer rankings when the tools omit them. "
+            "Describe coverage as partial when requested dimensions are missing. An announcement "
+            "title mentioning penalties or regulatory measures is not proof that a penalty occurred; "
+            "verify its body before making that claim. "
             "(1) valuation — PE-TTM, PB, PS-TTM, EV/EBITDA if available, and the stock's "
             "valuation percentile within its industry over the past 3-5 years; "
             "(2) profitability — ROE, gross margin (毛利率), net margin, and their trends; "
