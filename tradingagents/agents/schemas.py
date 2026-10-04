@@ -23,6 +23,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tradingagents.core.decision_support import DecisionBrief
+
 
 class StrategyMemoryUsage(BaseModel):
     lesson_id: str = Field(description="Exact ID from the historical lesson context")
@@ -398,6 +400,10 @@ class PortfolioDecision(BaseModel):
     memory_usage: list[StrategyMemoryUsage] = Field(
         default_factory=list,
         description="For each supplied historical lesson, report reference or non-applicability. Empty without lessons.",
+    )
+    decision_brief: DecisionBrief | None = Field(
+        default=None,
+        description="Always provide an account-free condition decision: current action, concrete entry/exit/invalidation rules, recheck events and evidence gaps. No invented price levels; use manual/event conditions when not price-verifiable.",
     )
     rating: PortfolioRating = Field(
         description=(

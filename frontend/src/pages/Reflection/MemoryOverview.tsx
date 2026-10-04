@@ -1,11 +1,29 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Brain } from "lucide-react";
-import { getMemoryOverview } from "@/api/client";
+import { getMemoryOverview, getMemoryEvaluationPreview, startMemoryEvaluation, getMemoryEvaluationJob } from "@/api/client";
+import { UsageSummary } from "@/pages/AgentWorkspace/UsageSummary";
 
 const percent = (value: number | null | undefined) => value == null ? "—" : `${(value * 100).toFixed(2)}%`;
 
 export default function MemoryOverview() {
+  const qc = useQueryClient();
+  const [jobId, setJobId] = useState<string | null>(null);
+  const preview = useQuery({ queryKey: ["memory-evaluation-preview"], queryFn: getMemoryEvaluationPreview, refetchInterval: 15000 });
+  const activeId = jobId || preview.data?.active_job_id;
+  const job = useQuery({ queryKey: ["memory-evaluation-job", activeId], queryFn: () => getMemoryEvaluationJob(activeId!), enabled: !!activeId,
+    refetchInterval: query => query.state.data?.status === "running" ? 3000 : false });
+  const start = useMutation({ mutationFn: startMemoryEvaluation, onSuccess: data => {
+    setJobId(data.id); void qc.invalidateQueries({ queryKey: ["memory-evaluation-preview"] });
+  } });
+  const jobStatus = job.data?.status;
+  useEffect(() => {
+    if (jobStatus && jobStatus !== "running") {
+      void qc.invalidateQueries({ queryKey: ["strategy-memory-overview"] });
+      void qc.invalidateQueries({ queryKey: ["memory-evaluation-preview"] });
+    }
+  }, [jobStatus, qc]);
   const query = useQuery({ queryKey: ["strategy-memory-overview"], queryFn: getMemoryOverview, refetchInterval: 15000 });
   const data = query.data;
   const report = data?.evaluation;
@@ -22,6 +40,18 @@ export default function MemoryOverview() {
     </>}
     <details className="mt-3 border-t border-ui-line pt-3 text-xs">
       <summary className="cursor-pointer text-ui-body">有记忆 / 无记忆对照评测{report ? ` · ${report.memory_pairs} 对适用样本` : " · 尚无报告"}</summary>
+      <div className="mt-3 space-y-2 leading-6 text-ui-muted">
+        <p>可用历史样本 {preview.data?.available_pairs ?? "—"} 对 · 需要至少 20 对。仅使用当时已批准的经验与原始事实。</p>
+        <button onClick={() => start.mutate()} disabled={!preview.data?.can_run || start.isPending || job.data?.status === "running"}
+          className="rounded border border-ui-line px-3 py-1.5 text-ui-accent disabled:cursor-not-allowed disabled:opacity-50">
+          {start.isPending ? "正在准备评测…" : "运行 20 对评测（最多 40 次模型调用）"}
+        </button>
+        <p className="text-ui-faint">点击后消耗当前统一模型的额度；最多 200,000 token 预算，免费额度和实际扣费以平台为准。不自动重试或批准经验。</p>
+        {start.isError && <p role="alert" className="text-ui-warning">{start.error.message}</p>}
+        {preview.isError && <p role="alert" className="text-ui-warning">历史样本预检暂不可用。</p>}
+        {job.data && <p role="status">{job.data.status === "running" ? "正在比较两组判断" : job.data.status === "completed" ? "对照评测完成" : "对照评测未完成"} · {job.data.completed_pairs}/{job.data.total_pairs} 对{job.data.error && ` · ${job.data.error}`}</p>}
+        {job.data?.usage_stats && <UsageSummary usage={job.data.usage_stats} />}
+      </div>
       {report ? <div className="mt-3 space-y-3 text-ui-muted">
         <p>{report.model} · {report.total_pairs} 对总样本 · {report.changed_directions} 对判断方向变化</p>
         <div className="overflow-x-auto"><table className="w-full whitespace-nowrap text-left tabular-nums"><thead><tr className="border-b border-ui-line"><th className="py-2 pr-3 font-normal">指标</th><th className="px-3 font-normal">无记忆</th><th className="pl-3 font-normal">有记忆</th></tr></thead><tbody>
@@ -30,6 +60,7 @@ export default function MemoryOverview() {
         </tbody></table></div>
         {!report.sufficient_samples && <p className="text-ui-warning">适用样本不足 {report.min_samples} 对，暂不判断记忆是否有效。</p>}
         <p>使用相同的信号时点数据做成对比较；结果不等于账户收益，仍需检查样本相关性和模型随机性。</p>
+        {report.usage_stats && <UsageSummary usage={report.usage_stats} />}
         <Link to={`/library?artifact_type=memory_evaluation`} className="inline-block text-ui-accent underline underline-offset-2">查看评测报告</Link>
       </div> : <p className="mt-3 leading-5 text-ui-faint">尚未运行成对模型评测。经验参考次数只说明使用情况，不能证明效果提升；评测工具已支持按历史日期比较两组判断。</p>}
     </details>

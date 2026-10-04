@@ -36,7 +36,8 @@ export function memoryMessage(trace: Row, running: boolean): string {
   if (usage.length) {
     const used = usage.filter(row => row.status === "referenced").length;
     const skipped = usage.filter(row => row.status === "not_applicable").length;
-    return `模型报告参考 ${used} 条${skipped ? `，${skipped} 条不适用` : ""}`;
+    return rows(trace.roles).length ? `模型报告 ${used} 条参考记录${skipped ? `，${skipped} 条不适用记录` : ""}（按角色统计）`
+      : `模型报告参考 ${used} 条${skipped ? `，${skipped} 条不适用` : ""}`;
   }
   if (trace.status === "memory_comparing" && running) return `正在结合当前证据核对 ${ids(trace.comparing_ids).length || snapshots.length || ids(trace.retrieved_ids).length} 条历史经验`;
   if (injected.length) return `已提供 ${injected.length} 条经验${running ? "，正在核对适用条件" : "；模型未报告具体参考情况"}`;
@@ -54,6 +55,13 @@ export function MemoryProgress({ task }: { task: AgentTask }) {
   </div>;
 }
 
+const reportedUsage = (value: unknown, depth = 0): Row[] => {
+  const output = object(value);
+  if (depth > 3) return [];
+  return [...rows(output.memory_usage), ...Object.values(output).flatMap(child =>
+    child && typeof child === "object" && !Array.isArray(child) ? reportedUsage(child, depth + 1) : [])];
+};
+
 export function RoleMemory({ task }: { task: AgentTask }) {
   const records = new Map<string, Row>();
   for (const run of task.agent_runs ?? []) records.set(run.run_id, run as unknown as Row);
@@ -64,7 +72,7 @@ export function RoleMemory({ task }: { task: AgentTask }) {
     const name = String(record.role);
     const role = roles.get(name) ?? { provided: new Set<string>(), usage: new Map<string, Row>() };
     for (const id of ids(record.memory_refs)) role.provided.add(id);
-    for (const usage of rows(object(record.output).memory_usage)) {
+    for (const usage of reportedUsage(record.output)) {
       if (role.provided.has(String(usage.lesson_id))) role.usage.set(String(usage.lesson_id), usage);
     }
     roles.set(name, role);
@@ -93,18 +101,19 @@ export function MemoryDetails({ trace: raw }: { trace: unknown }) {
     <p className="leading-5 text-ui-body">{memoryMessage(trace, false)}</p>
     <div className="flex flex-wrap gap-x-4 gap-y-1 tabular-nums text-ui-muted"><span>检索 {ids(trace.retrieved_ids).length || snapshots.length} 条</span><span>提供 {injected.length} 条</span>{typeof trace.as_of_date === "string" && <span>截止 {trace.as_of_date}</span>}</div>
     {snapshots.map((row, index) => {
-      const entry = usage.find(item => item.lesson_id === row.id);
+      const entries = usage.filter(item => item.lesson_id === row.id);
       const examples = rows(row.examples);
       return <details key={String(row.id ?? index)} className="min-w-0 rounded-md border border-ui-line bg-ui-subtle px-3 py-2">
         <summary className="cursor-pointer break-words leading-5 text-ui-body">{String(row.finding ?? "历史经验")}</summary>
         <div className="mt-3 space-y-2 leading-5 text-ui-muted">
           <p>{scopeNames[String(row.scope)] ?? "相关经验"}{row.target ? ` · ${String(row.target)}` : ""} · 样本 {String(row.evidence_count ?? "未知")}{row.version_id ? ` · 版本 ${String(row.version_id)}` : ""}</p>
           {row.suggested_adjustment ? <p>核对要点：{String(row.suggested_adjustment)}</p> : null}
-          <p className="text-ui-accent">{entry ? `${entry.status === "referenced" ? "模型报告参考" : "模型报告不适用"}：${String(entry.reason)}` : "模型未报告该条经验的具体参考情况"}</p>
+          {entries.length ? entries.map((entry, i) => <p key={i} className="text-ui-accent">{entry.role ? `${agentRole(String(entry.role))} · ` : ""}{entry.status === "referenced" ? "模型报告参考" : "模型报告不适用"}：{String(entry.reason)}</p>) : <p className="text-ui-accent">模型未报告该条经验的具体参考情况</p>}
+          {ids(row.quality_notes).map((note, i) => <p key={`note-${i}`} className="text-ui-warning">{note}</p>)}
           {ids(row.conflicting_ids).length > 0 && <p className="text-ui-warning">同一场景有不同方向的经验，应结合周期和当前证据核对。</p>}
           {examples.map((example, i) => <div key={String(example.id ?? i)} className="border-t border-ui-line pt-2">
             <p>{String(example.symbol ?? "历史案例")} · {String(example.signal_date ?? "日期未知")} · {String(example.horizon_days ?? "—")} 天</p>
-            <p>{example.outcome === "correct" ? "方向正确" : example.outcome === "incorrect" ? "方向错误" : "中性观察"}{typeof example.actual_return === "number" ? ` · 收益 ${(example.actual_return * 100).toFixed(2)}%` : ""}{typeof example.excess_return === "number" ? ` · 超额 ${(example.excess_return * 100).toFixed(2)}%` : ""}</p>
+            <p>{example.condition_status ? `条件评价：${example.condition_status === "triggered" ? "已触发" : "未触发或尚无法核验"}${typeof example.hypothetical_net_return === "number" ? ` · 假设净收益 ${(example.hypothetical_net_return * 100).toFixed(2)}%` : ""}` : <>{example.outcome === "correct" ? "方向正确" : example.outcome === "incorrect" ? "方向错误" : "中性观察"}{typeof example.actual_return === "number" ? ` · 收益 ${(example.actual_return * 100).toFixed(2)}%` : ""}{typeof example.excess_return === "number" ? ` · 超额 ${(example.excess_return * 100).toFixed(2)}%` : ""}</>}</p>
             {example.lesson ? <p className="break-words">{String(example.lesson)}</p> : null}
           </div>)}
         </div>

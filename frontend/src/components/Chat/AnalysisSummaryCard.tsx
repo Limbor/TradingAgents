@@ -1,4 +1,5 @@
 import { MemoryDetails } from "@/pages/AgentWorkspace/MemoryPanel";
+import { DecisionBriefCard, type DecisionBrief } from "./DecisionBriefCard";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, Bell, ExternalLink, GitBranch, Plus, Shield, Target, TrendingDown, TrendingUp } from "lucide-react";
@@ -38,6 +39,7 @@ export interface TradePlanShape {
 }
 
 export interface AnalysisSummary {
+  decision_brief?: DecisionBrief;
   memory_trace?: Record<string, unknown>;
   rating?: string;
   target_price?: string;
@@ -304,6 +306,10 @@ export function AnalysisSummaryCard({ summary, selectionPlan, artifactId, onAddH
   const planExecutionBlocked = !!plan?.execution_validation?.status
     && plan.execution_validation.status !== "valid";
 
+  if (summary.decision_brief) {
+    return <DecisionBriefCard brief={{ ...summary.decision_brief, symbol, run_id: runId, memory_trace: summary.memory_trace }} />;
+  }
+
   return (
     <div className="space-y-3 rounded-lg border border-ui-line bg-ui-panel p-4">
       {summary.memory_trace && <MemoryDetails trace={summary.memory_trace} />}
@@ -445,6 +451,7 @@ export function parseAnalysisSummaryFromStructured(data: unknown, runId?: string
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
   return {
+    decision_brief: d.decision_brief && typeof d.decision_brief === "object" ? d.decision_brief as DecisionBrief : undefined,
     rating: typeof d.rating === "string" ? d.rating : undefined,
     target_price: d.target_price !== undefined && d.target_price !== null ? String(d.target_price) : undefined,
     confidence: typeof d.confidence === "number" ? d.confidence : undefined,

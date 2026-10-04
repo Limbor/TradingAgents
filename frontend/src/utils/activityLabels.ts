@@ -7,7 +7,7 @@ export const AGENT_ROLES: Record<string, string> = {
   'Bull Researcher': '多方研究员', 'Bear Researcher': '空方研究员',
   'Research Manager': '研究经理', Trader: '交易规划师',
   'Aggressive Analyst': '进攻风控', 'Conservative Analyst': '防守风控',
-  'Neutral Analyst': '综合风控', 'Portfolio Manager': '组合经理',
+  'Neutral Analyst': '综合风控', 'Portfolio Manager': '交易裁决',
   'Market Overview': '市场分析师', 'Market Regime': '市场分析师',
   'Industry Analyst': '板块分析师', 'News Tagger': '新闻分析师',
   'Market Scanner': '市场扫描', 'Factor Scorer': '量化分析师',
@@ -20,7 +20,7 @@ export const AGENT_ACTIONS: Record<string, string> = {
   'Bull Researcher': '评估上涨逻辑与催化剂', 'Bear Researcher': '检查下行风险与反面证据',
   'Research Manager': '综合多空观点', Trader: '制定交易计划',
   'Aggressive Analyst': '评估进攻方案的风险', 'Conservative Analyst': '检查防守与回撤约束',
-  'Neutral Analyst': '平衡收益与风险', 'Portfolio Manager': '核对仓位并形成最终判断',
+  'Neutral Analyst': '平衡收益与风险', 'Portfolio Manager': '核对条件与风险并形成最终判断',
 };
 export const SKILL_ACTIONS: Record<string, string> = {
   stock_analysis: '分析个股', market_overview: '研究市场与板块', market_scanner: '筛选候选股票',

@@ -15,7 +15,7 @@ AGENT_ACTIONS = {
     "Aggressive Analyst": "评估进攻方案的风险",
     "Conservative Analyst": "检查防守与回撤约束",
     "Neutral Analyst": "平衡收益与风险",
-    "Portfolio Manager": "核对仓位并形成最终判断",
+    "Portfolio Manager": "核对条件与风险并形成最终判断",
 }
 
 # Specific names precede generic substrings (e.g. risk announcements/news).

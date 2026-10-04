@@ -87,6 +87,8 @@ export interface StrategyLesson {
 }
 
 export interface ReflectionCase {
+  snapshot_version?: number;
+  supersedes_id?: string;
   id: string;
   source_type: string;
   reflection_scope: string;
@@ -1003,9 +1005,23 @@ export interface MemoryOverviewData {
   evaluation: null | {
     id: string; model: string; total_pairs: number; memory_pairs: number; min_samples: number;
     sufficient_samples: boolean; changed_directions: number;
+    usage_stats?: import("./agent").UsageStats;
     arms: Record<"with_memory" | "without_memory", { coverage: number | null; hit_rate: number | null }>;
   };
 }
 export const getMemoryOverview = () => fetchJson<MemoryOverviewData>(`${API_BASE}/strategy-memory/overview`);
+export interface MemoryEvaluationPreview {
+  available_pairs: number; minimum_pairs: number; default_pairs: number;
+  max_model_calls: number; can_run: boolean; active_job_id: string | null; message: string;
+}
+export interface MemoryEvaluationJob {
+  id: string; status: string; completed_pairs: number; total_pairs: number;
+  error?: string; report_id?: string; usage_stats?: import("./agent").UsageStats;
+}
+export const getMemoryEvaluationPreview = () => fetchJson<MemoryEvaluationPreview>(`${API_BASE}/strategy-memory/evaluation-preview`);
+export const startMemoryEvaluation = () => fetchJson<MemoryEvaluationJob>(`${API_BASE}/strategy-memory/evaluations`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: 20 }),
+});
+export const getMemoryEvaluationJob = (id: string) => fetchJson<MemoryEvaluationJob>(`${API_BASE}/strategy-memory/evaluations/${encodeURIComponent(id)}`);
 export const listLessonVersions = (lessonId: string) =>
   fetchJson<Array<StrategyLesson & { version_id: number }>>(`${API_BASE}/strategy-lessons/${encodeURIComponent(lessonId)}/versions`);

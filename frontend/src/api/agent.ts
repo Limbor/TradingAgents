@@ -1,6 +1,7 @@
 import { agentApiBase, fetchJson } from "./client";
 import { authHeaders } from "./auth";
 import type { IntentHint } from "@/lib/chatNav";
+import type { DecisionBrief } from "@/components/Chat/DecisionBriefCard";
 
 export interface AgentConversation {
   id: string;
@@ -88,7 +89,7 @@ export interface AgentTask {
   conversation_id: string;
   goal: string;
   status: string;
-  result: { content?: string; citations?: unknown[]; read_only?: boolean; answer?: AgentAnswer; memory_trace?: Record<string, unknown> };
+  result: { content?: string; citations?: unknown[]; read_only?: boolean; answer?: AgentAnswer; memory_trace?: Record<string, unknown>; decision_briefs?: DecisionBrief[] };
   error: string | null;
   created_at: string;
   updated_at: string;

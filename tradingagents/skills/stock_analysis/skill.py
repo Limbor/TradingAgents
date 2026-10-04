@@ -21,12 +21,14 @@ from tradingagents.core.activity_labels import (
 )
 from tradingagents.core.agent_runtime import AgentSpec, bind_scope, managed_stream
 from tradingagents.core.decision_reconciliation import reconcile_selection_analysis
+from tradingagents.core.decision_support import build_decision_brief, evaluation_horizon
 from tradingagents.core.reflection_enroll import enroll_reflection_case
 from tradingagents.core.research_context import (
     REPORT_ROLES,
     load_reusable_research,
     research_policy_key,
 )
+from tradingagents.core.research_metadata import resolve_research_industry
 from tradingagents.core.strategy_memory import (
     lesson_prompt_section,
     load_strategy_lessons,
@@ -75,6 +77,8 @@ class StockAnalysisInput(BaseModel):
                      "there is no separate industry analyst."),
     )
     analysis_template: str = Field(default="full", pattern="^(full|research)$", description="full includes debate and risk; research only runs selected analysts")
+    evaluation_days: int | None = Field(default=None, ge=1, le=250,
+        description="Explicit trading-session evaluation window; otherwise short/medium/long style maps to 5/60/120 sessions.")
     force_refresh: bool = Field(default=False, description="Fetch and analyze again instead of reusing valid research in this conversation. Set true when the user explicitly requests refreshed data or a fresh analysis.")
     debate_rounds: int = Field(
         default=1,
@@ -180,6 +184,14 @@ class StockAnalysisSkill(BaseSkill):
 
         db = config.get("db")
         holding_context = None
+        yield skill_progress(stage_id="industry_context", stage_label="核对公司行业", status="running",
+                             detail="正在核对公司所属行业，以匹配相关历史经验")
+        industry_context = await resolve_research_industry(input_params.ticker, config)
+        industry = industry_context.get("industry") or (input_params.selection_context or {}).get("industry")
+        yield skill_progress(stage_id="industry_context", stage_label="核对公司行业", status="completed",
+                             detail=(f"行业：{industry}；仅用于经验匹配，不代表行业观点" if industry else
+                                     "行业映射暂不可用，继续标的研究与其他适用经验检索"),
+                             data={"industry_context": industry_context})
 
         bind_scope(research_reuse_allowed=not bool(
             holding_context or input_params.include_portfolio_context or input_params.selection_context or input_params.reflection_context))
@@ -190,9 +202,9 @@ class StockAnalysisSkill(BaseSkill):
             selected_memory = select_strategy_lessons(
                 load_strategy_lessons(db, temporal_context.market_asof_date), {
                     "symbol": input_params.ticker,
-                    "industry": (input_params.selection_context or {}).get("industry") or
-                                (holding_context or {}).get("industry"),
+                    "industry": industry,
                     "style": config.get("investment_style", "medium_term"),
+                    "horizon_days": evaluation_horizon(config.get("investment_style"), input_params.evaluation_days),
                 }, as_of_date=temporal_context.market_asof_date,
             )
         except Exception as exc:
@@ -400,12 +412,32 @@ class StockAnalysisSkill(BaseSkill):
             (structured_portfolio_decision or {}).get("memory_usage") or [], selected_memory,
         )
         structured_conclusion["memory_trace"] = {
+            "role": "Portfolio Manager",
             "injected_ids": [row["id"] for row in selected_memory],
             "snapshots": selected_memory, "as_of_date": temporal_context.market_asof_date,
             "retrieved_ids": [row["id"] for row in selected_memory],
             "status": "model_reported" if memory_usage else "provided_to_analysis" if selected_memory else "not_injected",
             "usage": memory_usage, "warning": memory_error,
+            "matching_context": {"industry": industry, "style": config.get("investment_style", "medium_term")},
         }
+        structured_conclusion["industry"] = industry
+        structured_conclusion["research_evidence"] = {
+            "sections": {name: text[:1200] for name, text in report_sections.items() if isinstance(text, str)},
+            "artifact_basis": "本轮研究报告摘要；完整报告通过 source_artifact_id 查询",
+        }
+        structured_conclusion["industry_context"] = industry_context
+        structured_conclusion["decision_brief"] = build_decision_brief(
+            structured_conclusion, template=input_params.analysis_template,
+            as_of_date=temporal_context.market_asof_date,
+            style=config.get("investment_style", "medium_term"),
+            horizon_days=evaluation_horizon(config.get("investment_style"), input_params.evaluation_days),
+            raw=(structured_portfolio_decision or {}).get("decision_brief"),
+            info_cutoff=temporal_context.info_cutoff,
+        )
+        yield skill_progress(stage_id="decision_summary", stage_label="整理条件决策", status="completed",
+                             detail=("已整理当前结论、进入/退出条件和判断失效条件" if input_params.analysis_template == "full"
+                                     else "已完成专题研究；完整决策可接续评估并复用有效研究"),
+                             data={"decision_brief": structured_conclusion["decision_brief"]})
         structured_conclusion["selection_alignment"] = reconcile_selection_analysis(
             input_params.selection_context,
             structured_conclusion,
@@ -585,11 +617,15 @@ class StockAnalysisSkill(BaseSkill):
         """Enroll this analysis as a reflection case (mirrors daily_pipeline).
 
         BUY/Overweight/Sell/Underweight → decision_grade + eligible for strategy
-        learning; Hold/other → candidate_pool. Deterministic case_id so re-running
-        on the same (ticker, date) replaces rather than duplicates.
+        learning; Hold/other → candidate_pool. Each new report preserves a
+        versioned signal snapshot; retries of the same artifact are idempotent.
         """
         db = config.get("db")
         if db is None:
+            return
+        brief = structured_conclusion.get("decision_brief") or {}
+        if (structured_conclusion.get("decision_status") == "research_only" or
+                brief.get("action_state") == "insufficient_evidence"):
             return
         try:
             enroll_reflection_case(
@@ -597,10 +633,12 @@ class StockAnalysisSkill(BaseSkill):
                 source_type="stock_analysis",
                 symbol=ticker,
                 name=ticker,
-                signal_date=analysis_date,
+                signal_date=str(brief.get("as_of_date") or analysis_date),
                 rating_or_decision=rating,
                 source_run_id=str(config.get("run_id", "")),
                 source_artifact_id=str(artifact_id or ""),
+                horizon_days=int(brief.get("horizon_days") or evaluation_horizon(config.get("investment_style"))),
+                immutable=True,
                 snapshot_payload={
                     "rating": rating,
                     "plan": structured_conclusion.get("plan"),
@@ -609,6 +647,12 @@ class StockAnalysisSkill(BaseSkill):
                     "reasons": structured_conclusion.get("reasons"),
                     "selection_context": selection_context,
                     "memory_trace": structured_conclusion.get("memory_trace"),
+                    "decision_brief": brief,
+                    "industry": structured_conclusion.get("industry"),
+                    "style": brief.get("horizon") or config.get("investment_style", "medium_term"),
+                    "info_cutoff": brief.get("info_cutoff") or analysis_date,
+                    "analysis_requested_date": analysis_date,
+                    "research_evidence": structured_conclusion.get("research_evidence"),
                 },
                 # stock_analysis scope: Buy/Overweight/Sell/Underweight ->
                 # decision_grade; Hold/other -> candidate_pool.

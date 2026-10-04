@@ -473,7 +473,8 @@ def make_get_strategy_lessons(db: Any):
     async def _handler(symbol: str = "", industries: list[str] | None = None,
                        board: str = "", factors: list[str] | None = None,
                        style: str = "", regime: str = "", task_type: str = "",
-                       as_of_date: str | None = None, limit: int = 5) -> dict[str, Any]:
+                       as_of_date: str | None = None, limit: int = 5,
+                       horizon_days: int | None = None) -> dict[str, Any]:
         from tradingagents.core.strategy_memory import (
             load_strategy_lessons,
             select_strategy_lessons,
@@ -483,7 +484,8 @@ def make_get_strategy_lessons(db: Any):
         try:
             date.fromisoformat(cutoff)
             context = {"symbol": symbol, "industries": industries or [], "board": board,
-                       "factors": factors or [], "style": style, "regime": regime, "task_type": task_type}
+                       "factors": factors or [], "style": style, "regime": regime, "task_type": task_type,
+                       "horizon_days": horizon_days}
             lessons = select_strategy_lessons(load_strategy_lessons(db, cutoff), context,
                                               as_of_date=cutoff, limit=limit)
         except Exception as exc:
@@ -679,6 +681,7 @@ def build_all_tools(
                     "regime": {"type": "string", "maxLength": 40},
                     "task_type": {"type": "string", "maxLength": 40},
                     "as_of_date": {"type": "string", "format": "date"},
+                    "horizon_days": {"type": "integer", "minimum": 1, "maximum": 250},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 5},
                 },
                 "additionalProperties": False,

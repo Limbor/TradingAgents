@@ -57,6 +57,8 @@ class ReflectionCaseItem(BaseModel):
     due_date: str | None = None
     source_run_id: str = ""
     source_artifact_id: str = ""
+    snapshot_version: int = 0
+    supersedes_id: str = ""
     snapshot_payload: dict[str, Any] = Field(default_factory=dict)
     outcome_payload: dict[str, Any] = Field(default_factory=dict)
     post_signal_evidence_payload: dict[str, Any] = Field(default_factory=dict)
@@ -506,6 +508,8 @@ async def get_memory_overview(request: Request):
     import json
     from datetime import datetime, timezone
 
+    from tradingagents.core.strategy_memory import aggregate_memory_trace
+
     db = request.app.state.db
     now = datetime.now(timezone.utc).isoformat()
     with db._conn() as conn:
@@ -533,6 +537,7 @@ async def get_memory_overview(request: Request):
     for task in tasks:
         result = json.loads(task["result_json"] or "{}")
         trace = result.get("memory_trace") or {}
+        trace = aggregate_memory_trace([trace], db.list_agent_runtime(task["id"]))
         usage["injected_tasks"] += bool(trace.get("injected_ids")) or task["id"] in receipts
         usage["reported_tasks"] += bool(trace.get("usage"))
         for entry in trace.get("usage") or []:
@@ -546,4 +551,4 @@ async def get_memory_overview(request: Request):
                       **{key: value for key, value in report.items() if key != "rows"}}
     return {"inventory": {key: int(value or 0) for key, value in dict(counts).items()},
             "version_count": versions, "usage": usage, "evaluation": evaluation,
-            "as_of": now, "usage_scope": "最近 200 个工作台任务；模型报告的参考情况不代表收益改善"}
+            "as_of": now, "usage_scope": "最近 200 个工作台任务及专业角色；模型报告的参考情况不代表收益改善"}

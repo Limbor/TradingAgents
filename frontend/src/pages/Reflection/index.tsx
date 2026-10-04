@@ -39,6 +39,7 @@ import {
 } from "./helpers";
 
 import MemoryOverview from "./MemoryOverview";
+import { DecisionBriefCard, type DecisionBrief } from "@/components/Chat/DecisionBriefCard";
 
 const LOOKBACKS = [7, 30, 90] as const;
 const CASE_STATUSES = [
@@ -147,7 +148,7 @@ export default function Reflection() {
           </p>
           <h2 className="mt-2 text-2xl font-semibold text-ui-ink">反思闭环评测</h2>
           <p className="mt-1 text-sm text-ui-faint">
-            决策到期后按真实收益复盘；挖掘规律先进入候选区，只有人工批准后才会注入后续复核。
+            按建议期限核对条件触发、行情结果与已知证据；候选经验只有人工批准后才会用于后续研究。
           </p>
         </div>
         <button
@@ -473,6 +474,9 @@ function CaseRow({ item }: { item: ReflectionCase }) {
   const attribution = caseAttribution(item);
   const excess = caseExcess(item);
   const original = caseOriginalDecision(item);
+  const savedBrief = item.snapshot_payload.decision_brief as DecisionBrief | undefined;
+  const condition = item.outcome_payload.condition_evaluation as Record<string, unknown> | undefined;
+  const conditionLabels: Record<string, string> = { triggered: "条件已触发 · 假设评价", not_triggered: "未触发，不计交易对错", unverifiable: "条件尚无法完整核验", not_actionable: "仅观察，不评交易收益", awaiting_next_session: "等待下一交易日", awaiting_exit_session: "等待符合 T+1 的退出日" };
   return (
     <div className="flex items-center justify-between gap-3 rounded border border-ui-line bg-ui-subtle px-3 py-2">
       <div className="min-w-0">
@@ -485,8 +489,20 @@ function CaseRow({ item }: { item: ReflectionCase }) {
         </div>
         <div className="mt-0.5 text-xs text-ui-faint">
           {item.signal_date} · {original} · {item.horizon_days} 日
+          {!!item.snapshot_version && <span> · 建议 v{item.snapshot_version}</span>}
+          {!!item.supersedes_id && <span> · 保留前版</span>}
           {item.status === "pending" && <span className="ml-1 text-ui-warning/80">待反思</span>}
         </div>
+        {condition && <div className="mt-2 space-y-1 text-xs leading-5 text-ui-muted">
+          <p>{conditionLabels[String(condition.status)] || "条件评价"}</p>
+          {typeof condition.net_return === "number" && <p>假设净收益 {(condition.net_return * 100).toFixed(2)}% · 收盘最大不利 {typeof condition.max_adverse_close_return === "number" ? (condition.max_adverse_close_return * 100).toFixed(2) + "%" : "—"}</p>}
+          {typeof condition.entry_date === "string" && <p>假设进入 {condition.entry_date} · 退出 {String(condition.exit_date || "未确认")}</p>}
+          {typeof condition.reason === "string" && <p>{condition.reason}</p>}
+        </div>}
+        {savedBrief?.version === 1 && <details className="mt-2 text-xs text-ui-muted">
+          <summary className="cursor-pointer leading-6">查看原建议条件</summary>
+          <div className="mt-2"><DecisionBriefCard brief={{ ...savedBrief, symbol: item.symbol, run_id: item.source_run_id || undefined }} /></div>
+        </details>}
       </div>
       {excess !== null && (
         <span className={`shrink-0 font-mono text-xs ${excess >= 0 ? "text-ui-success" : "text-ui-danger"}`}>

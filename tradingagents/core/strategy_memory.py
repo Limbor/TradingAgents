@@ -125,6 +125,9 @@ def select_strategy_lessons(
             age_days=age, applicability={key: applicability[key] for key in
                 ("style", "regime", "task_type", "horizon_days") if key in applicability},
         )
+        snapshot["quality_notes"] = (["仅单个支持样本，尚不能视为稳定规律"] if count <= 1 else [])
+        if not applicability:
+            snapshot["quality_notes"].append("尚缺结构化的期限与市场环境适用条件")
         examples = lesson.get("examples") or []
         usable = [row for row in examples if isinstance(row, dict) and
                   _timestamp(row.get("available_at")) and _timestamp(row["available_at"]) <= now]
@@ -177,6 +180,8 @@ def reflection_case_example(case: dict) -> dict | None:
         "decision": snapshot.get("final_decision") or snapshot.get("rating") or (snapshot.get("candidate") or {}).get("final_decision"),
         "outcome": "correct" if correct is True else "incorrect" if correct is False else "neutral",
         "actual_return": outcome.get("actual_return"), "excess_return": outcome.get("excess_return"),
+        "condition_status": (outcome.get("condition_evaluation") or {}).get("status"),
+        "hypothetical_net_return": (outcome.get("condition_evaluation") or {}).get("net_return"),
         "attribution": str(attribution.get("attribution") or "inconclusive"),
         "lesson": str(attribution.get("strategy_lesson") or attribution.get("risk_monitor_lesson") or "")[:200],
     }
@@ -236,3 +241,45 @@ def validate_memory_usage(usage: list[dict], selected: list[dict]) -> list[dict]
         result.append({"lesson_id": lesson_id, "status": status, "reason": reason[:300]})
         seen.add(lesson_id)
     return result
+
+
+def aggregate_memory_trace(traces: list[dict], records: list[dict]) -> dict:
+    """Merge specialist/coordinator receipts without claiming causal benefits."""
+    snapshots, provided, usage = {}, set(), {}
+    cutoff = None
+    for trace in traces:
+        if not isinstance(trace, dict):
+            continue
+        cutoff = trace.get("as_of_date") or cutoff
+        for row in trace.get("snapshots") or []:
+            if isinstance(row, dict) and row.get("id"):
+                snapshots[row["id"]] = row
+        provided.update(trace.get("injected_ids") or [])
+        basis = list(snapshots.values()) or [{"id": value} for value in trace.get("injected_ids") or []]
+        for row in validate_memory_usage(trace.get("usage") or [], basis):
+            role = str(trace.get("role") or "最终答复")
+            usage[(row["lesson_id"], role)] = {**row, "role": role}
+    def reported(output, depth=0):
+        if not isinstance(output, dict) or depth > 3:
+            return []
+        found = output.get("memory_usage") or []
+        found = [row for row in found if isinstance(row, dict)] if isinstance(found, list) else []
+        return [*found, *(row for value in output.values() if isinstance(value, dict)
+                         for row in reported(value, depth + 1))]
+    role_counts = {}
+    for record in records:
+        if record.get("kind") != "model":
+            continue
+        refs = set(record.get("memory_refs") or [])
+        if not refs:
+            continue
+        provided.update(refs)
+        role = str(record.get("role") or "研究角色")
+        role_counts.setdefault(role, set()).update(refs)
+        for row in validate_memory_usage(reported(record.get("output")),
+                                         [{"id": value} for value in refs]):
+            usage[(row["lesson_id"], role)] = {**row, "role": role}
+    return {"injected_ids": sorted(provided), "retrieved_ids": sorted(snapshots),
+            "snapshots": list(snapshots.values()), "usage": list(usage.values()),
+            "as_of_date": cutoff, "roles": [{"role": role, "provided": len(refs)} for role, refs in role_counts.items()],
+            "status": "model_reported" if usage else "provided_to_analysis" if provided else "not_injected"}

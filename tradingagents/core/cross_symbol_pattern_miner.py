@@ -228,12 +228,13 @@ class CrossSymbolPatternMiner:
         sample volume is too low for a given lookback window.
         """
         try:
-            return self._db.list_reflection_cases(
+            cases = self._db.list_reflection_cases(
                 limit=500,
                 status="reflected",
                 eligible_only=True,
                 lookback_days=lookback_days,
             )
+            return [case for case in cases if not self._safe_json(case.get("snapshot_payload")).get("decision_brief")]
         except Exception as exc:
             logger.warning("CrossSymbolMiner: failed to load reflected cases: %s", exc)
             return []

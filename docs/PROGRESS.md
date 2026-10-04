@@ -651,3 +651,11 @@ Chat 层已完成四类意图分流：
 1. Phase 4: 历史样本积累 + walk-forward/ablation 验证 + lesson 晋级治理
 2. ~~Phase 5: Tauri 桌面打包~~ **已完成 macOS 可发布构建链（2026-07-19）**——FastAPI 经 PyInstaller 冻结为 sidecar；Rust 壳使用随机 loopback 端口、每次启动 256-bit 临时令牌、运行时前端协商与健康等待，并限制 CSP、WebSocket Origin 和前端 Tauri 权限。`scripts/build_desktop.sh` 已实机产出 `.app`/`.dmg`，CI 也执行完整桌面构建并上传 unsigned artifact。后续仅剩代码签名/公证、Windows/Linux 构建与自动更新。
 3. 继续增强 Orchestrator/ChatAgent：更多中文股票别名、参数澄清、多轮上下文
+
+## 2026-10-04 条件决策与反思闭环
+
+- 个股完整裁决增加条件行动摘要，工作台和分析页使用一致决策卡，买卖追问保留 full、专题补研究保留 research。
+- 独立个股核对行业匹配记忆，回执合并专业角色与工作台；旧单样本经验提示局限、不自动批准。
+- 新个股建议不可变版本，研究/信息不足不登记交易效果，期限 5/60/120 交易日；简单条件假设路径与方向质量看板分离。
+- 反思规则使用内部 SKILL.md，经验生成需要原始证据摘录；缺证据不从事后涨跌生成经验。
+- 增加显式记忆对照预检与运行入口，额度有上限、真实用量留档，不足样本或重启不自动重跑。实现细节与验收见 REFLECTION_DECISION_PLAN.md。

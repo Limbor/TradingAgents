@@ -18,6 +18,8 @@ sets explicitly to preserve their exact behavior (see A4 refactor notes).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -48,13 +50,15 @@ def enroll_reflection_case(
     decision_grade_values: tuple[str, ...] = ("buy", "overweight", "sell"),
     candidate_pool_values: tuple[str, ...] = (),
     default_scope: str = "candidate_pool",
+    immutable: bool = False,
 ) -> None:
     """Enroll a single reflection case via ``db.save_reflection_case``.
 
     Constructs a deterministic ``case_id`` of the form
     ``f"{source}:{signal_date}:{symbol}"`` so re-running a skill on the same
-    ``(date, symbol)`` replaces rather than duplicates (the table uses
-    ``INSERT OR REPLACE``).
+    ``(date, symbol)`` retains the legacy replacement behavior by default.
+    With immutable=True, report identity is hashed into the case id; new
+    reports preserve versions while retries do not reset evaluated outcomes.
 
     Parameters
     ----------
@@ -97,6 +101,10 @@ def enroll_reflection_case(
 
     prefix = source if source is not None else source_type
     case_id = f"{prefix}:{signal_date or 'undated'}:{(symbol or 'unknown').upper()}"
+    if immutable:
+        identity = json.dumps([source_run_id, source_artifact_id, snapshot_payload, horizon_days],
+                              sort_keys=True, ensure_ascii=False, default=str)
+        case_id += ":v:" + hashlib.sha256(identity.encode()).hexdigest()[:24]
 
     db.save_reflection_case(
         case_id=case_id,
@@ -111,4 +119,5 @@ def enroll_reflection_case(
         source_artifact_id=source_artifact_id,
         snapshot_payload=snapshot_payload,
         status="pending",
+        **({"snapshot_version": 1} if immutable else {}),
     )

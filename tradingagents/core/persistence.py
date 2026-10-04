@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS reflection_cases (
     horizon_days INTEGER NOT NULL DEFAULT 5,
     source_run_id TEXT NOT NULL DEFAULT '',
     source_artifact_id TEXT NOT NULL DEFAULT '',
+    snapshot_version INTEGER NOT NULL DEFAULT 0,
+    supersedes_id TEXT NOT NULL DEFAULT '',
     snapshot_payload TEXT NOT NULL DEFAULT '{}',
     outcome_payload TEXT NOT NULL DEFAULT '{}',
     post_signal_evidence_payload TEXT NOT NULL DEFAULT '{}',
@@ -476,6 +478,17 @@ class Database:
     def _init_schema(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            for column, definition in (("snapshot_version", "INTEGER NOT NULL DEFAULT 0"),
+                                       ("supersedes_id", "TEXT NOT NULL DEFAULT ''")):
+                try:
+                    conn.execute(f"SELECT {column} FROM reflection_cases LIMIT 0")
+                except sqlite3.OperationalError:
+                    conn.execute(f"ALTER TABLE reflection_cases ADD COLUMN {column} {definition}")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS reflection_snapshot_immutable
+                BEFORE UPDATE OF snapshot_payload, signal_date, horizon_days, symbol, source_run_id,
+                source_artifact_id, snapshot_version, supersedes_id ON reflection_cases
+                WHEN OLD.snapshot_version > 0 BEGIN
+                SELECT RAISE(ABORT, 'reflection decision snapshot is immutable'); END""")
             # Migration: add ticker_name column if missing
             try:
                 conn.execute("SELECT ticker_name FROM reports LIMIT 0")
@@ -705,14 +718,14 @@ class Database:
             conn.execute(
                 """
                 DELETE FROM reflection_cases
-                WHERE id NOT IN (
+                WHERE snapshot_version = 0 AND id NOT IN (
                     SELECT id FROM (
                         SELECT id,
                                ROW_NUMBER() OVER (
                                    PARTITION BY source_type, symbol, signal_date
                                    ORDER BY updated_at DESC, created_at DESC
                                ) AS rn
-                        FROM reflection_cases
+                        FROM reflection_cases WHERE snapshot_version = 0
                     ) WHERE rn = 1
                 )
                 """,
@@ -724,9 +737,9 @@ class Database:
                 conn.execute(
                     """
                     DELETE FROM reflection_cases
-                    WHERE EXISTS (
+                    WHERE snapshot_version = 0 AND EXISTS (
                         SELECT 1 FROM reflection_cases AS r2
-                        WHERE r2.source_type = reflection_cases.source_type
+                        WHERE r2.snapshot_version = 0 AND r2.source_type = reflection_cases.source_type
                           AND r2.symbol = reflection_cases.symbol
                           AND r2.signal_date = reflection_cases.signal_date
                           AND (
@@ -1670,20 +1683,35 @@ class Database:
         attribution_payload: dict | None = None,
         lesson_payload: dict | None = None,
         status: str = "pending",
+        snapshot_version: int = 0,
+        supersedes_id: str = "",
     ) -> None:
         """Save or replace a reflection case with full signal-time context."""
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
+            if snapshot_version:
+                conn.execute("BEGIN IMMEDIATE")
+                if conn.execute("SELECT 1 FROM reflection_cases WHERE id=?", (case_id,)).fetchone():
+                    return
+                previous = conn.execute(
+                    "SELECT id, snapshot_version FROM reflection_cases WHERE source_type=? AND symbol=? "
+                    "AND signal_date=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (source_type, symbol.strip().upper(), signal_date),
+                ).fetchone()
+                snapshot_version = (int(previous["snapshot_version"]) + 1) if previous else 1
+                supersedes_id = previous["id"] if previous else ""
+            elif conn.execute("SELECT 1 FROM reflection_cases WHERE id=? AND snapshot_version>0", (case_id,)).fetchone():
+                raise ValueError("Versioned decision snapshots cannot be replaced")
             conn.execute(
-                """
-                INSERT OR REPLACE INTO reflection_cases (
+                f"""
+                INSERT OR {'IGNORE' if snapshot_version else 'REPLACE'} INTO reflection_cases (
                     id, source_type, reflection_scope, eligible_for_strategy_learning,
                     status, symbol, name, signal_date, horizon_days, source_run_id,
-                    source_artifact_id, snapshot_payload, outcome_payload,
+                    source_artifact_id, snapshot_version, supersedes_id, snapshot_payload, outcome_payload,
                     post_signal_evidence_payload, attribution_payload, lesson_payload,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     case_id,
@@ -1697,6 +1725,8 @@ class Database:
                     horizon_days,
                     source_run_id or "",
                     source_artifact_id or "",
+                    snapshot_version,
+                    supersedes_id,
                     json.dumps(snapshot_payload or {}, ensure_ascii=False),
                     json.dumps(outcome_payload or {}, ensure_ascii=False),
                     json.dumps(post_signal_evidence_payload or {}, ensure_ascii=False),
@@ -1830,7 +1860,7 @@ class Database:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
-                "DELETE FROM reflection_cases WHERE status = ? AND updated_at < ?",
+                "DELETE FROM reflection_cases WHERE status = ? AND updated_at < ? AND snapshot_version = 0",
                 (status, cutoff),
             )
             return int(cur.rowcount or 0)
@@ -2891,6 +2921,7 @@ class Database:
             limit=10000,
             exclude_source_types=(BACKTEST_EVAL_SOURCE_TYPE,),
         )
+        cases = [case for case in cases if not case.get("snapshot_payload", {}).get("decision_brief")]
         style = str(self.get_user_profile().get("investment_style") or "medium_term")
         alpha_prior = STYLE_ALPHA.get(style, STYLE_ALPHA["medium_term"])
         return build_scorecard(

@@ -9,11 +9,18 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from tradingagents.core.agent_runtime import runtime_model
+from tradingagents.core.agent_runtime import (
+    AgentContext,
+    current_context,
+    runtime_model,
+    use_context,
+)
 from tradingagents.core.model_policy import provider_kwargs, resolve_model
 
 logger = logging.getLogger(__name__)
@@ -74,6 +81,57 @@ class ReflectionEngine:
         self.db = db
         self.config = config
         self.memory_log = memory_log
+
+    async def fetch_condition_outcome(self, symbol: str, signal_date: str, horizon_days: int,
+                                      brief: dict) -> dict | None:
+        from zoneinfo import ZoneInfo
+
+        from tradingagents.core.decision_support import evaluate_decision_path
+        from tradingagents.core.mcp_client import get_mcp_client
+
+        today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        end = min(today, (datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=horizon_days * 2 + 20)).date())
+        try:
+            client = await get_mcp_client(self.config)
+            if client is None:
+                return None
+            payload = await client.get_stock_daily(ts_codes=[symbol], start_date=signal_date.replace("-", ""),
+                end_date=end.strftime("%Y%m%d"), adj_type="none")
+            if not isinstance(payload, dict) or payload.get("error"):
+                return None
+            if payload.get("adj_type") not in (None, "none"):
+                return None
+            rows = payload.get("rows") or payload.get("data") or []
+            rows = rows.get(symbol, []) if isinstance(rows, dict) else rows
+            clean = {}
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                day = str(row.get("trade_date") or "").replace("-", "")
+                if len(day) != 8 or not signal_date.replace("-", "") <= day <= end.strftime("%Y%m%d"):
+                    continue
+                try:
+                    values = {key: float(row[key]) for key in ("close", "open") if row.get(key) is not None}
+                except (ValueError, TypeError):
+                    continue
+                if any(not math.isfinite(value) or value <= 0 for value in values.values()):
+                    continue
+                clean[day] = {**values, "trade_date": f"{day[:4]}-{day[4:6]}-{day[6:]}"}
+            ordered = [clean[key] for key in sorted(clean)]
+            if len(ordered) <= horizon_days or ordered[0]["trade_date"] != signal_date:
+                return None  # Full trading-session window and exact baseline are mandatory.
+            ordered = ordered[:horizon_days + 1]
+            first, last = ordered[0].get("close"), ordered[-1].get("close")
+            if not first or not last or first <= 0 or last <= 0:
+                return None
+            condition = evaluate_decision_path(brief, ordered)
+            return {"actual_return": round(last / first - 1, 6), "horizon_days": horizon_days,
+                    "as_of_date": ordered[-1]["trade_date"], "source": "mcp_unadjusted",
+                    "close_at_signal": first, "close_at_horizon": last,
+                    "condition_evaluation": condition, "was_correct": None}
+        except Exception as exc:
+            logger.warning("Condition evaluation data unavailable for %s: %s", symbol, exc)
+            return None
 
     async def fetch_outcome(
         self,
@@ -422,7 +480,16 @@ class ReflectionEngine:
             )
             llm = runtime_model(client.get_llm(), "Reflection Agent", self.config)
             prompt = _build_attribution_prompt(case, outcome, post_signal_evidence)
-            response = await llm.ainvoke(prompt)
+            from tradingagents.skills.documents import load_skill_document
+
+            document = load_skill_document("reflection")
+            if document:
+                prompt = document.instructions + "\n\n" + prompt
+            context = current_context() or AgentContext.root(self.config, db=self.db)
+            if document:
+                context = replace(context, skill_refs=(document.reference(),))
+            with use_context(context):
+                response = await llm.ainvoke(prompt)
             return _parse_attribution_payload(str(getattr(response, "content", response)))
         except Exception as exc:
             logger.warning("LLM attribution failed; using heuristic attribution: %s", exc)
@@ -436,6 +503,18 @@ class ReflectionEngine:
         """Persist a reusable lesson for actionable misses or neutral learnings."""
         label = attribution.get("attribution")
         confidence_ok = str(attribution.get("confidence") or "low") in {"medium", "high"}
+        # Only specific ex-ante deficiencies may create a condition-case lesson.
+        if ((case.get("snapshot_payload") or {}).get("decision_brief") and
+                (label != "ex_ante_miss" or not attribution.get("was_in_original_inputs"))):
+            return {}
+        snapshot = case.get("snapshot_payload") or {}
+        if snapshot.get("decision_brief"):
+            basis = json.dumps({key: snapshot.get(key) for key in
+                ("research_evidence", "reasons", "data_coverage", "risk_flags")}, ensure_ascii=False)
+            basis += json.dumps(snapshot["decision_brief"].get("evidence_gaps") or [], ensure_ascii=False)
+            quotes = attribution.get("original_evidence_quotes") or []
+            if not isinstance(quotes, list) or not any(isinstance(q, str) and len(q.strip()) >= 6 and q.strip() in basis for q in quotes):
+                return {}  # A model's "was present" assertion is not proof.
 
         # Neutral-decision lessons (missed_upside / validated_avoidance) are about
         # filter/gate calibration, so they apply to candidate-pool cases too and
@@ -486,6 +565,9 @@ class ReflectionEngine:
             "symbol": symbol,
             "missed_evidence": missed,
             "governance_status": "candidate",
+            "applicability": {key: value for key, value in {
+                "style": snapshot.get("style") or snapshot.get("investment_style"), "horizon_days": case.get("horizon_days"),
+            }.items() if value is not None},
         }
         try:
             self.db.save_strategy_lesson(
@@ -539,6 +621,10 @@ class ReflectionEngine:
             "symbol": symbol,
             "missed_evidence": attribution.get("missed_evidence") or [],
             "governance_status": "candidate",
+            "applicability": {key: value for key, value in {
+                "style": snapshot.get("style") or snapshot.get("investment_style"),
+                "horizon_days": case.get("horizon_days"),
+            }.items() if value is not None},
         }
         try:
             self.db.save_strategy_lesson(
@@ -648,13 +734,17 @@ class ReflectionEngine:
                 if not symbol or not signal_date:
                     continue
                 stored_outcome = case.get("outcome_payload") or {}
-                outcome = stored_outcome if isinstance(stored_outcome.get("actual_return"), (int, float)) else await self.fetch_outcome(symbol, signal_date, case_horizon)
+                brief = (case.get("snapshot_payload") or {}).get("decision_brief")
+                if brief:
+                    outcome = stored_outcome if stored_outcome.get("condition_evaluation") else await self.fetch_condition_outcome(symbol, signal_date, case_horizon, brief)
+                else:
+                    outcome = stored_outcome if isinstance(stored_outcome.get("actual_return"), (int, float)) else await self.fetch_outcome(symbol, signal_date, case_horizon)
                 if outcome is None:
                     continue
                 original_decision = _case_original_decision(case)
-                was_correct = self.evaluate_accuracy(original_decision, outcome["actual_return"])
+                was_correct = None if brief else self.evaluate_accuracy(original_decision, outcome["actual_return"])
                 outcome["was_correct"] = was_correct
-                if was_correct is None:
+                if was_correct is None and not brief:
                     # Neutral calls (WATCHLIST/HOLD/MONITOR) carry no directional
                     # right/wrong, but a large move vs the benchmark is still
                     # learning material (missed upside / validated caution).
@@ -682,7 +772,11 @@ class ReflectionEngine:
                                 float(outcome["actual_return"]) - float(sector["actual_return"]), 4
                             )
                 evidence = await self.fetch_post_signal_evidence(symbol, signal_date, case_horizon)
-                attribution = await self.generate_attribution(case, outcome, evidence)
+                if brief and (outcome.get("condition_evaluation") or {}).get("status") != "triggered":
+                    attribution = {"attribution": "inconclusive", "confidence": "low",
+                        "was_in_original_inputs": False, "strategy_lesson": "建议未触发或条件无法完整核验，不按事后涨跌判定交易对错。"}
+                else:
+                    attribution = await self.generate_attribution(case, outcome, evidence)
                 lesson = self.maybe_create_strategy_lesson(case, attribution)
                 if lesson:
                     lessons_created += 1
@@ -864,6 +958,14 @@ def _build_attribution_prompt(
     post_signal_evidence: dict[str, Any],
 ) -> str:
     snapshot = case.get("snapshot_payload") or {}
+    if snapshot.get("decision_brief"):
+        snapshot_text = json.dumps({"decision_brief": snapshot["decision_brief"],
+            **{key: snapshot.get(key) for key in ("industry", "style", "info_cutoff", "reasons", "data_coverage", "risk_flags")},
+            "research_evidence_excerpt": str(snapshot.get("research_evidence") or "")[:4500],
+            "source_artifact_id": case.get("source_artifact_id"),
+        }, ensure_ascii=False)
+    else:
+        snapshot_text = json.dumps(snapshot, ensure_ascii=False)[:5000]
     benchmark = outcome.get("benchmark") or "000001.SH"
     return f"""你是 A 股交易系统的因果反思 Agent。请判断本次结果是否应该更新未来策略。
 
@@ -876,6 +978,13 @@ def _build_attribution_prompt(
 - 凡 snapshot 中已存在的风险标签/数据缺失/gate_reasons/risk_flags 未被处理 → ex_ante_miss
 - 凡仅出现在 "Post-signal evidence" 中的公告/事件 → ex_post_shock
 - 不要用自己的世界知识补充 snapshot 外的信息。
+
+【条件建议优先规则】snapshot.decision_brief 存在时，下述中性决策特判不适用。
+- actual_return 仅是观察窗口的股价变化，不能替代 condition_evaluation 的条件触发结果。
+- 未触发、条件无法核验、不具备 T+1 退出日时，一律 inconclusive，不能判错过上涨或规避成功。
+- triggered 的 net_return 也是假设收益，不能声称实际成交或账户盈亏。
+- 仅当 snapshot 明确存在而未处理的证据缺陷，可提出 ex_ante_miss；逐条指出 snapshot 内原始证据。
+- 条件案例若归为 ex_ante_miss，original_evidence_quotes 必须逐字摘录原始研究依据、已知风险或 evidence_gaps 的原句；不能摘录未来条件作为已发生事实。
 
 A 股典型判定示例：
 - ex_ante_miss：信号日 snapshot 已有 data_coverage.flow=missing + risk_flags 含"问询函"，但 final_decision=BUY 且未降级
@@ -895,7 +1004,7 @@ Reflection case:
 {json.dumps({k: case.get(k) for k in ['symbol', 'signal_date', 'reflection_scope', 'eligible_for_strategy_learning']}, ensure_ascii=False)}
 
 Signal-time snapshot（信号时点已知信息，边界严格）:
-{json.dumps(snapshot, ensure_ascii=False)[:5000]}
+{snapshot_text}
 
 Outcome（理论收益，含 benchmark 与涨跌停标志）:
 {json.dumps(outcome, ensure_ascii=False)}
@@ -909,6 +1018,7 @@ Post-signal evidence（信号后新增信息，仅用于 ex_post_shock 判定）
   "confidence": "low|medium|high",
   "was_in_original_inputs": true,
   "missed_evidence": ["..."],
+  "original_evidence_quotes": ["snapshot 中实际可见的原句；没有则空数组"],
   "new_information": ["..."],
   "strategy_lesson": "...",
   "risk_monitor_lesson": "...",
@@ -956,6 +1066,9 @@ def _heuristic_attribution(
     outcome: dict[str, Any],
     post_signal_evidence: dict[str, Any],
 ) -> dict[str, Any]:
+    if (case.get("snapshot_payload") or {}).get("decision_brief"):
+        return {"attribution": "inconclusive", "confidence": "low", "was_in_original_inputs": False,
+                "strategy_lesson": "条件评价未获得可核对的因果解释，不从事后涨跌生成策略经验。"}
     if outcome.get("was_correct") is None:
         # Neutral decision (WATCHLIST/HOLD/MONITOR): no directional right/wrong,
         # so route to the opportunity-cost / risk-validation track instead of

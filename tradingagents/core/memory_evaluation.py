@@ -13,6 +13,7 @@ from copy import deepcopy
 from typing import Any
 
 from tradingagents.core.candidate_review_runner import coerce_llm_review
+from tradingagents.core.decision_support import evaluation_horizon
 from tradingagents.core.strategy_memory import (
     load_strategy_lessons,
     select_strategy_lessons,
@@ -23,6 +24,7 @@ _INPUT_FIELDS = {
     "symbol", "ts_code", "name", "industry", "board", "quant_score", "factor_scores",
     "data_coverage", "risk_flags", "gate_reasons", "quant_gate_reasons", "quant_decision",
     "momentum_20d", "avg_amount_20d", "max_drawdown_60d", "factor_details",
+    "horizon_days",
 }
 _DIRECTIONS = {"strong_positive": 1, "positive": 1, "neutral": 0,
                "negative": -1, "strong_negative": -1}
@@ -31,6 +33,7 @@ _DIRECTIONS = {"strong_positive": 1, "positive": 1, "neutral": 0,
 async def evaluate_memory_pairs(
     samples: list[dict], db: Any, reviewer_factory: Callable, *, style: str = "medium_term",
     model_label: str = "unspecified", min_samples: int = 20,
+    on_progress: Callable | None = None,
 ) -> dict:
     """Replay chronologically with separate reviewers and alternating arm order.
 
@@ -53,7 +56,10 @@ async def evaluate_memory_pairs(
         if isinstance(outcome, bool) or not isinstance(outcome, (int, float)) or not math.isfinite(outcome):
             raise ValueError("Each replay sample requires a finite realized excess_return")
         lessons = select_strategy_lessons(load_strategy_lessons(db, day),
-                                          {**candidate, "style": style}, as_of_date=day)
+                                          {**candidate, "style": style,
+                                           "horizon_days": candidate.get("horizon_days") or evaluation_horizon(style)}, as_of_date=day)
+        if not lessons:
+            continue  # Do not pay for identical arms without applicable memory.
         predictions = {}
         arms = ("without_memory", "with_memory") if index % 2 == 0 else ("with_memory", "without_memory")
         for arm in arms:
@@ -72,8 +78,11 @@ async def evaluate_memory_pairs(
                 "usage": validate_memory_usage(review.memory_usage, injected),
             }
         rows.append({"symbol": candidate.get("symbol") or candidate.get("ts_code"), "trade_date": day,
+                     "signal_snapshot": deepcopy(candidate),
                      "excess_return": outcome, "memory_ids": [row["id"] for row in lessons],
                      "memory_snapshots": lessons, **predictions})
+        if on_progress:
+            on_progress(len(rows))
     relevant = [row for row in rows if row["memory_ids"]]
     arms_summary = {}
     for arm in ("without_memory", "with_memory"):

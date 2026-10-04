@@ -33,6 +33,7 @@ from .routes import (
     decision_audit,
     health,
     market,
+    memory_evaluation,
     paper,
     plans,
     portfolio,
@@ -315,6 +316,7 @@ def create_app() -> FastAPI:
     app.include_router(portfolio.router, prefix="/api/v1", tags=["portfolio"])
     app.include_router(plans.router, prefix="/api/v1", tags=["plans"])
     app.include_router(reflections.router, prefix="/api/v1", tags=["reflections"])
+    app.include_router(memory_evaluation.router, prefix="/api/v1", tags=["memory-evaluation"])
     app.include_router(decision_audit.router, prefix="/api/v1", tags=["decision-audit"])
     app.include_router(risk_events.router, prefix="/api/v1", tags=["risk-events"])
     app.include_router(trading_time.router, prefix="/api/v1", tags=["trading-time"])

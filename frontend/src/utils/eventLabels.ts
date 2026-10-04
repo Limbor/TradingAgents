@@ -19,7 +19,7 @@ export const AGENT_STAGE_LABELS: Record<string, string> = {
   "Aggressive Analyst": "激进风控观点",
   "Conservative Analyst": "保守风控观点",
   "Neutral Analyst": "中性风控观点",
-  "Portfolio Manager": "组合经理决策",
+  "Portfolio Manager": "交易条件裁决",
 };
 
 export const SKILL_TITLES: Record<string, string> = {

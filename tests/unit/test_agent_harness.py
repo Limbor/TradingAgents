@@ -3898,3 +3898,24 @@ def test_reading_failed_evidence_never_erases_error_or_warnings(tmp_path):
         'warnings': ['数据不完整'], 'rows': [1]})
     page = store.read_evidence(task['id'], item['id'], path=['rows'])
     assert page['error'] == 'partial failure' and page['warnings'] == ['数据不完整']
+
+
+@pytest.mark.parametrize(('goal', 'template', 'analysts'), [
+    ('600519.SH 中线还能投资吗', 'full', ['fundamentals', 'market', 'news']),
+    ('600519.SH 把进入和退出条件说具体', 'full', ['fundamentals', 'market', 'news']),
+    ('600519.SH 补充营收与现金流', 'research', ['fundamentals']),
+])
+def test_native_followup_respects_research_vs_decision(tmp_path, goal, template, analysts):
+    from tradingagents.skills.stock_analysis.skill import StockAnalysisSkill
+
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.skills = SimpleNamespace(get=lambda _: StockAnalysisSkill())
+    conversation = store.create_conversation('research', None)
+    task = store.create_task(conversation['id'], goal)
+    session = SimpleNamespace(allowed={'run_analysis_skill'}, tool_result=lambda *_: None)
+    steps, _ = harness._native_steps_from_calls(task['id'], session, [{
+        'name': 'run_analysis_skill', 'id': 'stock', 'args': {'skill_id': 'stock_analysis',
+            'args': {'ticker': '600519.SH', 'analysts': ['fundamentals'], 'analysis_template': 'research'}},
+    }], None, ['600519.SH'], set(), 4)
+    assert steps[0]['args']['analysis_template'] == template
+    assert steps[0]['args']['analysts'] == analysts

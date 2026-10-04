@@ -33,6 +33,7 @@ from tradingagents.core.agent_runtime import (
     runtime_model,
     use_context,
 )
+from tradingagents.core.decision_support import decision_requested, evaluation_horizon
 from tradingagents.core.evidence_context import evidence_slice
 from tradingagents.core.lightweight_tools import paper_ledger_conflicts
 from tradingagents.core.llm_usage import summarize_usage
@@ -44,6 +45,7 @@ from tradingagents.core.model_policy import (
 )
 from tradingagents.core.persistence import Database
 from tradingagents.core.strategy_memory import (
+    aggregate_memory_trace,
     lesson_prompt_section,
     load_strategy_lessons,
     select_strategy_lessons,
@@ -707,7 +709,7 @@ def _answer_evidence_result(item: dict) -> dict:
         return _compact_market_result(result)
     if isinstance(payload, dict) and isinstance(payload.get("structured_conclusion"), dict):
         original = payload["structured_conclusion"]
-        keys = ("symbol", "rating", "target_price", "confidence", "reasons", "executive_summary", "investment_thesis", "plan", "decision_status", "selection_alignment")
+        keys = ("symbol", "rating", "target_price", "confidence", "reasons", "executive_summary", "investment_thesis", "plan", "decision_status", "selection_alignment", "decision_brief", "industry", "memory_trace")
         conclusion = {key: (value[:500] if isinstance(value, str) else value) for key in keys if (value := original.get(key)) is not None}
         rows = {row.get("role"): row for row in payload.get("specialist_results", []) if isinstance(row, dict)}
         specialists = []
@@ -1625,7 +1627,8 @@ class TradingAgentHarness:
             "属于 fundamentals，不能添加 industry 等不存在的角色。参数校验拒绝后按返回契约修正再调用，"
             "这种拒绝发生在查询数据之前，不代表数据源故障。"
             "需要完整交易评估时使用 full 模板，保留研究裁决和风控。"
-            "工具参数未指定 analysis_template 时，服务端按 research 执行；完整评估须明确选择 full。"
+            "用户问是否值得投资、能否买卖、什么时候进入或退出时，选择 full，至少包含 market、fundamentals、news；"
+            "专题补充仍按 research 执行，复用已经核验的有效研究。"
             "连续追问缺少的研究维度时，使用 research 模板只选择该维度；"
             "例如已谈技术面后追问行业、营收，只选 fundamentals，不重跑整个交易工作流。"
             "同一对话中有效的同标的研究由服务端核验后复用；失败、有缺口或过期的研究重新获取。"
@@ -1747,6 +1750,9 @@ class TradingAgentHarness:
                         # Model tools default to research. Full decision/risk
                         # workflows remain an explicit, validated selection.
                         params = {"analysis_template": "research", **params}
+                        if decision_requested(self.store.get_task(task_id)["goal"]):
+                            params["analysis_template"] = "full"
+                            params["analysts"] = list(dict.fromkeys([*(params.get("analysts") or []), "market", "fundamentals", "news"]))
                     schema = getattr(available_skill, "input_schema", None)
                     try:
                         if schema:
@@ -1794,6 +1800,11 @@ class TradingAgentHarness:
                     elif name == "get_strategy_lessons":
                         if "symbol" in allowed_args and len(tickers) == 1:
                             bound_args["symbol"] = tickers[0]
+                        style = self.store.task_context(task_id).get("horizon") or self.config.get("investment_style", "medium_term")
+                        if "style" in allowed_args:
+                            bound_args["style"] = style
+                        if "horizon_days" in allowed_args:
+                            bound_args["horizon_days"] = evaluation_horizon(style)
                     key = f"{name}:{bound_args.get('ts_code', '')}"
                     if not reason and key in used:
                         reason = "duplicate_call"
@@ -2049,14 +2060,19 @@ class TradingAgentHarness:
                                 data = data.get("result") if isinstance(data.get("result"), dict) else data
                                 rows = data.get("candidates") or data.get("industry_stances") or []
                                 rows = rows if isinstance(rows, list) else []
+                                conclusion = data.get("structured_conclusion") or {}
+                                if isinstance(conclusion, dict) and conclusion.get("industry"):
+                                    industries.append(conclusion["industry"])
                                 industries.extend(row["industry"] for row in rows[:5]
                                                   if isinstance(row, dict) and isinstance(row.get("industry"), str))
                             memory_step = {"id": "memory-context", "label": "检索适用的历史经验",
                                            "tool": "get_strategy_lessons", "args": {
                                                "industries": list(dict.fromkeys(industries))[:10],
-                                               "style": self.config.get("investment_style", "medium_term"),
+                                               "style": self.store.task_context(task_id).get("horizon") or self.config.get("investment_style", "medium_term"),
                                                "symbol": tickers[0] if len(tickers) == 1 else "",
                                            }}
+                            if "horizon_days" in memory_tool.parameters.get("properties", {}):
+                                memory_step["args"]["horizon_days"] = evaluation_horizon(memory_step["args"]["style"])
                             plan.append(memory_step)
                             self.store.event(task_id, "plan_revised", {
                                 "steps": [memory_step], "reason": "判断前核对与当前证据相关的历史经验",
@@ -2421,11 +2437,25 @@ class TradingAgentHarness:
                 citations = [{k: item[k] for k in ("id", "tool_name", "source", "as_of_date", "summary", "warnings")}
                              for item in evidence]
                 result = {"content": content, "citations": citations, "read_only": True}
+                decisions = []
+                for item in evidence:
+                    payload = item["result"].get("result") or item["result"]
+                    conclusion = payload.get("structured_conclusion") if isinstance(payload, dict) else None
+                    if isinstance(conclusion, dict) and conclusion.get("decision_brief"):
+                        decisions.append({"symbol": payload.get("ticker") or conclusion.get("symbol"),
+                                          "run_id": item["result"].get("run_id"),
+                                          **conclusion["decision_brief"], "memory_trace": conclusion.get("memory_trace")})
+                if decisions:
+                    result["decision_briefs"] = decisions
                 if answer is not None:
                     result["answer"] = answer
                     if isinstance(synthesized, dict) and synthesized.get("memory_trace"):
                         result["memory_trace"] = synthesized["memory_trace"]
-                        self.store.event(task_id, "memory_reviewed", result["memory_trace"])
+                traces = [result.get("memory_trace") or {}, *(d.get("memory_trace") or {} for d in decisions)]
+                combined_memory = aggregate_memory_trace(traces, self.store.db.list_agent_runtime(task_id))
+                if combined_memory["injected_ids"] or combined_memory["snapshots"]:
+                    result["memory_trace"] = combined_memory
+                    self.store.event(task_id, "memory_reviewed", combined_memory)
                 enforce_budget()
                 self.store.add_message(conversation["id"], "assistant", content, task_id)
                 current_evidence = [item for item in _latest_evidence(evidence)
@@ -3051,6 +3081,8 @@ class TradingAgentHarness:
             "如果经验互有冲突，要结合周期、行业和数据覆盖说明差异，不按数量投票。"
             "原始案例的收益是历史事实，不能外推当前收益或代替当期行情。"
             "这是你报告的参考情况，不代表因果效果或收益提升；未提供经验则返回空数组。"
+            "证据中的 decision_brief 是本轮完整裁决的行动摘要：正文须保持同一状态和条件，"
+            "不能把等待触发改成立即买入，或自行补价位；专题研究没有完整裁决时不要给买卖评级。"
             "如果数据不足，用两三句话说明能判断什么、缺什么和下一步，不写一整页内部故障报告。"
             "正文不得出现工具英文名、证据ID、RunManager、JSON字段名或‘开放受控取证环境’等内部术语；"
             "不机械重复‘判断/依据/风险/前提/后续’，不列用户没提出的假设，不重复免责和权限说明。"
@@ -3114,6 +3146,7 @@ class TradingAgentHarness:
                 if answer:
                     memory = injected_memory
                     return {"content": full_content, "answer": answer, "memory_trace": {
+                        "role": "Evidence Writer",
                         "retrieved_ids": [row["id"] for item in evidence if item["tool_name"] == "get_strategy_lessons"
                                           for row in item["result"].get("lessons", [])],
                         "injected_ids": [row["id"] for row in memory], "snapshots": memory,
@@ -3328,6 +3361,9 @@ class TradingAgentHarness:
             return {"error": f"找不到分析能力：{skill_id}"}
         task_context = self.store.task_context(task_id)
         params = apply_context_args(skill_id, params, task_context)
+        if skill_id == "stock_analysis" and decision_requested(self.store.get_task(task_id)["goal"]):
+            params = {**params, "analysis_template": "full",
+                      "analysts": list(dict.fromkeys([*(params.get("analysts") or []), "market", "fundamentals", "news"]))}
         schema = getattr(skill, "input_schema", None)
         try:
             if schema:
