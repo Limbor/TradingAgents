@@ -161,3 +161,27 @@ def test_memory_routes_expose_single_case_versions_and_real_usage(tmp_path):
     assert overview["inventory"]["available"] == 1
     assert overview["usage"]["reported_tasks"] == 1
     assert overview["evaluation"] is None
+
+
+@pytest.mark.asyncio
+async def test_paired_replay_excludes_later_same_day_approvals(tmp_path, clock):
+    db = Database(tmp_path / 'intraday.db')
+    clock('2026-01-01T08:00:00')
+    save(db, active=False)
+    clock('2026-01-15T04:00:00')  # noon Shanghai approval
+    db.approve_strategy_lesson('lesson')
+    calls = []
+
+    class Reviewer:
+        async def review(self, candidate, strategy_lessons):
+            calls.append(candidate)
+            return {'llm_view': 'neutral'}
+
+    sample = {'trade_date': '2026-01-15', 'snapshot_as_of': '2026-01-15',
+              'candidate': {'symbol': '600000.SH', 'industry': '医药生物'}, 'excess_return': .1}
+    early = await evaluate_memory_pairs([{**sample, 'snapshot_cutoff': '2026-01-15T03:00:00Z'}], db, lambda *_: Reviewer())
+    assert early['total_pairs'] == 0 and calls == []
+    late = await evaluate_memory_pairs([{**sample, 'snapshot_cutoff': '2026-01-15T05:00:00Z'}], db, lambda *_: Reviewer())
+    assert late['memory_pairs'] == 1 and len(calls) == 2
+    with pytest.raises(ValueError, match='snapshot_cutoff'):
+        await evaluate_memory_pairs([{**sample, 'snapshot_cutoff': '2026-01-16T00:00:00Z'}], db, lambda *_: Reviewer())

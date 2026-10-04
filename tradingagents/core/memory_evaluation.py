@@ -16,6 +16,7 @@ from tradingagents.core.candidate_review_runner import coerce_llm_review
 from tradingagents.core.decision_support import evaluation_horizon
 from tradingagents.core.strategy_memory import (
     load_strategy_lessons,
+    memory_cutoff,
     select_strategy_lessons,
     validate_memory_usage,
 )
@@ -55,9 +56,13 @@ async def evaluate_memory_pairs(
         outcome = sample.get("excess_return")
         if isinstance(outcome, bool) or not isinstance(outcome, (int, float)) or not math.isfinite(outcome):
             raise ValueError("Each replay sample requires a finite realized excess_return")
-        lessons = select_strategy_lessons(load_strategy_lessons(db, day),
+        cutoff = sample.get("snapshot_cutoff") or day
+        cutoff_time, day_end = memory_cutoff(cutoff), memory_cutoff(day)
+        if cutoff_time is None or day_end is None or cutoff_time > day_end:
+            raise ValueError("snapshot_cutoff must not exceed the signal date")
+        lessons = select_strategy_lessons(load_strategy_lessons(db, cutoff),
                                           {**candidate, "style": style,
-                                           "horizon_days": candidate.get("horizon_days") or evaluation_horizon(style)}, as_of_date=day)
+                                           "horizon_days": candidate.get("horizon_days") or evaluation_horizon(style)}, as_of_date=cutoff)
         if not lessons:
             continue  # Do not pay for identical arms without applicable memory.
         predictions = {}
@@ -78,6 +83,7 @@ async def evaluate_memory_pairs(
                 "usage": validate_memory_usage(review.memory_usage, injected),
             }
         rows.append({"symbol": candidate.get("symbol") or candidate.get("ts_code"), "trade_date": day,
+                     "snapshot_cutoff": cutoff,
                      "signal_snapshot": deepcopy(candidate),
                      "excess_return": outcome, "memory_ids": [row["id"] for row in lessons],
                      "memory_snapshots": lessons, **predictions})

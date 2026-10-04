@@ -28,6 +28,18 @@ def _symbols(values: list[str]) -> set[str]:
     return {str(value).strip().upper().replace(".SS", ".SH") for value in values if value}
 
 
+def memory_cutoff(value: str) -> datetime | None:
+    """Date-only callers retain Shanghai day-end; replays may pin an exact time."""
+    if not isinstance(value, str):
+        return None
+    parsed = _timestamp(value)
+    if parsed is None:
+        return None
+    if len(value) == 10:
+        return datetime.combine(parsed.date(), time.max, ZoneInfo("Asia/Shanghai"))
+    return parsed
+
+
 def select_strategy_lessons(
     lessons: list[dict], context: dict | None = None, *,
     as_of_date: str | None = None, limit: int = 5,
@@ -41,10 +53,8 @@ def select_strategy_lessons(
     context = context or {}
     cutoff = None
     if as_of_date:
-        try:
-            day = datetime.strptime(as_of_date, "%Y-%m-%d").date()
-            cutoff = datetime.combine(day, time.max, ZoneInfo("Asia/Shanghai"))
-        except ValueError:
+        cutoff = memory_cutoff(as_of_date)
+        if cutoff is None:
             return []
     now = cutoff or datetime.now(timezone.utc)
     symbols = _symbols([context.get("symbol") or context.get("ts_code") or "",
@@ -193,9 +203,10 @@ def load_strategy_lessons(db: Any, as_of_date: str | None = None) -> list[dict]:
         return []
     version_loader = getattr(db, "list_strategy_lessons_as_of", None)
     if as_of_date and callable(version_loader):
-        day = datetime.strptime(as_of_date, "%Y-%m-%d").date()
-        cutoff = datetime.combine(day, time.max, ZoneInfo("Asia/Shanghai")).isoformat()
-        lessons = version_loader(cutoff, limit=2000)
+        cutoff = memory_cutoff(as_of_date)
+        if cutoff is None:
+            return []
+        lessons = version_loader(cutoff.isoformat(), limit=2000)
     else:
         lessons = db.list_strategy_lessons(limit=2000, active_only=True)
     case_loader = getattr(db, "get_reflection_cases_by_ids", None)

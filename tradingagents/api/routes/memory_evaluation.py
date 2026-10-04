@@ -15,7 +15,11 @@ from tradingagents.core.llm_candidate_review import build_candidate_reviewer
 from tradingagents.core.llm_usage import summarize_usage
 from tradingagents.core.memory_evaluation import evaluate_memory_pairs
 from tradingagents.core.model_policy import resolve_model
-from tradingagents.core.strategy_memory import load_strategy_lessons, select_strategy_lessons
+from tradingagents.core.strategy_memory import (
+    load_strategy_lessons,
+    memory_cutoff,
+    select_strategy_lessons,
+)
 
 router = APIRouter()
 MIN_PAIRS = 20
@@ -36,7 +40,6 @@ def replay_samples(db, style: str) -> list[dict]:
         if (case.get("source_type") != "system_signal" or snapshot.get("decision_brief") or
                 not isinstance(candidate, dict) or not isinstance(candidate.get("quant_score"), (float, int)) or
                 not day or not case.get("created_at") or case["created_at"][:10] > day or
-                snapshot.get("info_cutoff", day) != day or
                 isinstance(outcome, bool) or not isinstance(outcome, (float, int)) or not math.isfinite(outcome)):
             continue
         symbol = str(candidate.get("symbol") or candidate.get("ts_code") or "")
@@ -45,11 +48,19 @@ def replay_samples(db, style: str) -> list[dict]:
             continue
         seen.add(key)  # Choose the first archived version, never the best outcome.
         candidate = {**candidate, "horizon_days": case.get("horizon_days", 5)}
-        if day not in pools:
-            pools[day] = load_strategy_lessons(db, day)
-        if not select_strategy_lessons(pools[day], {**candidate, "style": style}, as_of_date=day):
+        times = [memory_cutoff(day), memory_cutoff(case["created_at"]), memory_cutoff(snapshot.get("info_cutoff") or day)]
+        if any(value is None for value in times):
+            continue
+        if times[1] > times[0] or times[2] > times[0]:
+            continue  # No retrospective imports or snapshots containing later facts.
+        # Round DOWN to seconds so samples saved by the same run share a pool.
+        cutoff = min(times).replace(microsecond=0).isoformat()
+        if cutoff not in pools:
+            pools[cutoff] = load_strategy_lessons(db, cutoff)
+        if not select_strategy_lessons(pools[cutoff], {**candidate, "style": style}, as_of_date=cutoff):
             continue
         samples.append({"trade_date": day, "snapshot_as_of": day, "candidate": deepcopy(candidate),
+                        "snapshot_cutoff": cutoff,
                         "excess_return": outcome, "case_id": case["id"]})
     return sorted(samples, key=lambda row: (row["trade_date"], row["candidate"].get("symbol", "")))
 
