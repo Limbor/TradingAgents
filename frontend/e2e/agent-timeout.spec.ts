@@ -12,8 +12,9 @@ test("model timeout is a failure and retry sends the original goal with its chec
     created_at: time, updated_at: time, evidence: [], events: [
       {task_id:"timeout-task",seq:1,created_at:time,event_type:"plan_created",payload:{source:"rules",steps:[{id:"chat",label:"选择研究工具",tool:"chat_agent"}]}},
       {task_id:"timeout-task",seq:2,created_at:time,event_type:"step_started",payload:{id:"chat",label:"选择研究工具",tool:"chat_agent"}},
-      {task_id:"timeout-task",seq:3,created_at:time,event_type:"step_completed",payload:{id:"chat",status:"failed",reason:"model_timeout"}},
-      {task_id:"timeout-task",seq:4,created_at:time,event_type:"agent_runtime",payload:{run_id:"model:timeout",kind:"model",role:"Trading Coordinator",status:"interrupted",model:"qwen3.8-flash"}},
+      {task_id:"timeout-task",seq:3,created_at:time,event_type:"step_completed",payload:{id:"chat",status:"completed"}},
+      {task_id:"timeout-task",seq:4,created_at:time,event_type:"step_completed",payload:{id:"chat",status:"failed",reason:"model_timeout"}},
+      {task_id:"timeout-task",seq:5,created_at:time,event_type:"agent_runtime",payload:{run_id:"model:timeout",kind:"model",role:"Trading Coordinator",status:"interrupted",model:"qwen3.8-flash"}},
     ]};
   await page.route("**/api/v1/**", async route => {
     const path = new URL(route.request().url()).pathname;

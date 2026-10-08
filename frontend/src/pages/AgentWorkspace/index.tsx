@@ -66,7 +66,7 @@ function taskSteps(task: AgentTask) {
       ? event.payload.steps as Array<{ id: string; label: string }> : []);
   return steps.map((step) => {
     const started = task.events.some((event) => event.event_type === "step_started" && event.payload.id === step.id);
-    const finished = task.events.find((event) => event.event_type === "step_completed" && event.payload.id === step.id);
+    const finished = task.events.slice().reverse().find((event) => event.event_type === "step_completed" && event.payload.id === step.id);
     return { ...step, status: finished ? String(finished.payload.status) : streamingStatuses.has(task.status) ? started ? "running" : "queued" : started ? "ended" : "not_run",
       reason: finished && typeof finished.payload.reason === "string" ? finished.payload.reason : null };
   });
