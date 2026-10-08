@@ -1,6 +1,7 @@
 """One model policy for conversations, specialists and background analysis."""
 from __future__ import annotations
 
+import math
 import os
 from copy import deepcopy
 from typing import Any
@@ -124,3 +125,14 @@ def provider_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     if config.get("temperature") not in (None, ""):
         kwargs["temperature"] = float(config["temperature"])
     return kwargs
+
+
+def model_response_timeout(config: dict, key: str = "agent_model_planning_timeout", default: float = 60.0) -> float:
+    """Bound a model round by the shared task deadline; retain explicit overrides."""
+    try:
+        value = float(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    return max(0.05, min(value, 180.0))

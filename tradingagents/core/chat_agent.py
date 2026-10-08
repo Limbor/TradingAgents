@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from tradingagents.core.agent_runtime import ToolExecutor, current_context, runtime_model
 from tradingagents.core.intent_schema import generate_tool_schemas
-from tradingagents.core.model_policy import provider_kwargs, resolve_model
+from tradingagents.core.model_policy import model_response_timeout, provider_kwargs, resolve_model
 from tradingagents.core.tool_registry import ToolRegistry
 from tradingagents.skills.registry import SkillRegistry
 
@@ -138,6 +138,7 @@ class ChatResponse:
     # should fall back to deterministic regex routing instead of showing the
     # apology text directly.
     degraded: bool = False
+    failure_code: str | None = None
 
 
 class ChatAgent:
@@ -176,8 +177,7 @@ class ChatAgent:
         self._buffer_ts: dict[str, float] = {}
         self._max_sessions = 50
         self._session_ttl = 3600  # 1 hour
-        self._timeout = 8.0  # seconds — longer than the pure router (3s) since
-        # ChatAgent may do tool_use decisions before responding.
+        self._timeout = model_response_timeout(config)
 
         # Cached LLM clients (built lazily): with tools bound / plain text.
         self._llm_with_tools: Any = None
@@ -191,6 +191,7 @@ class ChatAgent:
     def reconfigure(self, config: dict[str, Any]) -> None:
         """Apply runtime settings and invalidate provider-bound client caches."""
         self._config = config
+        self._timeout = model_response_timeout(config)
         self._llm_with_tools = None
         self._plain_llm = None
 
@@ -257,7 +258,7 @@ class ChatAgent:
             return ChatResponse(
                 intent="chat_answer",
                 content=f"抱歉，暂时无法处理您的请求：{exc}",
-                degraded=True,
+                degraded=True, failure_code="model_init_error",
             )
 
         try:
@@ -270,15 +271,15 @@ class ChatAgent:
             logger.warning("ChatAgent LLM timed out for session %s", session_id)
             return ChatResponse(
                 intent="chat_answer",
-                content="抱歉，处理请求超时，请稍后再试。",
-                degraded=True,
+                content=f"模型响应超时：等待 {self._timeout:g} 秒仍未返回回复，本次任务未完成，可以重新运行任务。",
+                degraded=True, failure_code="model_timeout",
             )
         except Exception as exc:
             logger.warning("ChatAgent LLM call failed: %s", exc)
             return ChatResponse(
                 intent="chat_answer",
                 content=f"抱歉，处理请求时出错：{exc}",
-                degraded=True,
+                degraded=True, failure_code="model_error",
             )
 
         if allow_tools:

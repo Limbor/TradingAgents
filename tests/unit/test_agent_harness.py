@@ -3923,3 +3923,121 @@ def test_native_followup_respects_research_vs_decision(tmp_path, goal, template,
     }], None, ['600519.SH'], set(), 4)
     assert steps[0]['args']['analysis_template'] == template
     assert steps[0]['args']['analysts'] == analysts
+
+
+@pytest.mark.asyncio
+async def test_model_timeout_does_not_repeat_same_request_in_old_chat(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.skills = SimpleNamespace(get=lambda _: None)
+    harness._open_native_tool_session = AsyncMock(return_value=SimpleNamespace(
+        rounds=0, choose=AsyncMock(side_effect=TimeoutError()), messages=[]))
+    harness._delegate_chat = AsyncMock(side_effect=AssertionError("不得重复收费请求"))
+    c = store.create_conversation("普通解释", None)
+    t = harness.submit(c['id'], "解释市盈率的含义")
+    await harness._active[t['id']]
+    saved = store.get_task(t['id'])
+    assert saved['status'] == 'failed'
+    assert saved['result']['error_code'] == 'model_timeout'
+    assert '60 秒' in saved['error']
+    harness._delegate_chat.assert_not_awaited()
+    assert not any(e['event_type'] == 'task_completed' for e in store.list_events(t['id']))
+    assert any(e['event_type'] == 'step_completed' and e['payload'].get('reason') == 'model_timeout'
+               for e in store.list_events(t['id']))
+
+
+@pytest.mark.asyncio
+async def test_degraded_chat_is_a_retryable_failure_not_a_completed_answer(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock(), chat=_Chat(ChatResponse(
+        intent='chat_answer', content='模型响应超时', degraded=True, failure_code='model_timeout')))
+    harness.config['agent_model_planning_enabled'] = False
+    c = store.create_conversation('普通解释', None)
+    t = harness.submit(c['id'], '解释市盈率')
+    await harness._active[t['id']]
+    saved = store.get_task(t['id'])
+    assert saved['status'] == 'failed'
+    assert saved['result']['retryable'] is True
+    assert saved['result']['error_code'] == 'model_timeout'
+
+
+@pytest.mark.asyncio
+async def test_stock_selection_recovers_after_planner_timeout_using_only_stock_skill(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == 'market_scanner' else None)
+    harness._open_native_tool_session = AsyncMock(return_value=SimpleNamespace(
+        rounds=0, choose=AsyncMock(side_effect=TimeoutError()), messages=[]))
+    harness._delegate_chat = AsyncMock(side_effect=AssertionError('不得降级成文字推荐'))
+    harness._run_skill = AsyncMock(return_value={'source': 'TradingAgents Skill: market_scanner',
+        'as_of_date': '2026-10-08', 'result': {'candidates': [{'symbol': '600519.SH'}]}})
+    harness._synthesize = AsyncMock(return_value='从实际筛选结果给出观察名单')
+    c = store.create_conversation('选股', None)
+    t = harness.submit(c['id'], '推荐一下股票')
+    await harness._active[t['id']]
+    assert store.get_task(t['id'])['status'] == 'completed'
+    harness._run_skill.assert_awaited_once_with(t['id'], 'market_scanner', {})
+    harness._delegate_chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_continue_recovers_failed_read_goal_and_preserves_board_filter(tmp_path):
+    harness, store = _harness(tmp_path, paper_handler=AsyncMock())
+    harness.config['agent_model_planning_enabled'] = False
+    harness.skills = SimpleNamespace(get=lambda name: object() if name == 'daily_pipeline' else None)
+    harness._run_skill = AsyncMock(return_value={'source': 'TradingAgents Skill: daily_pipeline',
+        'result': {'candidates': [{'symbol': '600519.SH'}]}, 'as_of_date': '2026-10-08'})
+    harness._synthesize = AsyncMock(return_value='筛选结果')
+    c = store.create_conversation('选股', None)
+    source = store.create_task(c['id'], '推荐一下股票，排除双创')
+    store.set_status(source['id'], 'failed', result={'content': '模型响应超时'})
+    store.add_message(c['id'], 'user', source['goal'], source['id'])
+    skipped = store.create_task(c['id'], '继续')
+    store.set_status(skipped['id'], 'failed', result={'content': '模型响应超时'})
+    t = harness.submit(c['id'], '继续')
+    await harness._active[t['id']]
+    assert store.get_task(t['id'])['goal'] == source['goal']
+    assert store.get_task(t['id'])['status'] == 'completed'
+    harness._run_skill.assert_awaited_once_with(t['id'], 'daily_pipeline', {'board_filter': 'main_board'})
+    assert any(e['event_type'] == 'task_resumed' and e['payload']['previous_task_id'] == source['id']
+               for e in store.list_events(t['id']))
+    assert store.conversation_detail(c['id'])['messages'][-2]['content'] == '继续'
+
+
+def test_legacy_timeout_status_repair_is_narrow_and_idempotent(tmp_path):
+    db = Database(tmp_path / 'legacy.db')
+    store = AgentStore(db)
+    c = store.create_conversation('超时记录', None)
+    failed = store.create_task(c['id'], '推荐一下股票')
+    store.set_status(failed['id'], 'completed', result={'content': '抱歉，处理请求超时，请稍后再试。'})
+    innocent = store.create_task(c['id'], '引用这段文本')
+    for t in (failed, innocent):
+        store.set_status(t['id'], 'completed', result={'content': '抱歉，处理请求超时，请稍后再试。'})
+    store.event(failed['id'], 'step_started', {'id': 'legacy-chat', 'tool': 'chat_agent'})
+    store.event(failed['id'], 'step_completed', {'id': 'legacy-chat', 'status': 'completed'})
+    db.save_agent_runtime({'run_id': 'failed:model', 'root_id': failed['id'],
+                           'kind': 'model', 'status': 'interrupted'})
+    repaired = AgentStore(db)
+    assert repaired.get_task(failed['id'])['status'] == 'failed'
+    assert repaired.get_task(innocent['id'])['status'] == 'completed'
+    assert any(e['event_type'] == 'step_completed' and e['payload'].get('reason') == 'model_timeout'
+               for e in repaired.list_events(failed['id']))
+    count = len(repaired.list_events(failed['id']))
+    assert len(AgentStore(db).list_events(failed['id'])) == count
+
+
+@pytest.mark.asyncio
+async def test_model_reply_after_previous_eight_second_cutoff_is_accepted():
+    from tradingagents.core.agent_runtime import AgentSession
+    from tradingagents.core.model_policy import model_response_timeout
+    async def delayed(_messages):
+        await asyncio.sleep(8.05)
+        return AIMessage(content='', tool_calls=[{'name': 'read', 'id': 'call:one', 'args': {}}])
+    llm = SimpleNamespace(ainvoke=AsyncMock(side_effect=delayed))
+    session = AgentSession(llm, '研究', '只读取证', {'read'}, model_response_timeout({}))
+    assert (await session.choose())[0]['name'] == 'read'
+    llm.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.parametrize('value,expected', [(None,60), ('bad',60), (float('nan'),60),
+    (float('inf'),60), (300,180), (.1,.1)])
+def test_model_response_budget_is_finite_and_respects_explicit_limits(value, expected):
+    from tradingagents.core.model_policy import model_response_timeout
+    assert model_response_timeout({'agent_model_planning_timeout': value}) == expected

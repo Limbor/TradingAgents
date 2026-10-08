@@ -39,6 +39,7 @@ from tradingagents.core.lightweight_tools import paper_ledger_conflicts
 from tradingagents.core.llm_usage import summarize_usage
 from tradingagents.core.model_policy import (
     TaskModelSelection,
+    model_response_timeout,
     provider_kwargs,
     resolve_model,
     task_model_config,
@@ -175,6 +176,12 @@ def _paper_state_fingerprint(ledger: dict) -> str | None:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+class AgentResponseError(RuntimeError):
+    def __init__(self, message: str, code: str = "model_error"):
+        super().__init__(message)
+        self.code = code
+
+
 class AgentStore:
     """Small transaction-bound repository for conversations and task events."""
 
@@ -240,6 +247,32 @@ class AgentStore:
                 "WHERE status IN ('executing', 'submitted', 'reconciling')",
                 (now,),
             )
+
+            legacy = conn.execute(
+                "SELECT t.id,t.result_json FROM agent_tasks t WHERE t.status='completed' "
+                "AND NOT EXISTS (SELECT 1 FROM agent_evidence e WHERE e.task_id=t.id) "
+                "AND NOT EXISTS (SELECT 1 FROM agent_proposals p WHERE p.task_id=t.id) "
+                "AND EXISTS (SELECT 1 FROM agent_runtime_runs r WHERE r.root_id=t.id "
+                "AND json_extract(r.record,'$.kind')='model' AND r.status='interrupted')"
+            ).fetchall()
+            for row in legacy:
+                result = json.loads(row["result_json"] or "{}")
+                if result.get("content") != "抱歉，处理请求超时，请稍后再试。":
+                    continue
+                result.update(error_code="model_timeout", retryable=True)
+                conn.execute("UPDATE agent_tasks SET status='failed',error=?,result_json=? WHERE id=?",
+                             ("模型响应超时；旧版误记为完成，尚未取得分析结果", _json(result), row["id"]))
+                seq = conn.execute("SELECT COALESCE(MAX(seq),0)+1 FROM agent_events WHERE task_id=?", (row["id"],)).fetchone()[0]
+                starts = conn.execute("SELECT payload_json FROM agent_events WHERE task_id=? AND event_type='step_started'",
+                                      (row["id"],)).fetchall()
+                for start in starts:
+                    step = json.loads(start[0])
+                    if step.get("tool") == "chat_agent" and isinstance(step.get("id"), str):
+                        conn.execute("INSERT INTO agent_events(task_id,seq,event_type,payload_json,created_at) VALUES(?,?,?,?,?)",
+                                     (row["id"], seq, "step_completed", _json({"id": step["id"], "status": "failed", "reason": "model_timeout"}), now))
+                        seq += 1
+                conn.execute("INSERT INTO agent_events(task_id,seq,event_type,payload_json,created_at) VALUES(?,?,?,?,?)",
+                             (row["id"], seq, "task_failed", _json({"reason": "model_timeout", "legacy_status_repaired": True}), now))
 
     def create_conversation(self, title: str, paper_session_id: str | None) -> dict:
         if paper_session_id and (not _PAPER_ID.fullmatch(paper_session_id) or ".." in paper_session_id):
@@ -987,6 +1020,24 @@ class TradingAgentHarness:
             return {"skill_id": "market_overview", "params": {}}
         return None
 
+    @staticmethod
+    def _stock_selection_fallback_hint(goal: str, context: dict) -> dict | None:
+        if (any(word in goal for word in ("股票", "选股", "个股")) and
+                any(word in goal for word in ("推荐", "筛选", "选出", "关注")) and
+                not _A_SHARE_TICKER.search(goal) and
+                not any(word in goal for word in ("不要", "别", "取消", "如何", "怎么", "是什么"))):
+            from tradingagents.core.orchestrator import _extract_industries
+            industries = _extract_industries(goal)
+            if industries:
+                return {"skill_id": "daily_pipeline", "params": {"industries": industries, **context.get("filters", {})}}
+            filters = context.get("filters", {})
+            if filters.get("board_filter"):
+                return {"skill_id": "daily_pipeline", "params": dict(filters)}
+            return {"skill_id": "market_scanner", "params": {
+                **({"limit": filters["limit"]} if filters.get("limit") else {}),
+            }}
+        return None
+
     def submit(self, conversation_id: str, goal: str,
                intent_hint: dict | None = None,
                model_selection: TaskModelSelection | dict | None = None,
@@ -1016,7 +1067,23 @@ class TradingAgentHarness:
                 resolved_paper_date = _shanghai_today()
                 goal = (goal[:relative_date.start(1)] + resolved_paper_date +
                         goal[relative_date.end(1):])
-        previous = next(iter(reversed(self.store.list_tasks(conversation_id))), None)
+        previous_tasks = self.store.list_tasks(conversation_id)
+        previous = next(iter(reversed(previous_tasks)), None)
+        resumed_from = None
+        if (not conversation.get("paper_session_id") and intent_hint is None and
+                re.fullmatch(r"(?:请)?(?:继续|重试|再试一次|重新试一下)(?:吧)?[。！!]?", goal)):
+            for source in reversed(previous_tasks):
+                legacy_timeout = (source["status"] == "completed" and
+                                  source["result"].get("content") == "抱歉，处理请求超时，请稍后再试。")
+                if ((source["status"] not in {"failed", "interrupted"} and not legacy_timeout) or
+                        self.store.proposal_for_task(source["id"]) or self._may_prepare_paper_advance(source["goal"])):
+                    break
+                if re.fullmatch(r"(?:请)?(?:继续|重试|再试一次|重新试一下)(?:吧)?[。！!]?", source["goal"]):
+                    continue
+                goal = source["goal"]
+                snapshot["retry_task_id"] = source["id"]
+                resumed_from = source["id"]
+                break
         if (intent_hint is None and
                 (_is_daily_pipeline_run_request(goal) or _DEFAULT_RUN_REPLY.fullmatch(goal)) and
                 self.skills.get("daily_pipeline") is not None):
@@ -1052,6 +1119,9 @@ class TradingAgentHarness:
             "provider": snapshot.get("llm_provider"),
             "model_source": "chat_selection" if model_selection else "default",
         })
+        if resumed_from:
+            self.store.event(task["id"], "task_resumed", {"previous_task_id": resumed_from,
+                             "goal": goal, "message": "已恢复上一轮未完成的只读研究目标"})
         if clarified_from:
             self.store.event(task["id"], "scope_resolved", {
                 "ts_code": user_input.upper(), "source": "clarification",
@@ -1647,7 +1717,7 @@ class TradingAgentHarness:
                 provider=provider, model=model, base_url=self.config.get("backend_url"), **provider_kwargs(self.config),
             ).get_llm()
             llm = runtime_model(llm, "Trading Coordinator", self.config).bind_tools(schemas)
-            timeout = max(2.0, min(float(self.config.get("agent_model_planning_timeout", 8.0)), 20.0))
+            timeout = model_response_timeout(self.config)
             return _NativeToolSession(llm, goal, prompt, allowed, timeout, history)
         except Exception as exc:
             logger.warning("Native agent tool loop unavailable: %s", exc)
@@ -1857,7 +1927,8 @@ class TradingAgentHarness:
         bind_task_context(task_context)
         fallback_hint = intent_hint
         if fallback_hint is None and not conversation.get("paper_session_id"):
-            fallback_hint = self._sector_fallback_hint(goal, history)
+            fallback_hint = (self._sector_fallback_hint(goal, history) or
+                             self._stock_selection_fallback_hint(goal, task_context))
             if (fallback_hint is None and task_context.get("target") == "sector" and
                     is_continuation(goal)):
                 fallback_hint = {"skill_id": "market_overview", "params": {
@@ -1984,6 +2055,7 @@ class TradingAgentHarness:
                 step_index = 0
                 native_finished = False
                 native_failed = False
+                native_error = None
                 native_action = None
                 fallback_added = native is None
                 used = {(f"skill:{step['skill_id']}" if step["tool"] == "skill" else
@@ -1994,10 +2066,25 @@ class TradingAgentHarness:
                         if (native and not native_finished and native.rounds < _MAX_TOOL_ROUNDS and
                                 len(plan) < _MAX_PLAN_STEPS and native_action is None):
                             try:
+                                self.store.event(task_id, "model_waiting", {
+                                    "phase": "tool_selection", "model": model,
+                                    "timeout_seconds": model_response_timeout(self.config),
+                                    "message": "正在等待模型选择本轮分析工具",
+                                })
                                 calls = await native.choose()
+                                self.store.event(task_id, "model_wait_finished", {"phase": "tool_selection"})
                             except Exception as exc:
                                 logger.warning("Agent native tool round unavailable: %s", exc)
-                                self.store.event(task_id, "tool_loop_fallback", {"reason": "model_unavailable"})
+                                timed_out_round = isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+                                native_error = AgentResponseError(
+                                    f"模型响应超时：等待 {model_response_timeout(self.config):g} 秒仍未完成工具选择，本轮尚未取得分析结果。请重新运行任务。"
+                                    if timed_out_round else "模型工具选择失败，本次任务未完成。请重新运行任务。",
+                                    "model_timeout" if timed_out_round else "model_error",
+                                )
+                                self.store.event(task_id, "tool_loop_fallback", {
+                                    "reason": native_error.code, "message": str(native_error),
+                                    "timeout_seconds": model_response_timeout(self.config),
+                                })
                                 native = None
                                 native_failed = True
                                 calls = []
@@ -2046,7 +2133,10 @@ class TradingAgentHarness:
                             if extra:
                                 plan.extend(extra)
                                 self.store.event(task_id, "plan_revised", {
-                                    "steps": extra, "reason": "规则规划补齐必需证据",
+                                    "steps": extra, "reason": (
+                                        "模型工具选择超时，按已确认目标继续取证"
+                                        if native_error and native_error.code == "model_timeout"
+                                        else "规则规划补齐必需证据"),
                                 })
                                 continue
                         memory_tool = self.tools.get("get_strategy_lessons")
@@ -2432,6 +2522,8 @@ class TradingAgentHarness:
                 else:
                     self.store.event(task_id, "step_started", plan[0])
                     active_step_id = plan[0]["id"]
+                    if native_error is not None:
+                        raise native_error  # Do not pay for the same failed planning call again.
                     content = await self._delegate_chat(task_id, goal, conversation, model=model)
                     enforce_budget()
                     self.store.event(task_id, "step_completed", {"id": plan[0]["id"], "status": "completed"})
@@ -2492,8 +2584,14 @@ class TradingAgentHarness:
                 self.store.event(task_id, f"task_{status}", {})
         except Exception as exc:
             logger.exception("Trading agent task %s failed", task_id)
-            self.store.set_status(task_id, "failed", error=str(exc))
-            self.store.event(task_id, "task_failed", {"message": str(exc)})
+            code = getattr(exc, "code", "task_error")
+            if active_step_id:
+                self.store.event(task_id, "step_completed", {"id": active_step_id,
+                                 "status": "failed", "reason": code})
+            result = {"content": str(exc), "error_code": code, "retryable": True, "read_only": True}
+            self.store.add_message(conversation["id"], "assistant", str(exc), task_id)
+            self.store.set_status(task_id, "failed", error=str(exc), result=result)
+            self.store.event(task_id, "task_failed", {**result, "message": str(exc)})
         finally:
             timeout_handle.cancel()
             self._cancel_requested.discard(task_id)
@@ -2684,7 +2782,7 @@ class TradingAgentHarness:
             llm = runtime_model(llm, "Task Planner", self.config).bind_tools([schema])
             response = await asyncio.wait_for(
                 llm.ainvoke([SystemMessage(content=prompt), HumanMessage(content=goal[:2000])]),
-                timeout=max(2.0, min(float(self.config.get("agent_model_planning_timeout", 8.0)), 20.0)),
+                timeout=model_response_timeout(self.config),
             )
             calls = getattr(response, "tool_calls", None) or []
             if not calls:
@@ -2790,7 +2888,7 @@ class TradingAgentHarness:
             response = await asyncio.wait_for(
                 llm.ainvoke([SystemMessage(content=prompt),
                              HumanMessage(content=_json(request))]),
-                timeout=max(2.0, min(float(self.config.get("agent_model_planning_timeout", 8.0)), 20.0)),
+                timeout=model_response_timeout(self.config),
             )
             content = getattr(response, "content", "") or ""
             raw = ("".join(str(block.get("text") or "") for block in content
@@ -3115,7 +3213,7 @@ class TradingAgentHarness:
                 HumanMessage(content=(f"北京时间当前日期：{_shanghai_today()}\n最近对话：\n{history_text}\n\n当前问题：{goal}\n"
                                       f"{ticker_context}"
                                       f"证据 JSON：\n{evidence_text}")),
-            ]), timeout=25)
+            ]), timeout=model_response_timeout(self.config, "agent_answer_timeout_seconds", 90.0))
             if injected_memory and evidence[0].get("task_id"):
                 self.store.event(evidence[0]["task_id"], "memory_injected", {
                     "lesson_ids": [row["id"] for row in injected_memory],
@@ -3212,6 +3310,9 @@ class TradingAgentHarness:
             allow_tools=False,
             model_override=model or self._agent_model(),
         )
+        if response.degraded:
+            raise AgentResponseError(response.content or "模型请求失败，本次任务未完成。",
+                                     response.failure_code or "model_error")
         if response.intent == "skill_run":
             return ("普通问答不会直接执行分析技能。请明确提出分析目标，"
                     "由交易任务核对范围、证据和执行步骤后重试。")

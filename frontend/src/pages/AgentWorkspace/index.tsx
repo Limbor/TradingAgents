@@ -45,7 +45,7 @@ const proposalStatusText: Record<string, string> = {
   unknown: "执行结果待核对", reviewed: "已人工核对", rejected: "已取消", expired: "已过期", failed: "执行失败",
 };
 const failedStepReasonText: Record<string, string> = {
-  interrupted: "已中断", timeout: "已超时", cancelled: "已取消",
+  interrupted: "已中断", timeout: "已超时", model_timeout: "模型响应超时", model_error: "模型请求失败", model_init_error: "模型配置错误", cancelled: "已取消",
 };
 
 function paperDisplayName(configName?: string, strategy?: string, composite?: boolean): string {
@@ -99,7 +99,7 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   return <div className="mt-5 border-y border-ui-line py-3 text-xs">
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
       <span className="font-medium text-ui-ink">执行过程{revised ? " · 已调整计划" : nativeTools ? " · 工具调用" : ""}</span>
-      <div className="flex items-center gap-3 whitespace-nowrap"><span className="text-ui-accent">{textOnly ? "仅文字回答" : statusText[task.status] ?? task.status}</span>{task.evidence.length > 0 && <button onClick={onInspect} className="text-ui-accent underline-offset-2 hover:underline">查看证据</button>}</div>
+      <div className="flex items-center gap-3 whitespace-nowrap"><span className={["failed", "interrupted", "cancelled"].includes(task.status) ? "text-ui-warning" : "text-ui-accent"}>{textOnly ? "仅文字回答" : statusText[task.status] ?? task.status}</span>{task.evidence.length > 0 && <button onClick={onInspect} className="text-ui-accent underline-offset-2 hover:underline">查看证据</button>}</div>
     </div>
     {revisionReason && <p className="mt-2 leading-5 text-ui-muted">调整原因：{revisionReason}</p>}
     <div className="mt-2 space-y-2.5">

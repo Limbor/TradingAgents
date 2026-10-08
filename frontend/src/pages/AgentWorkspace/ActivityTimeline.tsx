@@ -32,13 +32,27 @@ export function taskActivities(task: AgentTask): Activity[] {
   const normalizedAgents = new Set(task.events.filter((e) => e.event_type === 'skill_progress' && e.payload.event_type === 'skill_progress')
     .map((e) => `${String(e.payload.run_id ?? '')}:${String(object(e.payload.payload).agent ?? '')}`));
   for (const event of task.events) {
-    if (['skill_loaded', 'task_context_updated', 'evidence_read', 'checkpoint_reused'].includes(event.event_type)) {
-      const label = event.event_type === 'skill_loaded' ? '读取技能流程'
+    if (['model_waiting', 'model_wait_finished', 'tool_loop_fallback'].includes(event.event_type)) {
+      const id = 'model:tool_selection';
+      if (event.event_type === 'model_waiting') {
+        activities.set(id, { id, label: '等待模型选择分析工具', message: '正在等待模型选择分析工具', status: 'running',
+          model: text(event.payload.model), detail: `单次等待上限 ${String(event.payload.timeout_seconds)} 秒` });
+      } else if (activities.has(id)) {
+        const item = activities.get(id)!;
+        item.status = event.event_type === 'model_wait_finished' ? 'completed' : 'failed';
+        item.detail = text(event.payload.message) ?? item.detail;
+        item.message = activityMessage(item.label, item.status);
+      }
+      continue;
+    }
+    if (['skill_loaded', 'task_context_updated', 'task_resumed', 'evidence_read', 'checkpoint_reused'].includes(event.event_type)) {
+      const label = event.event_type === 'task_resumed' ? '恢复未完成的研究目标'
+        : event.event_type === 'skill_loaded' ? '读取技能流程'
         : event.event_type === 'evidence_read' ? '核对完整证据'
         : event.event_type === 'checkpoint_reused' ? '恢复已完成的查询' : '整理研究对象与条件';
       const id = `${event.event_type}:${String(event.payload.skill_id ?? event.payload.evidence_id ?? '')}`;
       activities.set(id, { id, label, message: label, status: 'completed',
-        detail: text(event.payload.name) ?? text(event.payload.message) });
+        detail: text(event.payload.goal) ?? text(event.payload.name) ?? text(event.payload.message) });
       continue;
     }
     if (event.event_type === 'agent_runtime') {
@@ -46,14 +60,15 @@ export function taskActivities(task: AgentTask): Activity[] {
       const id = text(record.run_id);
       const role = text(record.role);
       if (!id || !role || record.kind === 'tool' || (record.kind === 'model' && roleRuns.has(String(record.parent_id)))) continue;
-      const status = text(record.status) ?? 'running';
+      const modelTimedOut = record.kind === 'model' && record.status === 'interrupted' && task.result.error_code === 'model_timeout';
+      const status = modelTimedOut ? 'failed' : text(record.status) ?? 'running';
       const reused = object(record.reused_from);
       const warning = Array.isArray(record.warnings) ? record.warnings.find(value => typeof value === 'string') : undefined;
       const label = text(reused.run_id) ? reuseLabels[role] ?? '复用已有研究' : AGENT_ACTIONS[role] ?? SKILL_ACTIONS[role] ?? agentRole(role) ?? '分析任务';
       activities.set(`runtime:${id}`, { id: `runtime:${id}`, label, status, message: activityMessage(label, status),
         parentId: text(record.parent_id) ? `runtime:${String(record.parent_id)}` : undefined,
         model: text(record.model), agent: agentRole(role), runId: id,
-        detail: text(warning) ?? (text(reused.run_id) ? `沿用已核验研究 · 基准日 ${String(reused.as_of_date ?? '未知')} · 保留原始来源`
+        detail: (modelTimedOut ? '模型响应超时；未返回完整用量统计' : text(warning)) ?? (text(reused.run_id) ? `沿用已核验研究 · 基准日 ${String(reused.as_of_date ?? '未知')} · 保留原始来源`
           : Number(object(record.context_stats).saved_tokens_estimate ?? 0) > 0 ? '已精简研究摘要，完整报告保留' : undefined) });
       continue;
     }

@@ -117,7 +117,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Legacy model fields migrate into the shared model policy at run start.
     "agent_model": None,
     "agent_model_planning_enabled": True,
-    "agent_model_planning_timeout": 8.0,
+    "agent_model_planning_timeout": 60.0,
     "agent_skill_timeout_seconds": 1800.0,
     "agent_task_timeout_seconds": 2100.0,
     # When None, each provider's client falls back to its own default endpoint

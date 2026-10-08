@@ -108,3 +108,18 @@ it('shows durable skill loading, context and evidence recovery in plain language
   expect(screen.getByText(/个股研究/)).toBeInTheDocument();
   expect(screen.getByText(/核对完整证据/)).toBeInTheDocument();
 });
+
+it('shows model waiting budget, timeout and restored read target explicitly', () => {
+  const events: AgentEvent[] = [
+    {task_id:'t',seq:1,event_type:'model_waiting',payload:{phase:'tool_selection',model:'qwen3.8-flash',timeout_seconds:60},created_at:''},
+    {task_id:'t',seq:2,event_type:'tool_loop_fallback',payload:{reason:'model_timeout',message:'模型响应超时'},created_at:''},
+    {task_id:'t',seq:3,event_type:'task_resumed',payload:{goal:'推荐一下股票',message:'已恢复上一轮未完成的只读研究目标'},created_at:''},
+  ];
+  const result = task(events, 'failed');
+  result.result = {error_code:'model_timeout'};
+  const activities = taskActivities(result);
+  expect(activities.find(a => a.id === 'model:tool_selection')?.status).toBe('failed');
+  render(<ActivityTimeline activities={activities} />);
+  expect(screen.getByText(/模型响应超时/)).toBeInTheDocument();
+  expect(screen.getByText('推荐一下股票')).toBeInTheDocument();
+});
