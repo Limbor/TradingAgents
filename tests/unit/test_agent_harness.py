@@ -3312,7 +3312,8 @@ async def test_reconcile_running_job_reports_progress_then_finishes_without_repo
         calls.append((method, path))
         if path == "/api/jobs/job:slow":
             if job_state == "running":
-                return {"state": "running", "progress": 74}
+                return {"state": "running", "progress": 74, "message": "准备成交价格 40/800",
+                        "elapsed_seconds": 900, "can_cancel": True, "cancel_requested": False}
             return {"state": "success", "result": {"data": {
                 "session_id": "paper:advance", "last_date": "2026-09-28", "advanced_days": 1,
             }}}
@@ -3325,6 +3326,9 @@ async def test_reconcile_running_job_reports_progress_then_finishes_without_repo
     assert running["status"] == "unknown"
     assert running["result"]["job_state"] == "running"
     assert running["result"]["job_progress"] == 74
+    assert running["result"]["job_message"] == "准备成交价格 40/800"
+    assert running["result"]["job_elapsed_seconds"] == 900
+    assert running["result"]["job_can_cancel"] is True
     assert "error" not in running["result"]
     job_state = "success"
     finished = await harness.reconcile(proposal["id"])

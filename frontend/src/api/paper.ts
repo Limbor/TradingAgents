@@ -124,6 +124,9 @@ export interface PaperJob {
   job_id: string;
   state: "queued" | "running" | "success" | "error";
   progress: number;
+  elapsed_seconds?: number;
+  can_cancel?: boolean;
+  cancel_requested?: boolean;
   message: string;
   result: { ok: boolean; data?: unknown } | null;
 }
@@ -163,3 +166,6 @@ export const acknowledgePaperAdvanceReview = (id: string, job_id: string, observ
   fetchJson<{ state: string }>(`${sessionUrl(id)}/advance-review`,
     postJson({ job_id, observed_state_fingerprint, confirmed: true }));
 export const getPaperJob = (id: string) => fetchJson<PaperJob>(`${root}/jobs/${encodeURIComponent(id)}`);
+
+export const cancelPaperAdvance = (id: string, job_id: string) =>
+  fetchJson<PaperJob>(`${sessionUrl(id)}/advance-cancel`, postJson({ job_id }));

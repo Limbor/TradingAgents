@@ -123,7 +123,7 @@ test("running paper job is checked automatically and clears the review card when
           baseline: { as_of_date: "2026-09-29", equity: 109000 },
           status: completed ? "completed" : "unknown",
           result: completed ? { as_of_date: "2026-09-30", equity: 110000, advanced_days: 1 }
-            : { job_id: "job:slow", job_state: "running", job_progress: 74 },
+            : { job_id: "job:slow", job_state: "running", job_progress: 74, job_message: "准备成交价格 40/800", job_elapsed_seconds: 900, job_can_cancel: true },
           expires_at: time,
         } }],
     };
@@ -137,6 +137,10 @@ test("running paper job is checked automatically and clears the review card when
   await page.goto("/chat?paper_session=paper%3Aslow");
   await expect(page.getByText("StockManager 作业仍在运行（74%）", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "已核对账本，关闭提案" })).toHaveCount(0);
+  await expect(page.getByText("当前步骤：准备成交价格 40/800")).toBeVisible();
+  await expect(page.getByText("已运行 15 分 0 秒", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新进度" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "停止推进" })).toBeVisible();
   await expect.poll(() => checks, { timeout: 20_000 }).toBeGreaterThan(0);
   await expect(page.getByText("执行后账本")).toBeVisible();
 });
@@ -244,4 +248,61 @@ test("same-day account change invalidates the paper approval card", async ({ pag
   await expect(page.getByText("提案已失效", { exact: true })).toBeVisible();
   await expect(page.getByRole("status")).toContainText("原提案失效且未执行");
   await expect(page.getByRole("button", { name: "确认推进" })).toHaveCount(0);
+});
+
+test("safe stop requests cancellation once and keeps review pending until the worker stops", async ({ page }) => {
+  const time = "2026-09-30T08:00:00Z";
+  let checks = 0;
+  const completed = false;
+  let stops = 0;
+  let advancePosts = 0;
+  let stopped = false;
+  const conversation = { id: "slow-conversation", title: "模拟盘", paper_session_id: "paper:slow",
+    created_at: time, updated_at: time, latest_status: completed ? "completed" : "needs_review" };
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body: unknown = {};
+    if (path === "/api/v1/agent/conversations") body = [conversation];
+    else if (path === "/api/v1/agent/conversations/slow-conversation") body = {
+      ...conversation,
+      messages: [{ id: "m1", conversation_id: conversation.id, task_id: "slow-task", role: "user",
+        content: "推进到 2026-09-30", created_at: time }],
+      tasks: [{ id: "slow-task", conversation_id: conversation.id, goal: "推进到 2026-09-30",
+        status: completed ? "completed" : "needs_review", result: {}, error: null,
+        created_at: time, updated_at: time, events: [], evidence: [], proposal: {
+          id: "slow-proposal", task_id: "slow-task", action_type: "advance_paper_day",
+          session_id: "paper:slow", args: { target_date: "2026-09-30" },
+          baseline: { as_of_date: "2026-09-29", equity: 109000 },
+          status: completed ? "completed" : "unknown",
+          result: completed ? { as_of_date: "2026-09-30", equity: 110000, advanced_days: 1 }
+            : { job_id: "job:slow", job_state: stopped ? "error" : "running", job_progress: 74, job_message: "准备成交价格 40/800", job_elapsed_seconds: 900, job_can_cancel: !stopped },
+          expires_at: time,
+        } }],
+    };
+    else if (path === "/api/v1/agent/proposals/slow-proposal/reconcile") {
+      checks += 1;
+      stopped = stops > 0;
+      body = { status: "completed" };
+    }
+    else if (path.endsWith("/advance-cancel")) {
+      stops += 1;
+      expect(route.request().postDataJSON()).toEqual({ job_id: "job:slow" });
+      body = { job_id: "job:slow", state: "running", cancel_requested: true };
+    } else if (path.endsWith("/advance")) advancePosts += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/chat?paper_session=paper%3Aslow");
+  await expect(page.getByText("StockManager 作业仍在运行（74%）", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "已核对账本，关闭提案" })).toHaveCount(0);
+  await expect(page.getByText("当前步骤：准备成交价格 40/800")).toBeVisible();
+  await expect(page.getByText("已运行 15 分 0 秒", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新进度" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "停止推进" })).toBeVisible();
+  page.on("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "停止推进" }).click();
+  await expect(page.getByRole("button", { name: "核对执行结果" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "停止推进" })).toHaveCount(0);
+  expect(stops).toBe(1);
+  expect(checks).toBe(1);
+  expect(advancePosts).toBe(0);
 });

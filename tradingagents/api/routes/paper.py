@@ -45,6 +45,10 @@ class AdvancePaper(BaseModel):
     client_request_id: str | None = Field(default=None, pattern=_REQUEST_ID.pattern)
 
 
+class CancelPaperAdvance(BaseModel):
+    job_id: str = Field(min_length=1, max_length=160)
+
+
 class AdvancePaperReview(BaseModel):
     job_id: str = Field(min_length=1, max_length=160)
     observed_state_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -127,6 +131,12 @@ async def advance_receipt(request: Request, session_id: str, client_request_id: 
     return (await _call(request, "GET", f"/api/v2/paper/{_id(session_id)}/advance_requests/{client_request_id}"))[
         "data"
     ]
+
+
+@router.post("/sessions/{session_id}/advance-cancel")
+async def advance_cancel(request: Request, session_id: str, body: CancelPaperAdvance):
+    return (await _call(request, "POST", f"/api/v2/paper/{_id(session_id)}/advance_cancel",
+                        {"job_id": _id(body.job_id)}))["data"]
 
 
 @router.post("/sessions/{session_id}/advance-review")

@@ -1272,6 +1272,10 @@ class TradingAgentHarness:
                           "observed_state_fingerprint": observed_fingerprint,
                           "baseline_state_unchanged": unchanged_account,
                           "job_state": state, "job_progress": job.get("progress") if job else None,
+                          "job_message": str(job.get("message") or "")[:500] if job else None,
+                          "job_elapsed_seconds": job.get("elapsed_seconds") if job else None,
+                          "job_can_cancel": job.get("can_cancel", False) if job else False,
+                          "job_cancel_requested": job.get("cancel_requested", False) if job else False,
                           "job_error": job_error, "ledger_error": ledger_error,
                           "checked_at": _now()}
                 if state in {"queued", "running"} and not ledger_error:
@@ -3288,6 +3292,20 @@ class TradingAgentHarness:
                     updated = (await paper_request(self.config, "GET", root + "/status")).get("data") or {}
                     self._finish_paper_action(self.store.get_proposal(proposal_id), job, updated)
                     return
+                if state in {"queued", "running"}:
+                    self.store.set_proposal_status(proposal_id, "submitted", {
+                        "job_id": job_id, "job_state": state,
+                        "job_progress": job.get("progress"),
+                        "job_message": str(job.get("message") or "")[:500],
+                        "job_elapsed_seconds": job.get("elapsed_seconds"),
+                        "job_can_cancel": job.get("can_cancel", False),
+                        "job_cancel_requested": job.get("cancel_requested", False),
+                    })
+                    self.store.event(task_id, "action_progress", {
+                        "proposal_id": proposal_id, "job_state": state,
+                        "message": str(job.get("message") or "")[:500],
+                        "progress": job.get("progress"),
+                    })
                 if state in {"failed", "error", "cancelled"}:
                     # A failed job may already have changed the ledger before
                     # failing. Read it before declaring the action failed.

@@ -101,3 +101,17 @@ def test_paper_client_rejects_remote_hosts_and_redirects():
         with pytest.raises(PaperServiceError):
             asyncio.run(paper_request({"stockmanager_web_url": "http://127.0.0.1:8787"}, "GET", "/api/v2/sessions"))
         assert send.call_args.kwargs["allow_redirects"] is False
+
+
+def test_cancel_advance_is_account_scoped_and_does_not_release_lock(client):
+    calls = []
+    async def request(config, method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"ok": True, "data": {"job_id": "job:one", "state": "running", "cancel_requested": True}}
+    with patch("tradingagents.api.routes.paper.paper_request", request):
+        response = client.post("/api/v1/paper/sessions/paper:one/advance-cancel", json={"job_id": "job:one"})
+        assert response.status_code == 200
+        assert response.json()["state"] == "running"
+        assert calls == [("POST", "/api/v2/paper/paper:one/advance_cancel", {"job_id": "job:one"})]
+        assert client.post("/api/v1/paper/sessions/paper:one/advance-cancel", json={"job_id": "../bad"}).status_code == 400
+        assert len(calls) == 1

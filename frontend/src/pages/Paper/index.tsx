@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { MessageSquareText, RefreshCw } from "lucide-react";
 import {
-  acknowledgePaperAdvanceReview, advancePaper, createPaperSession, getPaperAdvanceReceipt, getPaperCurve, getPaperJob, getPaperPlan,
+  acknowledgePaperAdvanceReview, advancePaper, cancelPaperAdvance, createPaperSession, getPaperAdvanceReceipt, getPaperCurve, getPaperJob, getPaperPlan,
   getPaperStatus, getPaperTrades, listPaperAllocators, listPaperConfigs, listPaperSessions,
   listPaperStrategies, type PaperJob,
 } from "@/api/paper";
@@ -141,6 +141,7 @@ export default function Paper() {
       try {
         const next = await getPaperJob(job.job_id);
         setJob({ ...next, sessionId: job.sessionId });
+        if (next.state === "running" || next.state === "queued") setError(previous => previous.startsWith("账本无法复读") ? "" : previous);
         if (next.state === "success") {
           setBusy(false);
           window.localStorage.removeItem(`paper-advance-job:${job.sessionId}`);
@@ -239,6 +240,19 @@ export default function Paper() {
       client.setQueryData([...queryKeys.paperSession(id), "status"], current);
       const ledgerDate = current.snapshot?.as_of_date ?? "尚未推进";
       const operation = current.advance_operation;
+      if (operation && ["queued", "running"].includes(operation.state)) {
+        try {
+          const liveJob = await getPaperJob(operation.job_id);
+          if (["queued", "running"].includes(liveJob.state)) {
+            setJob({ ...liveJob, sessionId: id });
+            setBusy(true);
+            setError("");
+            return;
+          }
+        } catch (cause) {
+          if (!(cause instanceof ApiHttpError) || cause.status !== 404) throw cause;
+        }
+      }
       const reviewJobId = operation && ["queued", "running", "needs_review"].includes(operation.state)
         ? operation.job_id : job.job_id;
       const jobLabel = reviewJobId === "submission-unknown" ? "提交请求" : `作业 ${reviewJobId}`;
@@ -259,6 +273,16 @@ export default function Paper() {
     } catch (cause) {
       setError(cause instanceof Error ? `账本无法复读：${cause.message}` : "账本无法复读");
     }
+  };
+
+  const stopAdvance = async () => {
+    if (!id || job?.sessionId !== id || !job.can_cancel || job.cancel_requested) return;
+    if (!window.confirm("停止这次模拟盘推进？当前数据请求返回后会停止；请随后核对账本，不会自动重试。")) return;
+    try {
+      const next = await cancelPaperAdvance(id, job.job_id);
+      setJob({ ...next, sessionId: id });
+      setError("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "停止请求失败"); }
   };
 
   const askAgent = (prompt: string) => {
@@ -311,7 +335,7 @@ export default function Paper() {
         </div>
       </header>
 
-      {(error || connectionError) && <div role="alert" className="rounded-lg border border-ui-danger bg-ui-danger/50 p-3 text-sm text-ui-danger">{error || connectionError}。请确认 StockManager Web 服务已启动（默认 127.0.0.1:8787）。</div>}
+      {(error || connectionError) && <div role="alert" className="rounded-lg border border-ui-danger bg-ui-danger/50 p-3 text-sm text-ui-danger">{error || connectionError}{connectionError && "。请确认 StockManager Web 服务已启动（默认 127.0.0.1:8787）。"}</div>}
       {sectionError && <div role="alert" className="rounded-lg border border-ui-warning bg-ui-warning/40 p-3 text-sm text-ui-warning">模拟盘部分数据读取失败：{sectionError}。可稍后刷新重试。</div>}
 
       {createOpen && <section className={card}>
@@ -368,7 +392,7 @@ export default function Paper() {
 
         <TradesCard key={id} trades={trades.data} totalCount={status.data?.trades_count} />
 
-        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}>{!isCompositeChild && <><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.message} {job.state === "running" ? `${job.progress}%` : ""}</span>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}<p className="w-full text-xs text-ui-faint">目标日期是推进上限；实际账本日以 StockManager 返回为准。若当日行情尚未就绪，账本可能停在此前交易日。</p></>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
+        <section id="paper-advance-controls" className={`${card} flex flex-wrap items-end gap-3`}>{!isCompositeChild && <><label className="text-xs text-ui-muted">推进至交易日<input type="date" min={active?.last_date ?? undefined} value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="mt-1 block rounded bg-ui-hover p-2 text-sm text-ui-ink" /></label><button disabled={busy || serverLocked || !targetDate || (job?.sessionId === id && job.state === "error") || !!(active?.last_date && targetDate <= active.last_date)} onClick={() => void advance()} className="rounded bg-ui-accent px-4 py-2 text-sm text-ui-onAccent disabled:opacity-40">推进模拟盘</button>{job?.sessionId === id && <span className="text-sm text-ui-body">{job.cancel_requested ? "正在安全停止，等待当前数据请求返回" : job.message} {job.state === "running" ? `${job.progress}%` : ""}{job.elapsed_seconds != null && ` · 已运行 ${Math.floor(job.elapsed_seconds / 60)} 分 ${job.elapsed_seconds % 60} 秒`}</span>}{job?.sessionId === id && job.can_cancel && <button disabled={job.cancel_requested} className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning disabled:opacity-50" onClick={() => void stopAdvance()}>停止推进</button>}{job?.sessionId === id && job.state === "error" && <button className="rounded border border-ui-warning px-3 py-2 text-sm text-ui-warning" onClick={() => void releaseReview()}>核对账本后解除锁定</button>}<p className="w-full text-xs text-ui-faint">目标日期是推进上限；实际账本日以 StockManager 返回为准。若当日行情尚未就绪，账本可能停在此前交易日。</p></>}<button className="ml-auto flex items-center gap-1 rounded border border-ui-strong px-3 py-2 text-sm text-ui-body" onClick={() => askAgent("总结这个模拟盘当前状态、近期成交和下一日计划")}><MessageSquareText className="h-4 w-4" /> 与 Agent 讨论</button></section>
         </div>
         </div>
       </>}

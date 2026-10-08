@@ -11,7 +11,7 @@ import {
   readAgentTaskStream, reconcileAgentProposal, rejectAgentProposal,
   type AgentConversation, type AgentConversationDetail, type AgentEvidence, type AgentTask, type UsageStats,
 } from "@/api/agent";
-import { getPaperStatus } from "@/api/paper";
+import { cancelPaperAdvance, getPaperStatus } from "@/api/paper";
 import { getConfig } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { ThemeToggle } from "@/components/Layout/Header";
@@ -122,7 +122,7 @@ function TaskTimeline({ task, onRetry, onInspect, retryDisabled }: {
   </div>;
 }
 
-function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile, onCloseReview }: {
+function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile, onCloseReview, onCancelAdvance }: {
   task: AgentTask;
   paperName: string;
   busy: boolean;
@@ -130,6 +130,7 @@ function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile,
   onReject: () => void;
   onReconcile: () => void;
   onCloseReview: () => void;
+  onCancelAdvance: () => void;
 }) {
   const proposal = task.proposal;
   if (!proposal) return null;
@@ -153,10 +154,13 @@ function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile,
     </div>}
     {proposal.status === "no_change" && <p role="status" className="mt-3 text-xs leading-5 text-ui-warning">StockManager 作业已结束，但账本日期仍为 {String(proposal.result.as_of_date || proposal.baseline.as_of_date)}；目标日期 {proposal.args.target_date} 尚未达到。</p>}
     {proposal.status === "stale" && <p role="status" className="mt-3 text-xs leading-5 text-ui-warning">确认前账户账本已变化，原提案失效且未执行。请重新核对账户后提出请求。</p>}
-    {(proposal.status === "unknown" || task.status === "needs_review") && <div className="mt-3 space-y-2 text-xs text-ui-warning">
+    {(proposal.status === "unknown" || task.status === "needs_review" || (proposal.status === "submitted" && jobRunning)) && <div className="mt-3 space-y-2 text-xs text-ui-warning">
       <p>{jobRunning
         ? `StockManager 作业仍在运行${jobProgress === null ? "" : `（${jobProgress}%）`}；完成后会自动核对。请勿重复提交。`
         : `执行结果待核对${proposal.result?.job_id ? `（任务 ${String(proposal.result.job_id)}）` : ""}；请查看模拟盘账本，勿重复提交。`}</p>
+      {jobRunning && typeof proposal.result.job_message === "string" && <p className="break-words">当前步骤：{proposal.result.job_message}</p>}
+      {jobRunning && typeof proposal.result.job_elapsed_seconds === "number" && <p>已运行 {Math.floor(proposal.result.job_elapsed_seconds / 60)} 分 {proposal.result.job_elapsed_seconds % 60} 秒；核对只刷新状态，不会结束作业。</p>}
+      {jobRunning && proposal.result.job_cancel_requested === true && <p>正在安全停止，等待当前请求返回；停止后再核对账本。</p>}
       {typeof proposal.result?.observed_date === "string" && <p>最近核对的账本日期：{proposal.result.observed_date}</p>}
       {typeof proposal.result?.error === "string" && <p>{proposal.result.error}</p>}
       {typeof proposal.result?.job_error === "string" && <p>作业状态暂不可读：{proposal.result.job_error}</p>}
@@ -172,7 +176,8 @@ function ProposalCard({ task, paperName, busy, onApprove, onReject, onReconcile,
         </div>)}
         {typeof proposal.result.child_audit_error === "string" && <p className="mt-2">{proposal.result.child_audit_error}</p>}
       </div>}
-      <div className="flex flex-wrap gap-2"><button disabled={busy} onClick={onReconcile} className="whitespace-nowrap rounded-md border border-ui-warning px-3 py-2 font-medium disabled:opacity-50">核对执行结果</button>
+      <div className="flex flex-wrap gap-2"><button disabled={busy} onClick={onReconcile} className="whitespace-nowrap rounded-md border border-ui-warning px-3 py-2 font-medium disabled:opacity-50">{jobRunning ? "刷新进度" : "核对执行结果"}</button>
+      {jobRunning && proposal.result.job_can_cancel === true && <button disabled={busy || proposal.result.job_cancel_requested === true} onClick={onCancelAdvance} className="whitespace-nowrap rounded-md border border-ui-warning px-3 py-2 font-medium disabled:opacity-50">停止推进</button>}
       {!jobRunning && <button disabled={busy} onClick={onCloseReview} className="whitespace-nowrap rounded-md border border-ui-warning px-3 py-2 font-medium disabled:opacity-50">已核对账本，关闭提案</button>}</div>
     </div>}
     {proposal.status === "reviewed" && <p role="status" className="mt-3 text-xs text-ui-muted">人工核对已记录。账本日期：{String(proposal.result.reviewed_date || "未知")}。此记录不代表作业成功。</p>}
@@ -352,11 +357,12 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
         await reconcileAgentProposal(uncertainProposal.id);
         await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] });
         await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
+        if (paperId) await queryClient.invalidateQueries({ queryKey: queryKeys.paperSession(paperId) });
       } catch { /* Keep the manual check available when StockManager is temporarily offline. */ }
       finally { checking = false; }
     }, 15_000);
     return () => window.clearInterval(timer);
-  }, [currentId, uncertainProposal?.id, uncertainJobId, uncertainJobState, queryClient]);
+  }, [currentId, uncertainProposal?.id, uncertainJobId, uncertainJobState, queryClient, paperId]);
 
   const selectConversation = useCallback((id: string) => {
     setSelectedId(id);
@@ -495,7 +501,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
     try { await cancelAgentTask(latestTask.id); await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] }); }
     catch (exc) { setError(exc instanceof Error ? exc.message : "取消失败"); }
   };
-  const decideProposal = async (decision: "approve" | "reject" | "reconcile" | "close_review", task: AgentTask) => {
+  const decideProposal = async (decision: "approve" | "reject" | "reconcile" | "close_review" | "cancel_advance", task: AgentTask) => {
     if (!task.proposal) return;
     setBusy(true);
     setError("");
@@ -503,6 +509,11 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
       if (decision === "approve") await approveAgentProposal(task.proposal.id);
       else if (decision === "reject") await rejectAgentProposal(task.proposal.id);
       else if (decision === "reconcile") await reconcileAgentProposal(task.proposal.id);
+      else if (decision === "cancel_advance") {
+        if (!window.confirm("停止这次模拟盘推进？系统会等待当前数据请求结束，随后核对账本；不会自动重新提交。")) return;
+        await cancelPaperAdvance(task.proposal.session_id, String(task.proposal.result.job_id));
+        await reconcileAgentProposal(task.proposal.id);
+      }
       else {
         const status = await getPaperStatus(task.proposal.session_id);
         const fingerprint = status.state_fingerprint;
@@ -517,6 +528,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
       }
       await queryClient.invalidateQueries({ queryKey: ["agent-conversation", currentId] });
       await queryClient.invalidateQueries({ queryKey: ["agent-conversations"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.paperSession(task.proposal.session_id) });
     } catch (exc) { setError(exc instanceof Error ? exc.message : "操作失败"); }
     finally { setBusy(false); }
   };
@@ -545,7 +557,7 @@ export default function AgentWorkspace({ paperSessionId, embedded = false, promp
                 {message.role === "assistant" && task && <UsageSummary usage={task.usage_stats} />}
               </div>
             </div>
-            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal, undefined, task.id)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} paperName={paperName} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} onCloseReview={() => void decideProposal("close_review", task)} /></div>}
+            {message.role === "user" && task && <div className="max-w-[690px]"><TaskTimeline task={task} onRetry={() => void send(task.goal, undefined, task.id)} onInspect={() => inspectTask(task.id)} retryDisabled={busy || running} /><ProposalCard task={task} paperName={paperName} busy={busy} onApprove={() => void decideProposal("approve", task)} onReject={() => void decideProposal("reject", task)} onReconcile={() => void decideProposal("reconcile", task)} onCloseReview={() => void decideProposal("close_review", task)} onCancelAdvance={() => void decideProposal("cancel_advance", task)} /></div>}
           </div>;
         })}
       </div></div>
